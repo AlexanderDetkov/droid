@@ -39,6 +39,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
@@ -132,9 +133,10 @@ private fun After() {
             Column { DashSlot(failed, null, DpSize(32.dp, 44.dp), 44.dp, 2.2f); Text("failed", style = MaterialTheme.typography.labelSmall) }
         }
         val d = androidx.compose.ui.platform.LocalDensity.current.density
+        val light = P.bg.luminance() > .5f
         FlowRow(Modifier.padding(top = 28.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             for (f in listOf(Feel.THINKING, Feel.LOOKING, Feel.TYPING, Feel.WORKING, Feel.NEEDS_YOU, Feel.HAPPY, Feel.CONFUSED, Feel.IDLE)) {
-                val b = remember(f) { dashPortrait(f, (64 * d).toInt(), d).asImageBitmap() }
+                val b = remember(f, light) { dashPortrait(f, (64 * d).toInt(), d, light).asImageBitmap() }
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     androidx.compose.foundation.Image(b, null, Modifier.size(64.dp).clip(RoundedCornerShape(12.dp)).background(P.surface))
                     Text(f.name.lowercase(), style = MaterialTheme.typography.labelSmall, color = P.muted)

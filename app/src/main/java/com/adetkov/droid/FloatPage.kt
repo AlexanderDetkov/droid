@@ -149,7 +149,7 @@ private fun FloatCard(conv: String, pageId: String, onClose: () -> Unit) {
     val max = LocalConfiguration.current.screenHeightDp.dp * .62f
     Box(Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, bottom = 8.dp)) {
         // Dash, his head over the card's top edge: he is behind it, so it covers the rest of him
-        DashMini(feel, 56.dp, Modifier.align(Alignment.TopCenter), label = "Dash")
+        DashMini(feel, 56.dp, Modifier.align(Alignment.TopCenter), label = null)
         Column(Modifier.padding(top = 46.dp).fillMaxWidth().shadow(16.dp, RoundedCornerShape(28.dp)).clip(RoundedCornerShape(28.dp)).background(P.sheet)) {
             Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 6.dp, top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(listOf("Droid", info.title.ifEmpty { c.title }).joinToString(" · "), Modifier.weight(1f),

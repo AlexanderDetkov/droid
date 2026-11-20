@@ -61,6 +61,9 @@ object Notify {
         val app = ctx.applicationContext as DroidApp
         val id = o.optString("id").takeIf { PAGE_ID.matches(it) } ?: return
         if (o.optBoolean("cancel")) { cancel(ctx, conv, id); Later.dropNote(ctx, conv, id); return }
+        // One for later (--at) is Dash at rest unless the agent said otherwise: when it goes off, the chat's last turn
+        // (its "Your turn", say) may be about something else.
+        if (o.has("at") && !o.has("feel")) o.put("feel", "idle")
         val dir = File(ctx.filesDir, "notes/$conv").apply { mkdirs() }
         o.optString("image").takeIf { it.isNotEmpty() }?.let { path ->
             val f = File(dir, "$id-${hash(path)}")
@@ -123,7 +126,7 @@ object Notify {
         val b = Notification.Builder(ctx, ch)
             .addExtras(Bundle().apply { putString(CONV, conv) })  // whose it is, for when the chat is deleted
             .setSmallIcon(R.drawable.ic_notify)
-            .setLargeIcon(dashPortrait(feel, (64 * d).toInt(), d))
+            .setLargeIcon(dashPortrait(feel, (64 * d).toInt(), d, lightShade(ctx)))
             .setContentTitle(title)
             .setOnlyAlertOnce(true)   // updated under its id (progress), it doesn't sound again
             .setShowWhen(true)

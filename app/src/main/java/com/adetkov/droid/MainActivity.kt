@@ -401,7 +401,8 @@ private fun Root(request: Request?, modifier: Modifier) {
                 // Handed over by the answer: the owner's touches go to it at once, and Done gives it back to the agent.
                 startInControl = handoff, onHandBack = if (handoff) ({ handoff = false; watching = false; convId?.let { startTask(ctx, it, HANDED_BACK) } }) else null,
                 taps = remember(watched) { app.runner.taps.filter { it.first == watched }.map { it.second to it.third } },
-                doing = doingMap[conv.id], asks = !running && lastOutcome(conv.messages, false) == Outcome.ASKS)
+                doing = doingMap[conv.id], asks = !running && lastOutcome(conv.messages, false) == Outcome.ASKS,
+                mood = lastMood(conv.messages), waiting = waitingPage(conv.messages, running) != null)
         }
     }
 }

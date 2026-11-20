@@ -74,6 +74,8 @@ FEELINGS = {
     "listening": "listening",
     "idle": "at rest",
 }
+# What he does while the agent works: fine for a notification's picture, but not how a turn ends (droid dash).
+WORK = {"thinking", "looking", "reading", "typing", "scrolling", "searching", "waiting", "working", "focused", "listening"}
 FACE = ["open", "smile", "size", "asym", "lookX", "lookY", "lean", "tilt", "stretch", "sway", "depth", "antenna", "curl",
         "length", "glow", "tick", "blush", "glances", "enter", "feel"]
 
@@ -138,11 +140,14 @@ def dash(args):
             die(f"that face isn't JSON: {e}")
         if not isinstance(face, dict) or any(k not in FACE for k in face):
             die("a face takes these keys: " + ", ".join(FACE))
+        base = str(face.get("feel", "idle")).strip().lower().replace("-", "_")
+        if base not in FEELINGS or base in WORK:
+            die(f"no feeling '{base}' for a face. These are: " + ", ".join(k for k in FEELINGS if k not in WORK))
         feel = face
     else:
         feel = feel.strip().lower().replace("-", "_")
-        if feel not in FEELINGS:
-            die(f"no feeling '{args[0]}'. These are: " + ", ".join(FEELINGS))
+        if feel not in FEELINGS or feel in WORK:
+            die(f"no feeling '{args[0]}' for after a turn. These are: " + ", ".join(k for k in FEELINGS if k not in WORK))
     words = " ".join(args[1:]).strip()
     emit(dict(op="dash", feel=feel, words=words[:200]))
 
@@ -433,7 +438,7 @@ def main():
     if cmd == "dash":
         dash(rest)
     elif cmd == "feelings":
-        for k, v in FEELINGS.items():
+        for k, v in ((k, v + (" (a notification's picture only)" if k in WORK else "")) for k, v in FEELINGS.items()):
             print(f"{k:11} {v}")
     elif cmd == "show":
         show(rest)

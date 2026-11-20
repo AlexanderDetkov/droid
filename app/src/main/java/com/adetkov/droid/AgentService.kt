@@ -180,7 +180,7 @@ class AgentService : Service() {
     private fun ongoing(id: String) = if (id in app.runner.running.value) runningNotification(id) else heldNotification(id)
 
     /** Dash as the notification's picture, in the pose of what the chat is doing or waits on you for. */
-    private fun dash(feel: Feel) = dashPortrait(feel, (64 * resources.displayMetrics.density).toInt(), resources.displayMetrics.density)
+    private fun dash(feel: Feel) = dashPortrait(feel, (64 * resources.displayMetrics.density).toInt(), resources.displayMetrics.density, lightShade(this))
 
     private fun runningNotification(id: String): Notification {
         val conv = app.store.get(id)

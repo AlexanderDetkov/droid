@@ -468,7 +468,7 @@ private fun WorkLog(s: Item.Steps, convId: String, screen: ScreenFeed?, onWatch:
     var late by remember(s.key) { mutableStateOf(false) }  // a held screen in its last minute and a half
     // after the turn: what he waits on you for, or what you're doing about it
     val after = attending ?: when { failed -> Feel.CONFUSED; mood != null -> mood.feel; asks -> Feel.NEEDS_YOU; late -> Feel.SLEEPY; else -> Feel.IDLE }
-    val rig = rememberDash(s.key) { r ->
+    val rig = rememberDash(s.key, active = !released) { r ->
         if (big || (!s.live && screen != null)) r.frame.snap(1f)
         if (!s.live) r.feel(after)
         // a request just sent: he grows in beside it (as the last turn's Dash shrinks away above), rather than appearing
@@ -588,7 +588,8 @@ private fun WorkLog(s: Item.Steps, convId: String, screen: ScreenFeed?, onWatch:
                 }
                 // after the turn: your turn, or what the agent had him say (a failure says so below the answer)
                 val label = if (failed) null else turnLabel(outcome, mood)
-                AnimatedVisibility(waits && label != null, enter = fadeIn(tween(240, 160)) + expandVertically(clip = false), exit = fadeOut(tween(160)) + shrinkVertically(clip = false)) {
+                // (also beside the still a closed screen left: still their turn)
+                AnimatedVisibility((waits || (!s.live && !held && hadScreen)) && label != null, enter = fadeIn(tween(240, 160)) + expandVertically(clip = false), exit = fadeOut(tween(160)) + shrinkVertically(clip = false)) {
                     Text(label.orEmpty(), style = small, color = if (asks) P.call else P.muted, fontWeight = if (asks) FontWeight.Medium else null,
                         maxLines = 2, overflow = TextOverflow.Ellipsis)
                 }
@@ -638,7 +639,7 @@ private val SUGGESTIONS = listOf(
 @Composable
 fun EmptyState(onSuggestion: (String) -> Unit, modifier: Modifier, listening: Boolean = false, level: () -> Float = { 0f }, typing: Boolean = false) {
     // Dash says hi, then rests: he listens while you talk and reads along while you type.
-    val rig = rememberDash(setup = { it.feel(Feel.HAPPY) })
+    val rig = rememberDash()  // at rest, so the greeting below is a change: he hops
     var greeted by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { delay(1400); greeted = true }
     val feel = when { listening -> Feel.LISTENING; typing -> Feel.READING; !greeted -> Feel.HAPPY; else -> Feel.IDLE }
@@ -646,7 +647,7 @@ fun EmptyState(onSuggestion: (String) -> Unit, modifier: Modifier, listening: Bo
     rig.level = level
     Box(modifier) {
         Column(Modifier.align(Alignment.Center).padding(horizontal = 32.dp).padding(bottom = 72.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Dash(rig, Modifier.size(width = 112.dp, height = 124.dp).testTag("dash"), label = "Dash, Droid's character")
+            Dash(rig, Modifier.size(width = 112.dp, height = 124.dp).testTag("dash"), label = null)
             Text("What can I do for you?", Modifier.padding(top = 10.dp), style = MaterialTheme.typography.headlineSmall, textAlign = TextAlign.Center)
             Text("I use your apps on a hidden screen while you keep using the phone.", Modifier.padding(top = 8.dp),
                 style = MaterialTheme.typography.bodyMedium, color = P.muted, textAlign = TextAlign.Center)

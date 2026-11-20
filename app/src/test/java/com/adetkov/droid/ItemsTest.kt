@@ -27,6 +27,12 @@ class ItemsTest {
         assertEquals("All **done**", answer.text)
     }
 
+    @Test fun aStoppedTurnKeepsNoMood() {
+        val calls = Msg(Kind.DASH, """{"feel":"needs_you","words":"Pick one"}""", 2)
+        assertEquals(true, lastMood(listOf(Msg(Kind.USER, "plan it", 1), calls))?.calls)
+        assertEquals(null, lastMood(listOf(Msg(Kind.USER, "plan it", 1), calls, Msg(Kind.STATUS, "Stopped", 3))))
+    }
+
     @Test fun aPageReportedBeforeItsStepStillComesAfterTheWorkRow() {
         // Codex and OpenCode report a step once it's done; its `droid show` page arrives first
         val msgs = listOf(Msg(Kind.USER, "7 or 8?", 1), Msg(Kind.PAGE, "<p>Pick</p>", 2), Msg(Kind.STEP, "Showing a page", 3),

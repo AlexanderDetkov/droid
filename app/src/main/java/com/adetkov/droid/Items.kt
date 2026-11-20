@@ -100,7 +100,11 @@ fun moodOf(text: String): Mood? = synchronized(moods) {
 fun lastTurn(messages: List<Msg>): List<Msg> = messages.takeLastWhile { !it.kind.opensTurn }
 
 /** How the agent last set Dash in the last turn, if it did. */
-fun lastMood(messages: List<Msg>): Mood? = lastTurn(messages).lastOrNull { it.kind == Kind.DASH }?.let { moodOf(it.text) }
+fun lastMood(messages: List<Msg>): Mood? = lastTurn(messages).let { turn ->
+    // a turn the owner stopped keeps no mood it was given on the way (no "Your turn" for what they stopped)
+    if (turn.any { it.kind == Kind.STATUS && it.text == "Stopped" }) null
+    else turn.lastOrNull { it.kind == Kind.DASH }?.let { moodOf(it.text) }
+}
 
 /**
  * The page the last turn is waiting on (`droid show --wait`, not answered yet), while it runs: Dash calls the owner to

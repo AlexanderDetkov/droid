@@ -432,7 +432,7 @@ private fun AssistActivity.Panel(invocation: Int, testWav: String?, modifier: Mo
                     }
                 }
             }
-            DashNotch(rig, Modifier.align(Alignment.TopCenter).testTag("dash"), label = "Dash")
+            DashNotch(rig, Modifier.align(Alignment.TopCenter).testTag("dash"), label = null)
           }
           }
         }

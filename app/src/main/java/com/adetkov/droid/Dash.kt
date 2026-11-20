@@ -44,6 +44,7 @@ import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
@@ -542,11 +543,11 @@ class DashRig(val calm: Boolean, feel: Feel = Feel.IDLE) {
 }
 
 /**
- * Dash in [feel], standing in a [px] square bitmap: his picture where Compose doesn't draw (a notification). Cached:
- * there are only so many feelings.
+ * Dash in [feel], standing in a [px] square bitmap: his picture where Compose doesn't draw (a notification), [onLight]
+ * for a light shade. The last few are kept (a face of the agent's own is a feeling of its own).
  */
-fun dashPortrait(feel: Feel, px: Int, density: Float): android.graphics.Bitmap = synchronized(portraits) {
-    portraits.getOrPut(feel to px) {
+fun dashPortrait(feel: Feel, px: Int, density: Float, onLight: Boolean): android.graphics.Bitmap = synchronized(portraits) {
+    portraits.getOrPut(Triple(feel, px, onLight)) {
         val rig = DashRig(calm = true, feel).also { it.settle() }
         val img = ImageBitmap(px, px)
         // his box, sized so his body is about two thirds of the picture's width, and placed so all of him (antenna to
@@ -554,12 +555,18 @@ fun dashPortrait(feel: Feel, px: Int, density: Float): android.graphics.Bitmap =
         val w0 = px * .64f; val u = w0 / .74f
         val bottom = px / 2f + .7f * u - .08f * u
         CanvasDrawScope().draw(Density(density), LayoutDirection.Ltr, androidx.compose.ui.graphics.Canvas(img), Size(px.toFloat(), px.toFloat())) {
-            drawDash(rig, null, null, 3f * density, true, home = Rect(px / 2f - u / 2, bottom - 1.38f * u, px / 2f + u / 2, bottom), shadow = false)
+            drawDash(rig, null, null, 3f * density, true, home = Rect(px / 2f - u / 2, bottom - 1.38f * u, px / 2f + u / 2, bottom), shadow = false, onLight = onLight)
         }
         img.asAndroidBitmap()
     }
 }
-private val portraits = HashMap<Pair<Feel, Int>, android.graphics.Bitmap>()
+private val portraits = object : LinkedHashMap<Triple<Feel, Int, Boolean>, android.graphics.Bitmap>(16, .75f, true) {
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Triple<Feel, Int, Boolean>, android.graphics.Bitmap>?) = size > 24
+}
+
+/** Whether notifications show on a light shade now (the phone's own theme, not Droid's). */
+fun lightShade(ctx: android.content.Context) =
+    (ctx.resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) != android.content.res.Configuration.UI_MODE_NIGHT_YES
 
 /** Is reduced motion on (Android's animations off)? */
 @Composable
@@ -605,10 +612,11 @@ fun headRoomDp(nsDp: Float, hook: Boolean = true): Float = nsDp * (if (hook) 33f
  */
 @Composable
 fun Dash(rig: DashRig, modifier: Modifier = Modifier, screen: ImageBitmap? = null, screenRect: ((Size) -> Rect)? = null,
-         edge: Dp = 3.dp, hook: Boolean = true, label: String = "Dash", onPoke: (() -> Unit)? = { rig.poke() }) {
+         edge: Dp = 3.dp, hook: Boolean = true, label: String? = "Dash", onPoke: (() -> Unit)? = { rig.poke() }) {
     val tap = remember { MutableInteractionSource() }
     val onLight = P.bg.luminance() > .5f
-    Canvas(modifier.semantics { contentDescription = label }
+    // label null: he's decoration beside words that say it, and screen readers skip him
+    Canvas(modifier.let { m -> if (label == null) m.clearAndSetSemantics {} else m.semantics { contentDescription = label } }
         .then(if (onPoke != null) Modifier.clickable(tap, null, onClick = onPoke) else Modifier)) {
         rig.tick.longValue
         drawDash(rig, screen, screenRect?.invoke(size), edge.toPx(), hook, onLight = onLight)
@@ -709,20 +717,27 @@ fun screenCorner(w: Float, density: Float): Float = (w * .1f).coerceIn(5f * dens
 // Drawing
 // ------------------------------------------------------------------------------------------------------------------
 
-// Reused objects: drawing allocates next to nothing per frame.
-private val bodyP = Path()
-private val screenP = Path()
-private val drainP = Path()
-private val drainSeg = Path()
-private val eyeP = Path()
-private val stalkP = Path()
-private val miscP = Path()
-private val shearM = Matrix()
-private val stalkX = FloatArray(13)
-private val stalkY = FloatArray(13)
+// Reused objects: drawing allocates next to nothing per frame. One set per thread: a notification's picture is drawn
+// off the main thread (dashPortrait) while the screen may be drawing him on it.
+private class Scratch {
+    val bodyP = Path(); val screenP = Path(); val drainP = Path(); val drainSeg = Path(); val eyeP = Path()
+    val stalkP = Path(); val miscP = Path(); val shearM = Matrix(); val stalkX = FloatArray(13); val stalkY = FloatArray(13)
+    val measure = PathMeasure()
+}
+private val scratch = ThreadLocal.withInitial { Scratch() }
+private val bodyP get() = scratch.get()!!.bodyP
+private val screenP get() = scratch.get()!!.screenP
+private val drainP get() = scratch.get()!!.drainP
+private val drainSeg get() = scratch.get()!!.drainSeg
+private val eyeP get() = scratch.get()!!.eyeP
+private val stalkP get() = scratch.get()!!.stalkP
+private val miscP get() = scratch.get()!!.miscP
+private val shearM get() = scratch.get()!!.shearM
+private val stalkX get() = scratch.get()!!.stalkX
+private val stalkY get() = scratch.get()!!.stalkY
 private val shaders = java.util.WeakHashMap<ImageBitmap, android.graphics.Shader>()
 private val shaderM = android.graphics.Matrix()
-private val measure = PathMeasure()
+private val measure get() = scratch.get()!!.measure
 
 /** [image] as a brush that covers the rect [l], [t], [r], [b]: scaled to cover it, centered across, from the top. */
 private fun screenBrush(image: ImageBitmap, l: Float, t: Float, r: Float, b: Float): Brush {
@@ -1045,7 +1060,7 @@ fun lookToward(from: Offset, target: Offset, reach: Float): Offset {
 
 /** A small creature Dash for rows and buttons, feeling [feel]. */
 @Composable
-fun DashMini(feel: Feel, size: Dp, modifier: Modifier = Modifier, label: String = "Dash", active: Boolean = true,
+fun DashMini(feel: Feel, size: Dp, modifier: Modifier = Modifier, label: String? = "Dash", active: Boolean = true,
              /** A working run's latest [Doing]: he reacts to each step. */
              doing: Doing? = null) {
     val rig = rememberDash(feel = feel, active = active)
@@ -1060,9 +1075,9 @@ fun DashMini(feel: Feel, size: Dp, modifier: Modifier = Modifier, label: String 
  * in the box.
  */
 @Composable
-fun DashNotch(rig: DashRig, modifier: Modifier = Modifier, ns: Float = 1.25f, label: String = "Dash") {
+fun DashNotch(rig: DashRig, modifier: Modifier = Modifier, ns: Float = 1.25f, label: String? = "Dash") {
     val onLight = P.bg.luminance() > .5f
-    Canvas(modifier.size(80.dp, 44.dp).semantics { contentDescription = label }) {
+    Canvas(modifier.size(80.dp, 44.dp).let { m -> if (label == null) m.clearAndSetSemantics {} else m.semantics { contentDescription = label } }) {
         rig.tick.longValue
         val n = ns * density
         val base = size.height

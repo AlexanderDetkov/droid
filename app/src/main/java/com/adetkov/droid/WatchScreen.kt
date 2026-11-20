@@ -102,6 +102,8 @@ fun WatchScreen(
     taps: Flow<Pair<Int, Int>>? = null,
     /** What the agent is doing, while [working]; and whether its answer asked the owner something. */
     doing: Doing? = null, asks: Boolean = false,
+    /** How the agent set Dash, and whether a page waits on the owner: Watch's Dash is the chat's, in the same pose. */
+    mood: Mood? = null, waiting: Boolean = false,
 ) {
     var overlays by remember { mutableStateOf(true) }
     var control by remember { mutableStateOf(startInControl) }  // the user's touches go to the hidden screen
@@ -158,9 +160,9 @@ fun WatchScreen(
     val f = remember(raw) { raw?.asImageBitmap() } ?: placeholder
     val app = rememberAppInfo(feed.app)?.label
     // his pose: what the agent does on it while it works, your turn after an answer that asks you
-    LaunchedEffect(control, working, doing?.work, asks) {
+    LaunchedEffect(control, working, doing?.work, asks, mood, waiting) {
         rig.pale.t = if (control) 1f else 0f
-        rig.feel(when { control -> Feel.DRIVING; working -> doing?.work?.feel() ?: Feel.THINKING; asks -> Feel.NEEDS_YOU; else -> Feel.IDLE })
+        rig.feel(if (control) Feel.DRIVING else chatFeel(working, doing, if (asks) Outcome.ASKS else null, mood, waiting))
     }
     LaunchedEffect(doing?.n) { if (doing != null && doing.n > 0 && working && !control) rig.react(doing) }
     val display = rememberDisplaySize()
@@ -205,9 +207,9 @@ fun WatchScreen(
                     scale = shown, hookAmt = { (1f - enter.value).coerceIn(0f, 1f) }, onLight = false)  // Watch is black in either theme
             }
             idle -> Column(Modifier.align(Alignment.Center).padding(horizontal = 32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                DashMini(Feel.WORKING, 72.dp, Modifier.padding(bottom = 12.dp), label = "Dash, working without an app")
+                DashMini(if (working) Feel.WORKING else Feel.IDLE, 72.dp, Modifier.padding(bottom = 12.dp), label = null)
                 Text("Nothing on Droid's screen yet", color = Color(0xFFB0B0B0), style = MaterialTheme.typography.bodyLarge, textAlign = TextAlign.Center)
-                Text("The agent is working without opening an app", Modifier.padding(top = 6.dp), color = Color(0xFF7A7A7A),
+                Text(if (working) "The agent is working without opening an app" else "The agent left no app open on it", Modifier.padding(top = 6.dp), color = Color(0xFF7A7A7A),
                     style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center)
             }
             else -> Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -242,7 +244,8 @@ fun WatchScreen(
                         Text(when {
                             control -> if (working) "Droid is working on this screen too" else "Your touches go to Droid's screen"
                             working -> status
-                            else -> "Waiting for your reply"
+                            asks -> "Waiting for your reply"
+                            else -> "Open for your reply"  // done: kept open in case there's more, as the chat says
                         }, color = Color(0xFFE6E6E6), style = MaterialTheme.typography.bodyMedium,
                             maxLines = if (!control && app != null) 1 else 2, overflow = TextOverflow.Ellipsis)
                     }
