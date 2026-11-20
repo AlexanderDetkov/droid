@@ -454,11 +454,22 @@ public class VdHelper {
     // Text as the key presses that type it, like `input text`. A character no key types (an emoji, say) is skipped.
     static void text(String s, int displayId) {
         KeyCharacterMap map = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD);
+        StringBuilder other = new StringBuilder();  // what no key types (é, ñ, emoji, CJK): sent as characters
         for (int i = 0; i < s.length(); i = s.offsetByCodePoints(i, 1)) {
-            KeyEvent[] keys = map.getEvents(Character.toChars(s.codePointAt(i)));
-            if (keys == null) continue;
+            char[] c = Character.toChars(s.codePointAt(i));
+            KeyEvent[] keys = map.getEvents(c);
+            if (keys == null) { other.append(c); continue; }
+            characters(other, displayId);
             for (KeyEvent k : keys) inject(KeyEvent.changeTimeRepeat(k, SystemClock.uptimeMillis(), 0), displayId);
         }
+        characters(other, displayId);
+    }
+
+    /** [s] as one key event that carries characters (ACTION_MULTIPLE), which text fields insert as typed. */
+    static void characters(StringBuilder s, int displayId) {
+        if (s.length() == 0) return;
+        inject(new KeyEvent(SystemClock.uptimeMillis(), s.toString(), KeyCharacterMap.VIRTUAL_KEYBOARD, 0), displayId);
+        s.setLength(0);
     }
 
     static Object inputManager;

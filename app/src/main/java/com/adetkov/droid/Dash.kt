@@ -565,8 +565,8 @@ private val portraits = object : LinkedHashMap<Triple<Feel, Int, Boolean>, andro
 }
 
 /** Whether notifications show on a light shade now (the phone's own theme, not Droid's). */
-fun lightShade(ctx: android.content.Context) =
-    (ctx.resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) != android.content.res.Configuration.UI_MODE_NIGHT_YES
+fun lightShade(@Suppress("UNUSED_PARAMETER") ctx: android.content.Context) =  // the system's: Droid sets its own theme on its context
+    (android.content.res.Resources.getSystem().configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) != android.content.res.Configuration.UI_MODE_NIGHT_YES
 
 /** Is reduced motion on (Android's animations off)? */
 @Composable

@@ -40,11 +40,15 @@ object Updates {
             c.connectTimeout = 10_000; c.readTimeout = 10_000
             c.setRequestProperty("Accept", "application/vnd.github+json")
             try {
-                // 404 until the first release is public: nothing to show, ask again tomorrow.
-                val (tag, url) = if (c.responseCode == 200) JSONObject(c.inputStream.bufferedReader().readText())
-                    .let { it.optString("tag_name").ifEmpty { null } to it.optString("html_url").ifEmpty { null } } else null to null
-                sp.edit { putLong("checked", System.currentTimeMillis()); putString("tag", tag); putString("url", url) }
-                show(tag, url)
+                // 404 until the first release is public: nothing to show, ask again tomorrow. Anything else (GitHub's rate
+                // limit, an outage) keeps what the last check found and asks again next start.
+                val code = c.responseCode
+                if (code == 200 || code == 404) {
+                    val (tag, url) = if (code == 200) JSONObject(c.inputStream.bufferedReader().readText())
+                        .let { it.optString("tag_name").ifEmpty { null } to it.optString("html_url").ifEmpty { null } } else null to null
+                    sp.edit { putLong("checked", System.currentTimeMillis()); putString("tag", tag); putString("url", url) }
+                    show(tag, url)
+                }
             } finally { c.disconnect() }
         } catch (e: Exception) {
             Log.i("Droid", "update check: $e")  // offline: try again next start

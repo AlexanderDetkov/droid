@@ -269,7 +269,7 @@ fun WatchScreen(
  */
 @android.annotation.SuppressLint("ViewConstructor")  // made in code only, never from a layout
 private class KeySink(ctx: Context, private val send: (String) -> Unit) : View(ctx) {
-    init { isFocusable = true; isFocusableInTouchMode = true }
+    init { isFocusable = true; isFocusableInTouchMode = true; importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO }  // (unseen: screen readers skip it)
 
     override fun onCheckIsTextEditor() = true
 
@@ -282,7 +282,7 @@ private class KeySink(ctx: Context, private val send: (String) -> Unit) : View(c
 
             fun replaceComposing(text: String) {
                 val keep = composing.commonPrefixWith(text).length
-                repeat(composing.length - keep) { key(KeyEvent.KEYCODE_DEL) }
+                repeat(composing.codePointCount(keep, composing.length)) { key(KeyEvent.KEYCODE_DEL) }  // one Backspace a character
                 type(text.substring(keep))
             }
             override fun setComposingText(text: CharSequence, pos: Int): Boolean { replaceComposing(text.toString()); composing = text.toString(); return true }
