@@ -161,11 +161,10 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(sum(o['type'] == 'result' for o in out), 1)
         self.assertEqual(out[-1]['result'], 'answer to: one')
 
-    def test_message_during_a_turn_is_queued_and_only_the_last_turn_gets_a_result(self):
+    def test_message_during_a_turn_is_queued_and_each_turn_gets_its_result(self):
         out, rc = self.run_adapter(['first', 'second'], [0.3, 0])
-        results = [o for o in out if o['type'] == 'result']
-        self.assertEqual(len(results), 1)
-        self.assertEqual(results[0]['result'], 'answer to: second')
+        results = [o['result'] for o in out if o['type'] == 'result']
+        self.assertEqual(results, ['answer to: first', 'answer to: second'])
         texts = [o['message']['content'][0]['text'] for o in out if o['type'] == 'assistant']
         self.assertEqual(texts, ['answer to: first', 'answer to: second'])
 

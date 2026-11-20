@@ -131,7 +131,7 @@ Sources: [`app/src/main/assets/setup`](app/src/main/assets/setup) (scripts and `
 
 ### Agent engines
 
-`phone-agent --engine claude|codex|opencode` (Claude if omitted). Codex and OpenCode have no stream-json input, so `droid-engine` (Python, in the chroot) runs `codex exec --json` / `opencode run --format json` once per message and prints Claude's stream-json subset (init, assistant text and tool_use with a short description, result), so the app's parser is unchanged. A message sent mid-turn is queued and sent as the next turn of the same session; only the last turn of a run reports a result. Closing stdin, the 3-minute first-message wait and SIGTERM behave as for Claude.
+`phone-agent --engine claude|codex|opencode` (Claude if omitted). Codex and OpenCode have no stream-json input, so `droid-engine` (Python, in the chroot) runs `codex exec --json` / `opencode run --format json` once per message and prints Claude's stream-json subset (init, assistant text and tool_use with a short description, result), so the app's parser is unchanged. A message sent mid-turn is queued and sent as the next turn of the same session, with an answer of its own (Claude instead takes it into the turn it's in). Closing stdin, the 3-minute first-message wait and SIGTERM behave as for Claude.
 
 | | Claude Code | Codex | OpenCode |
 |---|---|---|---|

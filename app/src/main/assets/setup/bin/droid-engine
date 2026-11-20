@@ -8,8 +8,8 @@ Usage: droid-engine ENGINE [--resume SESSION_ID] [--model MODEL]      (ENGINE: c
           the next turn of the same session (resumed) as soon as the current one ends. Closing stdin lets the queued
           turns finish, then exits.
   stdout: {"type":"system","subtype":"init","session_id":..}, {"type":"assistant","message":{"content":[text|tool_use]}}
-          and one {"type":"result",..}: after the last turn when messages were queued, not after each (the earlier
-          turns' answers stay as plain assistant text, like narration in a Claude turn that took a mid-task message).
+          and a {"type":"result",..} after each turn: a queued message is a turn of its own with an answer of its own
+          (Claude takes a mid-task message into the turn it's in; these engines can't), and Droid shows each.
   SIGTERM stops the engine's process group and exits.
 
 The engines' own JSON event streams are converted by the Codex and OpenCode classes below; they are pure (an event in,
@@ -325,8 +325,7 @@ class Runner:
                 pass
 
     def turn(self, prompt, more):
-        """Runs one turn. Its result is emitted unless more() says messages are queued (its text already went out as
-        narration) and it didn't fail."""
+        """Runs one turn and emits its result."""
         tr = self.cls(self.session)
         for ev in tr.start():
             emit(ev)
@@ -369,8 +368,7 @@ class Runner:
         reader.join(5)
         self.session = tr.session or self.session
         res = tr.end(code, '\n'.join(tail.copy()))
-        if res['is_error'] or not more():
-            emit(res)
+        emit(res)
 
     def run(self, inbox):
         msg = inbox.take()
