@@ -4,8 +4,8 @@
 # Usage: droid-bridge 'command'. Stdin, stdout, stderr and the exit code pass through.
 import hashlib, hmac, os, socket, struct, sys, threading
 
-def frame(sock, kind, payload=b""):
-    sock.sendall(kind + struct.pack(">I", len(payload)) + payload)
+def frame(kind, payload=b""):
+    return kind + struct.pack(">I", len(payload)) + payload
 
 def read_exact(sock, n):
     buf = b""
@@ -21,12 +21,14 @@ def main():
     token = os.environ["DROID_TOKEN"].encode()
     mac = lambda label, nonce: hmac.new(token, label + nonce, hashlib.sha256).digest()
     sock = socket.create_connection(("127.0.0.1", port))
+    # Each message goes out whole and at once: TCP would otherwise hold a second one back until the first is
+    # acknowledged, which the other side delays by ~40 ms.
+    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     a = os.urandom(32)
     sock.sendall(a)
     if not hmac.compare_digest(read_exact(sock, 32), mac(b"droid-bridge-server", a)):
         sys.exit("droid-bridge: not Droid's helper on port %d" % port)
-    sock.sendall(mac(b"droid-bridge-client", read_exact(sock, 32)))
-    frame(sock, b"X", " ".join(sys.argv[1:]).encode())
+    sock.sendall(mac(b"droid-bridge-client", read_exact(sock, 32)) + frame(b"X", " ".join(sys.argv[1:]).encode()))
 
     def pump_stdin():
         try:
@@ -35,8 +37,8 @@ def main():
                 data = os.read(fd, 65536)
                 if not data:
                     break
-                frame(sock, b"i", data)
-            frame(sock, b"e")
+                sock.sendall(frame(b"i", data))
+            sock.sendall(frame(b"e"))
         except OSError:
             pass
     threading.Thread(target=pump_stdin, daemon=True).start()
