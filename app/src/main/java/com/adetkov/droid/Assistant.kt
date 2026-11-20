@@ -35,6 +35,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -69,6 +73,13 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.semantics
@@ -88,8 +99,9 @@ import kotlin.concurrent.thread
  * at once. What is said is sent when the user stops talking (when locked: if it is the owner's voice, see
  * [VoiceMatch], or after the fingerprint or PIN), the agent's
  * progress and answer show in the panel, and the answer is read aloud. Tap outside or Back to close it; the task
- * keeps running and notifies when done. Opened over an app, the first request takes a screenshot of it along (see
- * [AssistService]), unless the user takes it off. Or the user turns on Droid's camera ([Camera]) and points it while
+ * keeps running and notifies when done. The keyboard button types the request instead (what was heard so far is kept
+ * to edit); a typed request waits for the unlock on the lock screen, and its answer isn't read aloud. Opened over an
+ * app, the first request takes a screenshot of it along (see [AssistService]), unless the user takes it off. Or the user turns on Droid's camera ([Camera]) and points it while
  * they talk: its picture goes instead.
  */
 class AssistActivity : ComponentActivity() {
@@ -106,6 +118,9 @@ class AssistActivity : ComponentActivity() {
     var notice by mutableStateOf<String?>(null)
     var sentShot by mutableStateOf<Attachment?>(null)  // went with the request on show
     var camOn by mutableStateOf(false)  // the camera, not the screen, goes with the request
+    var typing by mutableStateOf(false)  // the keyboard instead of the voice, for this request
+    var draft by mutableStateOf("")
+    var typed = false  // the request on show was typed: its answer isn't read aloud
     private var stopped = false
 
     @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
@@ -137,7 +152,7 @@ class AssistActivity : ComponentActivity() {
         // panel stays alive, maybe for hours. (This long-press's screenshot comes after: the session saves it first.)
         shot?.let(::discard)
         shot = null; withShot = true
-        convId = null; heard = ""; pending = null; notice = null; sentShot = null; camOn = false
+        convId = null; heard = ""; pending = null; notice = null; sentShot = null; camOn = false; typing = false; draft = ""; typed = false
         invocation++
     }
 
@@ -183,7 +198,7 @@ internal class PanelPageActions(
         if (locked()) { unlocked {}; "The phone is locked. Unlock it, then try again." to 1 } else actions.run(command)
 }
 
-private enum class Orb { LISTENING, WORKING, SPEAKING, IDLE }
+private enum class Orb { LISTENING, WORKING, SPEAKING, SEND, IDLE }
 
 @Composable
 private fun AssistActivity.Panel(invocation: Int, testWav: String?, modifier: Modifier) {
@@ -208,6 +223,7 @@ private fun AssistActivity.Panel(invocation: Int, testWav: String?, modifier: Mo
         voice.listening -> Orb.LISTENING
         speaker.speakingKey != null -> Orb.SPEAKING
         isRunning && answer == null -> Orb.WORKING
+        typing && draft.isNotBlank() -> Orb.SEND
         else -> Orb.IDLE
     }
 
@@ -265,6 +281,7 @@ private fun AssistActivity.Panel(invocation: Int, testWav: String?, modifier: Mo
         pending = null
         heard = ""
         sentShot = null
+        typing = false; draft = ""; typed = false
         app.runner.prewarm(convId)  // the agent starts up while the user talks
         if (locked && match.available) match.warmUp()
         voice.start(wav?.let(::WavMic),
@@ -280,19 +297,37 @@ private fun AssistActivity.Panel(invocation: Int, testWav: String?, modifier: Mo
         val allowed = ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
         if (allowed || !locked) with(action) else unlocked({ with(action) }, { notice = "Unlock to allow the $what" })
     }
-    /** Listens, once Droid and its voice are set up and the microphone is allowed. */
+    /** The keyboard instead of the voice: what was heard so far (or awaits the unlock) is kept, to edit. */
+    fun startTyping() {
+        if (app.setup.needed()) { notice = "Open Droid to finish setting it up"; return }
+        draft = if (voice.listening || pending != null) heard else ""
+        voice.cancel(); speaker.stop()
+        notice = null; pending = null; heard = ""; sentShot = null
+        typing = true
+        app.runner.prewarm(convId)  // the agent starts up while the user types
+    }
+    /** Listens, once Droid and its voice are set up and the microphone is allowed; without voice, the keyboard. */
     fun talk(wav: String? = null) {
         when {
             app.setup.needed() -> notice = "Open Droid to finish setting it up"
-            !app.speech.installed -> notice = "Set up voice in Droid: Settings → Setup"
+            !app.speech.installed -> { startTyping(); notice = "To talk, set up voice in Droid: Settings → Setup" }
             else -> allowing(Manifest.permission.RECORD_AUDIO, withMic, "microphone") { listen(wav) }
         }
     }
-    /** Turns the camera on in place of the screen, and listens if it isn't already. */
+    /** Sends what was typed, as a spoken request; a voice match can't vouch for it, so when locked it waits for the unlock. */
+    fun submit() {
+        val text = draft.trim().ifEmpty { return }
+        if (camOn) camera.picture()  // the frame now (or the one tapped), on screen while they unlock
+        typing = false; draft = ""; typed = true
+        heard = text; pending = text; notice = null
+        unlockAndSend()
+    }
+    /** Turns the camera on in place of the screen, and listens if it isn't already (or being typed to). */
     fun openCamera() = allowing(Manifest.permission.CAMERA, withCamera, "camera") {
-        camera.reset(); camOn = true; withShot = false; if (!voice.listening && pending == null) talk()
+        camera.reset(); camOn = true; withShot = false; if (!voice.listening && !typing && pending == null) talk()
     }
     fun onOrb() = when {
+        orb == Orb.SEND -> submit()
         pending != null -> unlockAndSend()
         orb == Orb.LISTENING -> voice.finish()
         orb == Orb.SPEAKING -> speaker.stop()
@@ -317,7 +352,7 @@ private fun AssistActivity.Panel(invocation: Int, testWav: String?, modifier: Mo
 
     LaunchedEffect(invocation) { if (invocation > 0) talk(testWav) }
     LaunchedEffect(Unit) {
-        app.runner.results.collect { (id, text) -> if (id == convId && shown.targetState) speaker.speak("assist:$id", text) }
+        app.runner.results.collect { (id, text) -> if (id == convId && shown.targetState && !typed) speaker.speak("assist:$id", text) }
     }
     BackHandler(shown.targetState) { close() }
 
@@ -369,11 +404,11 @@ private fun AssistActivity.Panel(invocation: Int, testWav: String?, modifier: Mo
                     .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)).background(P.sheet)
                     .drawBehind { dashEdge(28.dp.toPx(), 3.dp.toPx()) }  // the sheet's top edge is Dash's, his notch rising from it
                     .clickable(remember { MutableInteractionSource() }, indication = null) {}  // taps inside don't close it
-                    .navigationBarsPadding().padding(start = 24.dp, end = 24.dp, top = 28.dp, bottom = 12.dp)
+                    .navigationBarsPadding().imePadding().padding(start = 24.dp, end = 24.dp, top = 28.dp, bottom = 12.dp)
                     .animateContentSize(spring(stiffness = Spring.StiffnessMediumLow))
                     .testTag("assistant"),
             ) {
-                val sent = convId != null && pending == null && !voice.listening
+                val sent = convId != null && pending == null && !voice.listening && !typing
                 // What goes with the request: before it goes, the screen (over an app) or the camera; then what went.
                 val canTalk = !(isRunning && answer == null)
                 val went = sentShot
@@ -383,14 +418,16 @@ private fun AssistActivity.Panel(invocation: Int, testWav: String?, modifier: Mo
                     if (canTalk) CameraChip(on = camOn, onToggle = { if (camOn) camOn = false else openCamera() })
                 }
                 when {
+                    typing -> TypedRequest(draft, { draft = it }, ::submit)
                     heard.isNotEmpty() -> Text(heard, Modifier.testTag("heard"),
                         color = if (sent) P.muted else P.text, fontSize = if (sent) 16.sp else 22.sp,
                         lineHeight = if (sent) 22.sp else 30.sp, maxLines = if (sent) 2 else 6, overflow = TextOverflow.Ellipsis,
                         style = MaterialTheme.typography.bodyLarge)
                     voice.listening -> Text("Listening…", color = P.muted, fontSize = 22.sp, lineHeight = 30.sp, style = MaterialTheme.typography.bodyLarge)
                 }
-                notice?.let { Text(it, Modifier.padding(top = if (heard.isEmpty()) 0.dp else 10.dp).testTag("notice"),
-                    color = P.muted, fontSize = if (heard.isEmpty()) 22.sp else 15.sp, style = MaterialTheme.typography.bodyLarge) }
+                notice?.let { val alone = heard.isEmpty() && !typing
+                    Text(it, Modifier.padding(top = if (alone) 0.dp else 10.dp).testTag("notice"),
+                    color = P.muted, fontSize = if (alone) 22.sp else 15.sp, style = MaterialTheme.typography.bodyLarge) }
                 val cid = convId
                 if (waiting != null && cid != null) {
                     val info = PageInfo.of(waiting)
@@ -429,6 +466,7 @@ private fun AssistActivity.Panel(invocation: Int, testWav: String?, modifier: Mo
                     OrbButton(orb, { voice.level }, ::onOrb)
                     Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
                         if (isRunning && answer == null) TextButton({ convId?.let(app.runner::stop) }, Modifier.testTag("stop")) { Text("Stop", color = P.muted) }
+                        else if (!typing) IconBtn(R.drawable.ic_keyboard, "Type", ::startTyping, Modifier.testTag("type"), tint = P.muted, size = 48.dp)
                     }
                 }
             }
@@ -436,6 +474,22 @@ private fun AssistActivity.Panel(invocation: Int, testWav: String?, modifier: Mo
           }
           }
         }
+    }
+}
+
+/** The request, typed: where and as large as a spoken one, with the keyboard up at once and its cursor after what's kept. */
+@Composable
+private fun TypedRequest(text: String, onText: (String) -> Unit, onSend: () -> Unit) {
+    val focus = remember { FocusRequester() }
+    var field by remember { mutableStateOf(TextFieldValue(text, TextRange(text.length))) }
+    LaunchedEffect(Unit) { focus.requestFocus() }
+    val style = MaterialTheme.typography.bodyLarge.copy(color = P.text, fontSize = 22.sp, lineHeight = 30.sp)
+    Box(Modifier.fillMaxWidth()) {
+        if (field.text.isEmpty()) Text("Message Droid", style = style.copy(color = P.muted))
+        BasicTextField(field, { field = it; onText(it.text) }, Modifier.fillMaxWidth().focusRequester(focus).testTag("typed"),
+            textStyle = style, cursorBrush = SolidColor(P.text), maxLines = 6,
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Send),
+            keyboardActions = KeyboardActions(onSend = { onSend() }))
     }
 }
 
@@ -488,7 +542,7 @@ private fun SentChip(a: Attachment, modifier: Modifier) = Chip(true, null, null,
 /** The round button in the middle: white and breathing with the voice while listening, a spinner while working. */
 @Composable
 private fun OrbButton(state: Orb, level: () -> Float, onClick: () -> Unit) {
-    val lit = state == Orb.LISTENING || state == Orb.SPEAKING
+    val lit = state == Orb.LISTENING || state == Orb.SPEAKING || state == Orb.SEND
     val bg by animateColorAsState(if (lit) P.ink else P.raised, label = "orbColor")
     Box(Modifier.size(84.dp), contentAlignment = Alignment.Center) {
         Box(Modifier.size(64.dp).graphicsLayer { val s = if (state == Orb.LISTENING) 1f + level() * .28f else 1f; scaleX = s; scaleY = s }.clip(CircleShape).background(bg)
@@ -496,6 +550,7 @@ private fun OrbButton(state: Orb, level: () -> Float, onClick: () -> Unit) {
             when (state) {
                 Orb.WORKING -> Icon(painterResource(R.drawable.ic_mic), "Speak", Modifier.size(28.dp), tint = P.muted)
                 Orb.SPEAKING -> Icon(painterResource(R.drawable.ic_stop), "Stop reading", Modifier.size(22.dp), tint = P.onInk)
+                Orb.SEND -> Icon(painterResource(R.drawable.ic_send), "Send", Modifier.size(26.dp), tint = P.onInk)
                 else -> Icon(painterResource(R.drawable.ic_mic), if (lit) "Send now" else "Speak", Modifier.size(28.dp),
                     tint = if (lit) P.onInk else P.text)
             }
