@@ -97,6 +97,21 @@ class OpenCode(unittest.TestCase):
         self.assertTrue(r['is_error'])
         self.assertEqual(r['result'], 'Session not found')
 
+    def test_a_stuck_turn_reports_the_error_opencode_logged(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, 'opencode.log'), 'w') as f:
+                f.write('timestamp=2026-11-20T23:36:14.905Z level=INFO run=1 message=init\n'
+                        'timestamp=2026-11-20T23:30:00.000Z level=ERROR run=1 message="stream error" error.error="AI_APICallError: old"\n'
+                        'timestamp=2026-11-20T23:36:15.490Z level=ERROR run=1 message="stream error" providerID=opencode '
+                        'error.error="AI_APICallError: Free usage limit reached. Subscribe to keep going."\n')
+            saved, de.OPENCODE_LOG = de.OPENCODE_LOG, d
+            try:
+                since = de.datetime.fromisoformat('2026-11-20T23:36:00+00:00').timestamp()
+                self.assertEqual(de.opencode_log_error(since), 'Free usage limit reached. Subscribe to keep going.')
+                self.assertIsNone(de.opencode_log_error(since + 3600))  # nothing since then
+            finally:
+                de.OPENCODE_LOG = saved
+
     def test_default_model_is_a_free_one_that_sees_images(self):
         def model(provider, name, image, cost=0, tools=True):
             return provider + '/' + name + '\n' + json.dumps({

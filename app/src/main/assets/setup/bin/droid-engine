@@ -16,6 +16,7 @@ The engines' own JSON event streams are converted by the Codex and OpenCode clas
 output events out) so tests can replay recorded streams (see app/src/test/resources/engines).
 """
 import collections
+import glob
 import json
 import os
 import re
@@ -23,6 +24,8 @@ import signal
 import subprocess
 import sys
 import threading
+import time
+from datetime import datetime
 
 IMAGE_EXT = ('.png', '.jpg', '.jpeg', '.webp', '.gif')
 
@@ -309,6 +312,48 @@ def opencode_default():
     return pick_opencode_model(listing)
 
 
+OPENCODE_LOG = '/root/.local/share/opencode/log'
+
+
+def opencode_log_error(since):
+    """The last model-call error OpenCode logged at or after [since] (epoch seconds), as it says it, or None."""
+    try:
+        newest = max(glob.glob(os.path.join(OPENCODE_LOG, '*.log')), key=os.path.getmtime)
+        with open(newest, 'rb') as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 65536))
+            text = f.read().decode('utf-8', 'replace')
+    except (OSError, ValueError):
+        return None
+    found = None
+    for m in re.finditer(r'^timestamp=(\S+) level=ERROR .*?message="stream error".*?error\.error="([^"]*)', text, re.M):
+        try:
+            t = datetime.fromisoformat(m.group(1).replace('Z', '+00:00')).timestamp()
+        except ValueError:
+            continue
+        if t >= since:
+            found = m.group(2)
+    return re.sub(r'^AI_\w+: (Failed after \d+ attempts\. Last error: )?', '', found) if found else None
+
+
+def opencode_watch(child, tr, last, quiet=60):
+    """OpenCode waits out a provider error it can't get past (its free models' usage limit, say) for as long as the
+    provider asks, without a word on its output. After a quiet minute with such an error in its log since its last
+    output, the turn ends with that error."""
+    while child.poll() is None:
+        time.sleep(5)
+        if time.monotonic() - last[0] < quiet:
+            continue
+        err = opencode_log_error(last[1])
+        if err:
+            tr.errors.append(err)
+            try:
+                os.killpg(child.pid, signal.SIGTERM)
+            except OSError:
+                pass
+            return
+
+
 class Runner:
     def __init__(self, engine, session, model):
         self.cls = ENGINES[engine]
@@ -347,6 +392,9 @@ class Runner:
         tail = collections.deque(maxlen=20)
         reader = threading.Thread(target=lambda: [tail.append(l.rstrip()) for l in self.child.stderr], daemon=True)
         reader.start()
+        last = [time.monotonic(), time.time()]  # the engine's last output, for the watch below
+        if isinstance(tr, OpenCode):
+            threading.Thread(target=opencode_watch, args=(self.child, tr, last), daemon=True).start()
         if stdin_prompt:
             try:
                 self.child.stdin.write(prompt)
@@ -354,6 +402,7 @@ class Runner:
             except (OSError, ValueError):
                 pass
         for line in self.child.stdout:
+            last[:] = [time.monotonic(), time.time()]
             try:
                 ev = json.loads(line)
             except ValueError:
