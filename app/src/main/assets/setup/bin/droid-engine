@@ -171,9 +171,9 @@ class OpenCode(Translator):
             args += ['--session', session]
         if model:
             args += ['--model', model]
-        return args + ['--']  # then the prompt
+        return args  # the prompt goes on stdin: as an argument it couldn't pass 128 KiB
 
-    prompt_on_stdin = False
+    prompt_on_stdin = True
 
     def __init__(self, session):
         super().__init__(session)
@@ -341,7 +341,7 @@ class Runner:
             self.child = subprocess.Popen(cmd, stdin=subprocess.PIPE if stdin_prompt else subprocess.DEVNULL,
                                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
                                           start_new_session=True, text=True, encoding='utf-8', errors='replace')
-        except OSError as e:
+        except (OSError, ValueError) as e:
             res = {'type': 'result', 'subtype': 'error', 'is_error': True, 'result': f'Could not start {cmd[0]}: {e}'}
             emit(res)
             return
@@ -352,7 +352,7 @@ class Runner:
             try:
                 self.child.stdin.write(prompt)
                 self.child.stdin.close()
-            except OSError:
+            except (OSError, ValueError):
                 pass
         for line in self.child.stdout:
             try:
@@ -420,7 +420,10 @@ def main(argv):
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    runner.run(Inbox(sys.stdin))
+    try:
+        runner.run(Inbox(sys.stdin))
+    finally:
+        runner.kill_child()  # whatever happened here, the engine doesn't go on alone
     return 0
 
 

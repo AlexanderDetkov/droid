@@ -91,7 +91,7 @@ fi
 for e in codex opencode; do
   if [ -x $R/root/.local/bin/$e ]; then
     echo "step: Updating $e"
-    $BASE/enter.sh droid-install-engine $e
+    $BASE/enter.sh droid-install-engine $e || echo "step: Couldn't update $e this time"
   fi
 done
 

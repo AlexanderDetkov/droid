@@ -25,7 +25,8 @@ sealed interface Item {
 
 /**
  * Per turn (a user message and what follows): steps and narration notes fold into one group at the
- * position of the first of them; the answer stays a message (a result-less run keeps all narration folded).
+ * position of the first of them, or of a page shown before them (a page comes from a step, `droid show`, which Codex
+ * and OpenCode report only once it's done); the answer stays a message (a result-less run keeps all narration folded).
  * The last turn is "live" while [running] and it has no answer since its latest work: a message sent mid-turn can go
  * in before the answer it came during, and the agent then works on it after that answer.
  */
@@ -52,6 +53,10 @@ fun buildItems(messages: List<Msg>, running: Boolean): List<Item> {
                     else (out[group] as Item.Steps).let { out[group] = Item.Steps(it.stillKey, it.lines + line, live, start, end, from) }
                 }
                 m.kind == Kind.DASH -> {}  // Dash shows it, on the turn's work row
+                m.kind == Kind.PAGE && group < 0 -> {
+                    group = out.size; out += Item.Steps("s$i", emptyList(), live, start, end, from)
+                    out += Item.Message(i, m)
+                }
                 else -> out += Item.Message(i, m)
             }
         }

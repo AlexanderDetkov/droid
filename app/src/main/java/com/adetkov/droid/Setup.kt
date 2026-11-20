@@ -387,7 +387,10 @@ class Setup(private val app: DroidApp) {
         if (run("test -x $bin/codex").code == 0) {
             val r = run("${host.base}/enter.sh codex login status")
             val ok = r.code == 0
-            out[Engine.CODEX] = EngineStatus(true, ok, if (ok) stripAnsi(r.out).lines().firstOrNull { it.isNotBlank() }?.trim() ?: "Signed in" else "Installed, sign-in needed")
+            val last = state.value.others[Engine.CODEX]
+            // Only Codex saying so is a sign-out; a check that failed otherwise keeps what the last one found.
+            out[Engine.CODEX] = if (!ok && last != null && "not logged in" !in stripAnsi(r.out).lowercase()) last
+                else EngineStatus(true, ok, if (ok) stripAnsi(r.out).lines().firstOrNull { it.isNotBlank() }?.trim() ?: "Signed in" else "Installed, sign-in needed")
         }
         if (run("test -x $bin/opencode").code == 0) {
             // OpenCode runs on its free models with no key, so it's usable either way; keys add providers.

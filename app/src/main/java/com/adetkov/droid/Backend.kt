@@ -268,7 +268,8 @@ internal fun forgetCommand(sessionId: String, engine: Engine, base: String = Roo
     val project = "$base/rootfs/root/.claude/projects/-root"
     return when (engine) {
         Engine.CLAUDE -> "rm -rf $project/$sessionId.jsonl $project/$sessionId"
-        Engine.CODEX -> "find $base/rootfs/root/.codex/sessions -name '*$sessionId*.jsonl' -delete"
+        // Codex's own delete (it keeps threads in SQLite too), then any rollout file left, compressed or in segments
+        Engine.CODEX -> "$base/enter.sh codex delete $sessionId >/dev/null 2>&1; find $base/rootfs/root/.codex/sessions -name '*$sessionId*.jsonl*' -delete"
         Engine.OPENCODE -> "$base/enter.sh opencode session delete $sessionId"
     }
 }

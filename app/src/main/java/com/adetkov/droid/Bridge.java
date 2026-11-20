@@ -158,18 +158,16 @@ public class Bridge {
         try { send(out, 'x', c); } catch (IOException ignored) {}
     }
 
-    // Copies a process stream into frames; if the client is gone it keeps reading, so the process never blocks on a
-    // full pipe.
+    // Copies a process stream into frames. Once the client is gone the stream is closed, as a pipe would be: the command
+    // ends at its next write (SIGPIPE) instead of running on with nobody reading, as `android 'logcat' | head` would.
     static Thread pump(InputStream src, DataOutputStream out, int type) {
         Thread th = new Thread(() -> {
             byte[] buf = new byte[16384];
-            boolean open = true;
             try {
-                for (int n; (n = src.read(buf)) > 0; ) {
-                    if (!open) continue;
-                    try { send(out, type, buf, 0, n); } catch (IOException e) { open = false; }
-                }
-            } catch (IOException ignored) {}
+                for (int n; (n = src.read(buf)) > 0; ) send(out, type, buf, 0, n);
+            } catch (IOException ignored) {
+                try { src.close(); } catch (IOException alsoIgnored) {}
+            }
         });
         th.setDaemon(true);
         th.start();

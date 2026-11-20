@@ -27,6 +27,15 @@ class ItemsTest {
         assertEquals("All **done**", answer.text)
     }
 
+    @Test fun aPageReportedBeforeItsStepStillComesAfterTheWorkRow() {
+        // Codex and OpenCode report a step once it's done; its `droid show` page arrives first
+        val msgs = listOf(Msg(Kind.USER, "7 or 8?", 1), Msg(Kind.PAGE, "<p>Pick</p>", 2), Msg(Kind.STEP, "Showing a page", 3),
+            Msg(Kind.AGENT, "Tap one above.", 4))
+        val items = buildItems(msgs, running = false)
+        assertEquals(listOf("m0", "steps", "m1", "m3"), items.map { if (it is Item.Steps) "steps" else it.key })
+        assertEquals(listOf("Showing a page"), (items[1] as Item.Steps).lines.map { it.text })
+    }
+
     @Test fun aTurnKeepsItsRowWhenItsFirstStepComes() {
         // the same key before and after, so the row (and Dash in it) isn't replaced mid-turn
         val before = buildItems(conv().messages, running = true).filterIsInstance<Item.Steps>().single()

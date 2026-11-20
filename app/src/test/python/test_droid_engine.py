@@ -110,7 +110,8 @@ class OpenCode(unittest.TestCase):
 
     def test_command(self):
         c = de.OpenCode.command('ses_x', 'anthropic/claude-sonnet-4-5')
-        self.assertEqual(c[-1], '--')
+        self.assertNotIn('--', c)  # the prompt goes on stdin
+        self.assertTrue(de.OpenCode.prompt_on_stdin)
         self.assertIn('--auto', c)
         self.assertEqual(c[c.index('--session') + 1], 'ses_x')
 

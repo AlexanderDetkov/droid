@@ -20,9 +20,12 @@ case "$ENGINE" in claude|codex|opencode) ;; *) printf '{"type":"result","subtype
 has_session() {
   case "$ENGINE" in
     claude) [ -f "/root/.claude/projects/-root/$1.jsonl" ] ;;
-    codex) [ -n "$(find /root/.codex/sessions -name "*$1.jsonl" 2>/dev/null | head -n 1)" ] ;;
+    # Codex compresses old rollouts (.jsonl.zst) and writes resumed ones in segments (ID_N.jsonl).
+    codex) [ -n "$(find /root/.codex/sessions -name "*$1*.jsonl*" 2>/dev/null | head -n 1)" ] ;;
     # Only a database that answers "no such session" counts as missing.
-    opencode) [ "$(sqlite3 /root/.local/share/opencode/opencode.db "SELECT count(*) FROM session WHERE id = '$1'" 2>/dev/null)" != 0 ] ;;
+    # (no database yet, as in a Linux where OpenCode hasn't run: no session either)
+    opencode) [ -f /root/.local/share/opencode/opencode.db ] &&
+      [ "$(sqlite3 /root/.local/share/opencode/opencode.db "SELECT count(*) FROM session WHERE id = '$1'" 2>/dev/null)" != 0 ] ;;
   esac
 }
 NEW_SESSION=false

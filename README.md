@@ -138,7 +138,7 @@ Sources: [`app/src/main/assets/setup`](app/src/main/assets/setup) (scripts and `
 | Install | claude.ai installer | GitHub release, `*-unknown-linux-musl` | GitHub release, `opencode-linux-{arm64,x64-baseline}-musl` |
 | Sign-in | paste-the-code OAuth | ChatGPT device code (`codex login --device-auth`) or API key | provider API keys (`auth.json`); free models need none (the default: each run, a free one from `opencode models` that calls tools and sees images, as they come and go) |
 | Screenshot | `Read` on the PNG | `view_image` tool | `read` tool, needs a vision model |
-| Session data | `~/.claude/projects/-root/ID.jsonl` | `~/.codex/sessions/**/rollout-*-ID.jsonl` | `~/.local/share/opencode/opencode.db` (`opencode session delete ID`) |
+| Session data | `~/.claude/projects/-root/ID.jsonl` | `~/.codex/sessions/**/rollout-*-ID*.jsonl` (older ones `.jsonl.zst`), and its SQLite (`codex delete ID`) | `~/.local/share/opencode/opencode.db` (`opencode session delete ID`) |
 | Instructions | `~/.claude/CLAUDE.md`, plus `--append-system-prompt-file` | `~/.codex/AGENTS.md` (all three, written at each start) | `~/.config/opencode/AGENTS.md` (the same) |
 
 Codex runs with its sandbox off and OpenCode with `--auto`: the chroot is the boundary. Recorded event streams for the adapter tests are in `app/src/test/resources/engines`.

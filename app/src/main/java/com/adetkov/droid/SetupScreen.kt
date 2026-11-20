@@ -340,22 +340,25 @@ private fun DeviceSignIn(url: String, code: String, setup: Setup) {
 private fun KeyEntry(label: String, enabled: Boolean, providerHint: String?, save: (provider: String?, key: String) -> Unit) {
     var open by rememberSaveable(label) { mutableStateOf(false) }
     var provider by rememberSaveable(label) { mutableStateOf("") }
-    var key by rememberSaveable(label) { mutableStateOf("") }
+    var key by remember(label) { mutableStateOf("") }  // not saved with the screen's state
     if (!open) {
         TextButton({ open = true }, Modifier.padding(start = 54.dp).testTag("setup_key_" + label.take(6).lowercase().replace(' ', '_')), enabled = enabled) {
             Text(label, color = P.muted, style = MaterialTheme.typography.bodySmall)
         }
         return
     }
-    @Composable fun field(value: String, hint: String, tag: String, set: (String) -> Unit) =
+    @Composable fun field(value: String, hint: String, tag: String, secret: Boolean = false, set: (String) -> Unit) =
         Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(P.bg).border(1.dp, P.hairline, RoundedCornerShape(12.dp)).padding(14.dp)) {
             if (value.isEmpty()) Text(hint, style = MaterialTheme.typography.bodyLarge, color = P.muted)
             BasicTextField(value, set, Modifier.fillMaxWidth().testTag(tag), singleLine = true,
-                textStyle = MaterialTheme.typography.bodyLarge.copy(color = P.text), cursorBrush = SolidColor(P.text))
+                textStyle = MaterialTheme.typography.bodyLarge.copy(color = P.text), cursorBrush = SolidColor(P.text),
+                visualTransformation = if (secret) androidx.compose.ui.text.input.PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
+                keyboardOptions = if (secret) androidx.compose.foundation.text.KeyboardOptions(autoCorrectEnabled = false,
+                    keyboardType = androidx.compose.ui.text.input.KeyboardType.Password) else androidx.compose.foundation.text.KeyboardOptions.Default)
         }
     Column(Modifier.fillMaxWidth().padding(start = 54.dp, end = 16.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         if (providerHint != null) field(provider, providerHint, "setup_provider") { provider = it }
-        field(key, "Paste the API key", "setup_apikey") { key = it }
+        field(key, "Paste the API key", "setup_apikey", secret = true) { key = it }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
             TextButton({ open = false; key = "" }) { Text("Cancel", color = P.muted) }
             Action("Save", enabled && key.isNotBlank() && (providerHint == null || provider.isNotBlank()), primary = true) {
