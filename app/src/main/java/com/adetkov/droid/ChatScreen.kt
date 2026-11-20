@@ -1,7 +1,6 @@
 package com.adetkov.droid
 
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.foundation.gestures.ScrollableDefaults
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.animation.AnimatedContent
@@ -88,6 +87,8 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
@@ -168,16 +169,14 @@ fun Transcript(
     // Pages in this chat stay loaded while it shows; a drag that starts on one scrolls the chat.
     val pages = remember(conv.id) { PageCache() }
     DisposableEffect(pages) { onDispose { pages.clear() } }
-    val fling = ScrollableDefaults.flingBehavior()
-    val drag = remember(state, fling) {
-        ListDrag(by = { dy -> if (dy > 0) follow = false; state.dispatchRawDelta(-dy) },
-            fling = { vy -> scope.launch { state.scroll { with(fling) { performFling(-vy) } } } },
-            grew = { if (follow) scope.launch { state.scrollToItem(state.layoutInfo.totalItemsCount - 1, BOTTOM) } })
-    }
+    val drag = rememberListDrag(state, onDrag = { dy -> if (dy > 0) follow = false },
+        grew = { if (follow) scope.launch { state.scrollToItem(state.layoutInfo.totalItemsCount - 1, BOTTOM) } })
+    val focus = LocalFocusManager.current
+    val view = LocalView.current
     val latestIndex = remember(messages) { messages.indices.lastOrNull { messages[it].kind.opensTurn } ?: 0 }
     Box(modifier) { CompositionLocalProvider(LocalPageCache provides pages, LocalListDrag provides drag) {
         LazyColumn(
-            Modifier.fillMaxSize().testTag("messages"), state,
+            Modifier.fillMaxSize().testTag("messages").dismissesKeyboard(drag, focus, view), state,
             contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 24.dp),
         ) {
             items(items, key = { it.key }) { item ->

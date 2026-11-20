@@ -56,6 +56,7 @@ class FakeScreen private constructor(private val server: ServerSocket, private v
             try {
                 for (line in generateSequence { inp.readLine() }) {
                     val a = line.trim().split(' ')
+                    if (a[0] != "v") android.util.Log.i("FakeScreen", "input: $line")  // what Watch sends (take over)
                     if (a[0] == "v" && a.size == 3) {
                         width.set(a[1].toIntOrNull()?.coerceAtLeast(0) ?: 0)
                         interval.set(1000L / (a[2].toIntOrNull() ?: 10).coerceIn(1, 10))

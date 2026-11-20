@@ -12,6 +12,8 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.MotionEvent
+import android.view.View
+import android.view.inputmethod.InputMethodManager
 import android.view.ViewGroup
 import android.webkit.MimeTypeMap
 import android.webkit.PermissionRequest
@@ -24,6 +26,19 @@ import android.webkit.WebViewClient
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.FlingBehavior
+import androidx.compose.foundation.gestures.ScrollableDefaults
+import androidx.compose.foundation.gestures.ScrollableState
+import androidx.compose.foundation.gestures.stopScroll
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.focus.FocusManager
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.PointerId
+import androidx.compose.ui.input.pointer.positionChangeIgnoreConsumed
+import androidx.compose.ui.input.pointer.util.addPointerInputChange
+import androidx.compose.ui.unit.Velocity
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -294,35 +309,84 @@ class PageCache {
 val LocalPageCache = compositionLocalOf<PageCache?> { null }
 
 /**
- * Scrolls the list a page sits in, for the drags that start on it (a page in the chat never scrolls itself); [grew]:
- * a page got taller (it loaded, or changed), so a list following its end keeps up.
+ * The list a page sits in, which the drags that start on the page scroll (a page in the chat never scrolls itself), with
+ * the list's own fling. [onDrag]: the owner dragged it by that much (down is positive); [grew]: a page got taller (it
+ * loaded, or changed), so a list following its end keeps up.
  */
-class ListDrag(val by: (Float) -> Unit, val fling: (Float) -> Unit, val grew: () -> Unit = {})
+class ListDrag(
+    private val list: ScrollableState, private val flinging: FlingBehavior, private val scope: CoroutineScope,
+    private val onDrag: (Float) -> Unit, val grew: () -> Unit,
+) {
+    /** The touch a page has: its taps are its own (see [dismissesKeyboard]). */
+    internal var pageTouch: PointerId? = null
+    internal val moving get() = list.isScrollInProgress
+    internal fun by(dy: Float) { onDrag(dy); list.dispatchRawDelta(-dy) }
+    internal fun fling(vy: Float) { scope.launch { list.scroll { with(flinging) { performFling(-vy) } } } }
+    internal fun stop() { scope.launch { list.stopScroll() } }
+}
+
+/** A [ListDrag] for [list] (see there). */
+@Composable
+fun rememberListDrag(list: ScrollableState, onDrag: (Float) -> Unit = {}, grew: () -> Unit = {}): ListDrag {
+    val fling = ScrollableDefaults.flingBehavior()
+    val scope = rememberCoroutineScope()
+    return remember(list, fling) { ListDrag(list, fling, scope, onDrag, grew) }
+}
 
 val LocalListDrag = compositionLocalOf<ListDrag?> { null }
 
 /**
- * Vertical drags that start on a page scroll the list around it instead (the page gets a cancel); taps, presses and
- * sideways drags (a slider, a wide table) stay the page's.
+ * Vertical drags that start on a page scroll the list around it instead (the page gets a cancel), and fling it; taps,
+ * presses and sideways drags (a slider, a wide table) stay the page's. A touch that catches the list still moving
+ * stops it and is the list's, as anywhere in a list: it doesn't press what is under it.
  */
 private fun Modifier.passVerticalDrags(drag: ListDrag?): Modifier = if (drag == null) this else pointerInput(drag) {
+    val most = viewConfiguration.maximumFlingVelocity
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-        val tracker = VelocityTracker().apply { addPosition(down.uptimeMillis, down.position) }
-        var dragging = false
-        var dx = 0f; var dy = 0f
+        drag.pageTouch = down.id
+        // By the finger's moves, not its place on the page: the page moves along with the list it scrolls.
+        val tracker = VelocityTracker().apply { addPointerInputChange(down) }
+        var dragging = drag.moving
+        if (dragging) { drag.stop(); down.consume() }
+        var moved = Offset.Zero
         while (true) {
-            val ev = awaitPointerEvent(PointerEventPass.Initial)
-            val c = ev.changes.firstOrNull { it.id == down.id } ?: break
-            if (!c.pressed) { if (dragging) { c.consume(); drag.fling(tracker.calculateVelocity().y) }; break }
+            val c = awaitPointerEvent(PointerEventPass.Initial).changes.firstOrNull { it.id == down.id } ?: break
+            tracker.addPointerInputChange(c)
+            if (!c.pressed) {
+                if (dragging) { c.consume(); if (moved != Offset.Zero) drag.fling(tracker.calculateVelocity(Velocity(most, most)).y) }
+                break
+            }
             val d = c.positionChange()
-            tracker.addPosition(c.uptimeMillis, c.position)
+            moved += d
             if (!dragging) {
-                dx += d.x; dy += d.y
-                if (abs(dy) > viewConfiguration.touchSlop && abs(dy) > abs(dx) * 1.2f) dragging = true
-                else if (abs(dx) > viewConfiguration.touchSlop) break  // sideways: the page's
+                if (abs(moved.y) > viewConfiguration.touchSlop && abs(moved.y) > abs(moved.x) * 1.2f) dragging = true
+                else if (abs(moved.x) > viewConfiguration.touchSlop) break  // sideways: the page's
             }
             if (dragging) { c.consume(); drag.by(d.y) }
+        }
+    }
+}
+
+/**
+ * Puts the keyboard away when the owner taps the list or drags it, as in other chat apps; not for a tap on a page in
+ * it, which may be on one of the page's fields (a page takes the focus itself when tapped). [view]: the screen's.
+ */
+fun Modifier.dismissesKeyboard(drag: ListDrag, focus: FocusManager, view: View): Modifier = pointerInput(drag, focus, view) {
+    fun dismiss() {
+        focus.clearFocus()
+        // a field in a page keeps its focus (Compose's doesn't reach into it): only its keyboard goes
+        view.context.getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(view.windowToken, 0)
+    }
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+        var moved = Offset.Zero
+        while (true) {
+            val c = awaitPointerEvent(PointerEventPass.Initial).changes.firstOrNull { it.id == down.id } ?: break
+            if (!c.pressed) { if (drag.pageTouch != down.id) dismiss(); break }
+            moved += c.positionChangeIgnoreConsumed()
+            if (abs(moved.y) > viewConfiguration.touchSlop && abs(moved.y) > abs(moved.x)) { dismiss(); break }
+            if (abs(moved.x) > viewConfiguration.touchSlop) break
         }
     }
 }

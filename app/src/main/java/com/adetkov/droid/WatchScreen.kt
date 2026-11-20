@@ -68,6 +68,18 @@ import androidx.compose.animation.core.Animatable
 import androidx.activity.compose.BackHandler
 import kotlinx.coroutines.flow.Flow
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.ui.viewinterop.AndroidView
+import android.content.Context
+import android.text.InputType
+import android.view.KeyEvent
+import android.view.View
+import android.view.inputmethod.BaseInputConnection
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputConnection
+import android.view.inputmethod.InputMethodManager
 
 /**
  * Droid's screen, full size ([ScreenFeed] on 127.0.0.1:[port] with the run's [token]), framed by Dash, the controls in a
@@ -77,6 +89,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
  * agent is working on a request (else it answered and the run is holding its screen). [onTouched]: the user touched
  * the screen, so the agent should be told.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun WatchScreen(
     port: Int, token: String, status: String, working: Boolean, isUp: () -> Boolean,
@@ -124,10 +137,19 @@ fun WatchScreen(
         closing = true
         scope.launch { enter.animateTo(0f, spring(dampingRatio = .92f, stiffness = 420f)); handBack(); then() }
     }
-    // the keyboard would cover the bar (and nothing here types)
+    // the chat's keyboard goes: it would cover the bar
     val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
     val focus = androidx.compose.ui.platform.LocalFocusManager.current
     LaunchedEffect(Unit) { focus.clearFocus(); keyboard?.hide() }
+    // While the touches are the owner's, their own keyboard types on Droid's screen (which never shows one, see
+    // vd-start.sh): the screen and the bar move up above it.
+    var sink by remember { mutableStateOf<KeySink?>(null) }
+    val imm = remember { view.context.getSystemService(InputMethodManager::class.java) }
+    val typing = WindowInsets.isImeVisible && sink?.hasFocus() == true
+    // by the window: the sink may be gone already (control ended)
+    fun hideKeys() { imm.hideSoftInputFromWindow(view.windowToken, 0); sink?.clearFocus() }
+    LaunchedEffect(control) { if (!control) hideKeys() }
+    DisposableEffect(Unit) { onDispose { hideKeys() } }
     LaunchedEffect(Unit) { ScreenOrigin.taken.value = true; enter.animateTo(1f, spring(dampingRatio = .86f, stiffness = 340f)) }
     DisposableEffect(Unit) { onDispose { if (ScreenOrigin.taken.value) handBack() } }
     BackHandler { leave(onClose) }
@@ -158,7 +180,7 @@ fun WatchScreen(
                 // nothing covers the screen and nothing covers him: his head rises above it, clear of the status bar and
                 // the camera's cutout (with the room it needs at its tallest), the controls sit in the bar below it
                 Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))
-                    .navigationBarsPadding()
+                    .navigationBarsPadding().imePadding()
                     .padding(start = 12.dp, end = 12.dp, top = WATCH_HEAD, bottom = BAR + 12.dp),
                 contentAlignment = Alignment.Center,
             ) {
@@ -196,7 +218,7 @@ fun WatchScreen(
         // The bar: close, what's going on (and in which app), and what you can do.
         Box(Modifier.align(Alignment.BottomCenter).graphicsLayer { alpha = enter.value.coerceIn(0f, 1f) }) {
             AnimatedVisibility(overlays || control, enter = fadeIn(), exit = fadeOut()) {
-                Row(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 12.dp, vertical = 10.dp).height(BAR - 20.dp)
+                Row(Modifier.fillMaxWidth().navigationBarsPadding().imePadding().padding(horizontal = 12.dp, vertical = 10.dp).height(BAR - 20.dp)
                     .clip(RoundedCornerShape(28.dp)).background(Color(0xE61C1C1C)).padding(horizontal = 8.dp),
                     verticalAlignment = Alignment.CenterVertically) {
                     IconButton({ leave(onClose) }, Modifier.size(40.dp).testTag("close"),
@@ -207,6 +229,13 @@ fun WatchScreen(
                         colors = IconButtonDefaults.iconButtonColors(containerColor = chrome, contentColor = Color.White)) {
                         Icon(painterResource(R.drawable.ic_back), "Back", Modifier.size(20.dp))
                     }
+                    if (control) IconButton({ if (typing) hideKeys() else sink?.let { it.requestFocus(); imm.showSoftInput(it, 0) } },
+                        Modifier.padding(start = 8.dp).size(40.dp).testTag("keyboard"),
+                        colors = IconButtonDefaults.iconButtonColors(containerColor = if (typing) Color.White else chrome,
+                            contentColor = if (typing) Color.Black else Color.White)) {
+                        Icon(painterResource(R.drawable.ic_keyboard), if (typing) "Hide the keyboard" else "Type", Modifier.size(20.dp))
+                    }
+                    if (control) AndroidView({ KeySink(it, feed::send).also { k -> sink = k } }, Modifier.size(1.dp))
                     Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
                         if (!control && app != null) Text(app, color = Color(0xFF9A9A9A), style = MaterialTheme.typography.labelMedium,
                             maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -230,6 +259,65 @@ fun WatchScreen(
         }
     }
 }
+
+/**
+ * The owner's keyboard for Droid's screen: what they type goes there as text and key presses ([send]: "t TEXT",
+ * "k KEYCODE"), as from a hardware keyboard. It holds no text of its own, so the keyboard sends Delete as a key.
+ */
+@android.annotation.SuppressLint("ViewConstructor")  // made in code only, never from a layout
+private class KeySink(ctx: Context, private val send: (String) -> Unit) : View(ctx) {
+    init { isFocusable = true; isFocusableInTouchMode = true }
+
+    override fun onCheckIsTextEditor() = true
+
+    override fun onCreateInputConnection(out: EditorInfo): InputConnection {
+        // No suggestions or corrections: each key goes as it's typed, as a password field's would.
+        out.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        out.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN or EditorInfo.IME_FLAG_NO_EXTRACT_UI
+        return object : BaseInputConnection(this, false) {
+            var composing = ""  // what the keyboard is still composing, already typed on Droid's screen
+
+            fun replaceComposing(text: String) {
+                val keep = composing.commonPrefixWith(text).length
+                repeat(composing.length - keep) { key(KeyEvent.KEYCODE_DEL) }
+                type(text.substring(keep))
+            }
+            override fun setComposingText(text: CharSequence, pos: Int): Boolean { replaceComposing(text.toString()); composing = text.toString(); return true }
+            override fun commitText(text: CharSequence, pos: Int): Boolean { replaceComposing(text.toString()); composing = ""; return true }
+            override fun finishComposingText(): Boolean { composing = ""; return true }
+            override fun deleteSurroundingText(before: Int, after: Int): Boolean {
+                repeat(before) { key(KeyEvent.KEYCODE_DEL) }; repeat(after) { key(KeyEvent.KEYCODE_FORWARD_DEL) }; return true
+            }
+            override fun deleteSurroundingTextInCodePoints(before: Int, after: Int) = deleteSurroundingText(before, after)
+            override fun sendKeyEvent(event: KeyEvent): Boolean { if (event.action == KeyEvent.ACTION_DOWN) press(event); return true }
+            override fun performEditorAction(action: Int): Boolean { key(KeyEvent.KEYCODE_ENTER); return true }
+        }
+    }
+
+    /** A hardware keyboard's keys go there too (Back stays Droid's). */
+    override fun onKeyDown(keyCode: Int, event: KeyEvent) = press(event) || super.onKeyDown(keyCode, event)
+
+    /** A key: its character typed, or an editing key pressed; false for any other (it isn't the screen's). */
+    private fun press(e: KeyEvent): Boolean {
+        val c = e.unicodeChar
+        when {
+            c != 0 && !e.isCtrlPressed -> type(String(Character.toChars(c)))
+            e.keyCode in EDIT_KEYS -> key(e.keyCode)
+            else -> return false
+        }
+        return true
+    }
+
+    private fun key(code: Int) = send("k $code")
+    private fun type(text: String) = text.split('\n').forEachIndexed { i, line ->
+        if (i > 0) key(KeyEvent.KEYCODE_ENTER)
+        if (line.isNotEmpty()) send("t $line")
+    }
+}
+
+private val EDIT_KEYS = setOf(KeyEvent.KEYCODE_DEL, KeyEvent.KEYCODE_FORWARD_DEL, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_TAB,
+    KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
+    KeyEvent.KEYCODE_MOVE_HOME, KeyEvent.KEYCODE_MOVE_END, KeyEvent.KEYCODE_ESCAPE)
 
 /** Watch's bar, with its margins. */
 private val BAR = 76.dp

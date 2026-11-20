@@ -376,19 +376,23 @@ public class VdHelper {
     }
 
     // Touches from Watch's take over, one per line, in the display's pixels: "d X Y" (finger down), "m X Y" (move),
-    // "u X Y" (up), "c" (cancel the touch: no tap), "k KEYCODE" (a key press, e.g. 4 for Back). Injected into this
-    // display like `input -d`, which shell may do. A touch left down (a new "d", or the client going away) is cancelled,
+    // "u X Y" (up), "c" (cancel the touch: no tap), "k KEYCODE" (a key press, e.g. 4 for Back), "t TEXT" (typed text, from
+    // the owner's own keyboard: this display never has one, see vd-start.sh). Injected into this display like `input -d`,
+    // which shell may do. A touch left down (a new "d", or the client going away) is cancelled,
     // not lifted: a lift would count as a tap. A new "v WIDTH FPS" changes how this client's frames come.
     static void readInput(java.net.Socket client, int displayId, View view) {
         long down = 0;  // the touch's down time; 0: no finger down
         float x = 0, y = 0;
         try {
             java.io.BufferedReader in = new java.io.BufferedReader(
-                    new java.io.InputStreamReader(client.getInputStream(), java.nio.charset.StandardCharsets.US_ASCII));
+                    new java.io.InputStreamReader(client.getInputStream(), java.nio.charset.StandardCharsets.UTF_8));
             for (String line; (line = in.readLine()) != null; ) {
                 String[] a = line.trim().split(" ");
                 try {
                     switch (a[0]) {
+                        case "t":
+                            if (line.startsWith("t ")) text(line.substring(2), displayId);
+                            break;
                         case "d":
                             if (down != 0) touch(MotionEvent.ACTION_CANCEL, down, x, y, displayId);
                             x = Float.parseFloat(a[1]); y = Float.parseFloat(a[2]);
@@ -445,6 +449,16 @@ public class VdHelper {
         long now = SystemClock.uptimeMillis();
         inject(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, code, 0, 0, KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD), displayId);
         inject(new KeyEvent(now, now, KeyEvent.ACTION_UP, code, 0, 0, KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD), displayId);
+    }
+
+    // Text as the key presses that type it, like `input text`. A character no key types (an emoji, say) is skipped.
+    static void text(String s, int displayId) {
+        KeyCharacterMap map = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD);
+        for (int i = 0; i < s.length(); i = s.offsetByCodePoints(i, 1)) {
+            KeyEvent[] keys = map.getEvents(Character.toChars(s.codePointAt(i)));
+            if (keys == null) continue;
+            for (KeyEvent k : keys) inject(KeyEvent.changeTimeRepeat(k, SystemClock.uptimeMillis(), 0), displayId);
+        }
     }
 
     static Object inputManager;

@@ -26,10 +26,14 @@ for _ in $(seq 30); do  # the association shows up in the list a moment after `a
   sleep 0.1
 done
 
+# The display's flags (DisplayManager.VIRTUAL_DISPLAY_FLAG_*): public, presentation, own content only, touch, rotates with its
+# content, content destroyed with it, trusted, always unlocked, no touch feedback, its own focus, and never the phone's
+# focus (STEAL_TOP_FOCUS_DISABLED): the apps the agent opens and taps there never take the keyboard from the owner's screen.
+FLAGS=95691
 # The helper runs as the shell user (uid 2000), like scrcpy, from the app's own APK.
 # The whole group's output goes to the log: anything left holding this script's stdout would keep `android` waiting.
 # The folder is made as the shell user too, so the helper can write into it.
-START="mkdir -p $TMP/vd; (DROID_TOKEN=$TOKEN CLASSPATH=$APK exec nohup app_process / com.adetkov.droid.VdHelper ${SIZE%x*} ${SIZE#*x} $DPI 30155 ${ASSOC:-0} $AGENT) > $LOG 2>&1 < /dev/null &"
+START="mkdir -p $TMP/vd; (DROID_TOKEN=$TOKEN CLASSPATH=$APK exec nohup app_process / com.adetkov.droid.VdHelper ${SIZE%x*} ${SIZE#*x} $DPI $FLAGS ${ASSOC:-0} $AGENT) > $LOG 2>&1 < /dev/null &"
 if [ "$(id -u)" = 0 ]; then su 2000 -c "$START"; else sh -c "$START"; fi
 for _ in $(seq 50); do
   grep -q '^port=' "$LOG" 2>/dev/null && break

@@ -1,6 +1,5 @@
 package com.adetkov.droid
 
-import androidx.compose.foundation.gestures.animateScrollBy
 import android.Manifest
 import android.app.KeyguardManager
 import android.content.Intent
@@ -408,8 +407,7 @@ private fun AssistActivity.Panel(invocation: Int, testWav: String?, modifier: Mo
                 }
                 if (sent && answer != null) {
                     val scroll = rememberScrollState()
-                    val scope = rememberCoroutineScope()
-                    val drag = remember(scroll) { ListDrag({ dy -> scroll.dispatchRawDelta(-dy) }, { vy -> scope.launch { scroll.animateScrollBy(-vy / 4) } }) }
+                    val drag = rememberListDrag(scroll)
                     Box(Modifier.padding(top = 16.dp).heightIn(max = 340.dp).verticalScroll(scroll).testTag("answer")) {
                         if (hasHtml(answer) && cid != null && conv != null) {
                             // an answer with a page: the page, as in the chat

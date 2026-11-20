@@ -209,6 +209,7 @@ private fun Root(request: Request?, modifier: Modifier) {
     fun withTyped(t: String) = if (typed.isEmpty()) t else "$typed $t"
     fun listen(mode: Listen) {
         speaker.stop()
+        focus.clearFocus()  // the keyboard goes while you talk (the box fills in as it hears you)
         typed = draft.trim()
         listenMode = mode
         if (mode == Listen.VOICE) app.runner.prewarm(convId)  // the agent starts up while the user talks

@@ -1,0 +1,7 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp" android:viewportWidth="960" android:viewportHeight="960">
+    <!-- A keyboard, drawn like Material Symbols Rounded -->
+    <group android:translateX="-0" android:translateY="960">
+        <path android:fillColor="#FFFFFF" android:fillType="evenOdd" android:pathData="M160,-200A80,80 0 0,1 80,-280V-680A80,80 0 0,1 160,-760H800A80,80 0 0,1 880,-680V-280A80,80 0 0,1 800,-200ZM160,-280H800V-680H160ZM200,-600a40,40 0 1,0 80,0a40,40 0 1,0 -80,0ZM320,-600a40,40 0 1,0 80,0a40,40 0 1,0 -80,0ZM440,-600a40,40 0 1,0 80,0a40,40 0 1,0 -80,0ZM560,-600a40,40 0 1,0 80,0a40,40 0 1,0 -80,0ZM680,-600a40,40 0 1,0 80,0a40,40 0 1,0 -80,0ZM200,-480a40,40 0 1,0 80,0a40,40 0 1,0 -80,0ZM320,-480a40,40 0 1,0 80,0a40,40 0 1,0 -80,0ZM440,-480a40,40 0 1,0 80,0a40,40 0 1,0 -80,0ZM560,-480a40,40 0 1,0 80,0a40,40 0 1,0 -80,0ZM680,-480a40,40 0 1,0 80,0a40,40 0 1,0 -80,0ZM360,-320H600A40,40 0 0,0 600,-400H360A40,40 0 0,0 360,-320Z" />
+    </group>
+</vector>
