@@ -1,0 +1,2 @@
+{"type":"error","timestamp":1,"sessionID":"ses_e2226d42cffeN3deYrDFBAfZd2","error":{"name":"UnknownError","data":{"message":"Unexpected server error. Check server logs for details.","ref":"err_94da4d01"}}}
+{"type":"error","timestamp":2,"sessionID":"ses_e2226d42cffeN3deYrDFBAfZd2","error":{"name":"UnknownError","data":{"message":"Model not found: opencode/nonexistent-model."}}}

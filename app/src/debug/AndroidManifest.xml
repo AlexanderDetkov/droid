@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Debug builds: drive the Wireless-debugging code from `adb shell am broadcast` (only senders holding DUMP,
+             which the shell user has and apps don't). See AdbTestReceiver. -->
+        <receiver
+            android:name=".AdbTestReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
+        <!-- Debug builds: Dash at every size and feeling, and the chat's morphs on buttons. See DashLab. -->
+        <activity android:name=".DashLab" android:exported="true" android:theme="@android:style/Theme.Material.NoActionBar" />
+    </application>
+</manifest>

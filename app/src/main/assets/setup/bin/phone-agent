@@ -1,0 +1,113 @@
+#!/bin/sh
+# Run one agent session on the phone, on its own hidden display; several can run at once.
+# Usage: phone-agent [--engine claude|codex|opencode] [--resume SESSION_ID] [--model MODEL]
+#   --engine picks the agent (default claude). Codex and OpenCode run through droid-engine, which speaks the same
+#   stream-json as Claude Code, so everything below holds for every engine.
+#   stdin:  Claude Code stream-json user messages; write more at any time to talk to it mid-task,
+#           close it to let the session finish. No first message within FIRST_WAIT (3 min) ends the run.
+#   stdout: {"type":"agent","pid":..,"display":..,"port":..,"token":..,"new_session":..} (the live view: send the token
+#           first; new_session: the session to resume wasn't here, see has_session), then Claude Code stream-json,
+#           with the agent's {"type":"droid",...} events (the `droid` command) among it.
+#   SIGTERM to pid stops it.
+# Keep stdin for Claude only; setup commands like `cmd` would otherwise read it.
+exec 3<&0 </dev/null
+ENGINE=claude
+case "$1" in --engine) ENGINE=$2; shift 2 ;; esac
+case "$ENGINE" in claude|codex|opencode) ;; *) printf '{"type":"result","subtype":"error","is_error":true,"result":"Unknown engine %s."}\n' "$ENGINE"; exit 1 ;; esac
+
+# A chat's session exists only in the Linux it ran in: after switching between root and Wireless debugging, or
+# reinstalling Droid's Linux, it's gone, and resuming it would fail every time. Such a chat goes on in a new session.
+has_session() {
+  case "$ENGINE" in
+    claude) [ -f "/root/.claude/projects/-root/$1.jsonl" ] ;;
+    codex) [ -n "$(find /root/.codex/sessions -name "*$1.jsonl" 2>/dev/null | head -n 1)" ] ;;
+    # Only a database that answers "no such session" counts as missing.
+    opencode) [ "$(sqlite3 /root/.local/share/opencode/opencode.db "SELECT count(*) FROM session WHERE id = '$1'" 2>/dev/null)" != 0 ] ;;
+  esac
+}
+NEW_SESSION=false
+if [ "$1" = --resume ] && ! has_session "$2"; then shift 2; NEW_SESSION=true; fi
+# ImageMagick, which agents install to look through photos, holds every image it's given in RAM at full size: a
+# contact sheet of 45 camera photos peaked at 4 GB, and Android's low-memory killer then closed every app, Droid's
+# included (the agent itself, outside Android, kept going; Droid lost the run). Capped, it spills to disk: 0.6 GB.
+export MAGICK_MEMORY_LIMIT=256MiB MAGICK_MAP_LIMIT=512MiB MAGICK_AREA_LIMIT=64MP MAGICK_THREAD_LIMIT=2
+MAC=$(printf '02:00:00:%02X:%02X:%02X' $(($$ >> 16 & 255)) $(($$ >> 8 & 255)) $(($$ & 255)))
+TOKEN=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+# Droid's folder in Android (/data/local/droid as root, /data/local/tmp/droid without root), set by enter.sh.
+BASE=${DROID_BASE:-/data/local/droid}
+
+fail() {
+  printf '{"type":"result","subtype":"error","is_error":true,"result":"%s"}\n' "$1"
+  exit 1
+}
+
+cleanup() {
+  # To the end: a second Stop must not cut it short before vd-stop (the display would stay up, keeping the phone awake).
+  trap '' INT TERM
+  # feed, if still waiting, ends when the app closes our stdin (as root) or with proot (--kill-on-exit).
+  [ -n "$CLAUDE" ] && kill "$CLAUDE" 2>/dev/null
+  # the copied events: tail checks its file every second, so its last ones are out first
+  [ -n "$DROID_TAIL" ] && { sleep 1; kill "$DROID_TAIL" 2>/dev/null; rm -f "$DROID_OUT"; }
+  # One call: each `android` is a round trip into Android (through Droid's helper on phones without root).
+  android "sh $BASE/vd-stop.sh $MAC '$HELPER' '$AGENT_DISPLAY'" >/dev/null 2>&1
+  [ -n "$AGENT_DISPLAY" ] && rm -f "/tmp/shot-$AGENT_DISPLAY.png"
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+
+# The hidden display: its association and helper, set up in Android by vd-start.sh (in one call, see cleanup). The
+# helper also gets this script's pid, which is Android's too, and ends by itself if this ends without cleanup (killed).
+VD=$(android "sh $BASE/vd-start.sh $MAC $TOKEN $DROID_APK $$" 2>&1)
+case "$VD" in *"error=no APK"*) fail "The Droid app's APK was not found." ;; esac
+val() { echo "$VD" | sed -n "s/^$1=\([0-9]*\).*/\1/p" | head -n 1; }
+AGENT_DISPLAY=$(val displayId) HELPER=$(val pid) PORT=$(val port)
+[ -n "$PORT" ] || fail "The hidden display did not start."
+export AGENT_DISPLAY
+printf '{"type":"agent","pid":%s,"display":%s,"port":%s,"token":"%s","new_session":%s}\n' $$ "$AGENT_DISPLAY" "$PORT" "$TOKEN" $NEW_SESSION
+# The agent's `droid` command (dash, show, later) writes its events, a JSON line each, straight into this output, where
+# the app reads them among Claude's: the same pipe, reopened through /proc, so they arrive in order and at once. An
+# output that isn't a pipe (a socket can't be reopened) gets them through a file copied into it instead.
+if [ -p /proc/$$/fd/1 ]; then
+  export DROID_OUT=/proc/$$/fd/1
+else
+  export DROID_OUT=/tmp/droid-out-$$
+  : > "$DROID_OUT"
+  tail -f "$DROID_OUT" &
+  DROID_TAIL=$!
+fi
+
+# A run started ahead of time (the app's prewarm, while you talk) waits here for its first message, with the hidden
+# display up, and the display keeps the phone from sleeping. The app drops an unused one after 2 minutes, but not
+# while Android has it frozen or after it was killed, so the run also gives up by itself: no first message within
+# FIRST_WAIT seconds closes Claude's stdin and it exits. Later messages pass straight through.
+FIRST_WAIT=180
+feed() {
+  IFS= read -r -t "$FIRST_WAIT" line <&3 || exit 0
+  printf '%s\n' "$line"
+  exec cat <&3
+}
+
+# Claude's stdin is an ordinary pipe from feed, not a named one: Android forbids the shell user named pipes (on phones
+# without root; proot then pretends to make one, and Claude would read a plain file and stop after one message).
+# In the background so SIGTERM interrupts the wait right away; $! is the pipeline's last command, Claude.
+# Claude: only general tools (allowed in settings.json); no skills, slash commands or claude.ai connectors, which only
+# add context here.
+cd /root
+# Besides the chat, every engine gets the app's instructions for this phone (system.md, which the app writes: it knows
+# how Droid runs here) and the owner's instructions (CLAUDE.md). Claude reads CLAUDE.md by itself, and keeps its own
+# memory; Codex and OpenCode read their AGENTS.md, which install.sh links to CLAUDE.md, so that link becomes both.
+SYSTEM=/root/.droid/system.md
+if [ "$ENGINE" = claude ]; then
+  [ -s $SYSTEM ] && set -- "$@" --append-system-prompt-file $SYSTEM
+  feed | claude -p "$@" --tools Bash,Read,Write,Edit,Grep,Glob,WebSearch,WebFetch \
+    --disable-slash-commands --strict-mcp-config \
+    --input-format stream-json --output-format stream-json --verbose &
+else
+  case "$ENGINE" in codex) AG=/root/.codex/AGENTS.md ;; *) AG=/root/.config/opencode/AGENTS.md ;; esac
+  mkdir -p "${AG%/*}"
+  { cat $SYSTEM 2>/dev/null; printf "\n\n# The owner's instructions\n\n"; cat /root/.claude/CLAUDE.md 2>/dev/null; } > "$AG.$$"
+  mv -f "$AG.$$" "$AG"
+  feed | python3 -I /usr/local/bin/droid-engine "$ENGINE" "$@" &
+fi
+CLAUDE=$!
+wait $CLAUDE

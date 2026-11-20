@@ -1,0 +1,11 @@
+#!/bin/sh
+# Screenshot this task's hidden display ($AGENT_DISPLAY) and print the PNG's path; view it with the Read tool.
+# The display's helper writes into Android's /data/local/tmp/droid/vd: at /proc/1/root in the chroot, at its own path
+# under proot (DROID_HOST is empty there).
+D=${DROID_HOST-/proc/1/root}/data/local/tmp/droid/vd/$AGENT_DISPLAY
+OUT=/tmp/shot-$AGENT_DISPLAY.png
+rm -f "$D/shot.done" "$D/shot.png"; touch "$D/shot.req"
+for _ in $(seq 50); do [ -f "$D/shot.done" ] && break; sleep 0.1; done
+if [ ! -f "$D/shot.done" ]; then echo "no screenshot: the hidden display didn't answer within 5 s"
+elif [ -f "$D/shot.png" ]; then cp "$D/shot.png" "$OUT" && echo "$OUT"
+else echo "no frame yet: nothing has been drawn on the hidden display"; fi

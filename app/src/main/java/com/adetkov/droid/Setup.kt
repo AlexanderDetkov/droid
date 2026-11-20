@@ -1,0 +1,623 @@
+package com.adetkov.droid
+
+import android.app.role.RoleManager
+import android.content.ComponentName
+import android.content.Context
+import android.net.ConnectivityManager
+import android.os.Build
+import android.service.voice.VoiceInteractionService
+import android.util.Log
+import androidx.core.content.edit
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
+import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream
+import org.json.JSONObject
+import java.io.File
+import java.io.FilterInputStream
+import java.io.IOException
+import java.io.InputStream
+import java.net.HttpURLConnection
+import java.net.InetAddress
+import java.net.URI
+import java.security.DigestInputStream
+import java.security.MessageDigest
+
+private const val ALPINE = "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases"
+private const val SHERPA = "https://github.com/k2-fsa/sherpa-onnx/releases/download"
+/** Settings.Secure.ASSIST_SCREENSHOT_ENABLED and ASSIST_STRUCTURE_ENABLED, which are hidden. */
+private const val SCREENSHOTS = "assist_screenshot_enabled"
+private const val SCREEN_TEXT = "assist_structure_enabled"
+/** Remove's exit code when something is mounted under the Linux (rm and su exit with others). */
+private const val MOUNTED = 3
+
+/** An engine besides Claude Code: installed in the chroot, and usable (signed in, or needing no sign-in). [detail] is for the UI. */
+data class EngineStatus(val installed: Boolean = false, val signedIn: Boolean = false, val detail: String = "Not installed")
+
+/** How Droid reaches Android: as root, or as the shell user through Wireless debugging (phones without root). */
+enum class Access { ROOT, ADB }
+
+data class SetupState(
+    val checked: Boolean = false,
+    /** `su` works for Droid. */
+    val root: Boolean = false,
+    /** There is an `su` Droid can run, though it may refuse until the owner allows Droid in the root manager. */
+    val su: Boolean = false,
+    /** Root if Droid had it at its first check, or what the owner switched to since (see [Setup.setAccess]). */
+    val access: Access = Access.ROOT,
+    /** Without root: paired with this phone's Wireless debugging. */
+    val paired: Boolean = false,
+    /** Without root: Droid's helper is running (see AdbHelper). */
+    val helper: Boolean = false,
+    /** Without root: why the helper isn't running, for the user, or null. */
+    val helperError: String? = null,
+    /** Without root: what pairing is doing now (see PairingService), or null when it isn't under way. */
+    val pairing: String? = null,
+    /** The Linux environment with Claude Code. */
+    val installed: Boolean = false,
+    /** Some of the Linux environment is there, maybe half installed: something for Remove to delete. */
+    val linux: Boolean = false,
+    val signedIn: Boolean = false,
+    val voice: Boolean = false,
+    /** The voice match model. */
+    val voiceMatch: Boolean = false,
+    /** Droid is the digital assistant, through its [AssistService]. */
+    val assistant: Boolean = false,
+    /** Android hands the assistant a screenshot of the app it opens over ("Use screenshot"). */
+    val screenshots: Boolean = false,
+    /** What is running now (e.g. "Installing packages"), or null. */
+    val busy: String? = null,
+    /** The sign-in page while a sign-in waits for its code. */
+    val signInUrl: String? = null,
+    /** The last failure, with the end of its output. */
+    val error: String? = null,
+    /** The signed-in Claude account and its plan (e.g. "max"), when known. */
+    val email: String? = null,
+    val plan: String? = null,
+    /** The engine new chats use (from Settings), whose sign-in decides [ready]. */
+    val engine: Engine = Engine.CLAUDE,
+    /** Codex and OpenCode, once checked. */
+    val others: Map<Engine, EngineStatus> = emptyMap(),
+    /** The one-time code to enter at [signInUrl] while a device-code sign-in (Codex) waits; null for Claude's paste-the-code. */
+    val deviceCode: String? = null,
+) {
+    private val engineReady get() = if (engine == Engine.CLAUDE) signedIn else others[engine]?.let { it.installed && it.signedIn } == true
+    /** Droid can run commands in Android: root, or its helper. */
+    val connected get() = if (access == Access.ROOT) root else helper
+    val ready get() = isEmulator || (connected && installed && engineReady)
+}
+
+/**
+ * First-run setup, all from the app: access to Android (root, or Wireless debugging), the Linux environment (Alpine +
+ * Claude Code, by install.sh), the Claude sign-in, the voice models and the assistant role. Each step can be re-run;
+ * [refresh] reads what is in place.
+ */
+class Setup(private val app: DroidApp) {
+    private val prefs = app.getSharedPreferences("setup", 0)
+    /** Decided at the first check and changed only by the owner, so a moment without `su` never moves a rooted phone. */
+    private val savedAccess get() = prefs.getString("access", null)?.let { a -> Access.entries.firstOrNull { it.name == a } }
+    /** Until a check reaches Android, what the last one that did found. */
+    val state = MutableStateFlow(SetupState(
+        access = savedAccess ?: Access.ROOT, installed = prefs.getBoolean("installed", false), signedIn = prefs.getBoolean("signedIn", false),
+        email = prefs.getString("email", null), plan = prefs.getString("plan", null),
+    ))
+    private val host get() = app.host
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    @Volatile private var signIn: Process? = null
+    @Volatile private var signInCancelled = false
+
+    /**
+     * Whether setup still needs doing. While Droid can't reach Android (before the first check, or without root or its
+     * helper just now, e.g. after a restart away from Wi-Fi), the last answer that could stands: the chats stay open,
+     * and a task that can't start says why.
+     */
+    fun needed(s: SetupState = state.value) = !s.ready && (s.checked && s.connected || !prefs.getBoolean("ready", false))
+
+    fun refresh() = step(null) { check() }
+
+    /**
+     * Phones without root: waits for Settings' pairing dialog (Wireless debugging → Pair device with pairing code) and
+     * asks for its code in a notification, then starts Droid's helper. See [PairingService].
+     */
+    fun pair() {
+        state.update { it.copy(error = null, pairing = "Waiting for the pairing code") }
+        PairingService.start(app)
+    }
+
+    fun cancelPairing() = PairingService.cancel(app)
+
+    /** Called by [PairingService] with what it's doing, or null when it's over (then [error], if it failed). */
+    fun pairingStatus(status: String?, error: String? = null) {
+        state.update { it.copy(pairing = status, error = error ?: it.error) }
+        if (status == null) refresh()
+    }
+
+    /** Starts Droid's helper now (phones without root), e.g. after the phone restarted while away from Wi-Fi. */
+    fun startHelper() = step("Starting Droid's helper") { check(ask = true) }
+
+    /**
+     * Switches between root and Wireless debugging (the shell user, proot). Each has its own Linux, sign-in and chat
+     * history; a chat from the other one goes on in a new session (see phone-agent).
+     */
+    fun setAccess(a: Access) = step("Switching") {
+        if (app.runner.running.value.isNotEmpty()) throw IOException("Stop the running chats first")
+        app.runner.closeScreens()  // held screens and a warm run belong to the old way in
+        app.runner.dropWarm()
+        synchronized(checking) {  // a check under way for the old one finishes first
+            // Nothing known yet about the other Linux.
+            prefs.edit {
+                putString("access", a.name)
+                putBoolean("ready", false); putBoolean("installed", false); putBoolean("signedIn", false); remove("email"); remove("plan")
+            }
+            state.update { SetupState(access = a, busy = it.busy) }
+        }
+        check()
+    }
+
+    /** Installs or updates the Linux environment; the first time this downloads Alpine (~4 MB) and Claude Code (~250 MB). */
+    fun install() = step("Checking") {
+        val h = host
+        var tarball: File? = null
+        if (run("test -x ${h.rootfs}/bin/busybox").code != 0) {
+            busy("Downloading Alpine Linux")
+            tarball = File(scratch(), "alpine.tar.gz").also { downloadAlpine(it) }
+        }
+        val src = unpackAssets()
+        File(src, "resolv.conf").apply { writeText(resolvConf(networkDns(app), readText())) }
+        try {
+            val r = run("sh ${src.path}/install.sh ${src.path} ${app.packageName} '${app.applicationInfo.sourceDir}' ${tarball?.path.orEmpty()}", onLine = { line ->
+                if (line.startsWith("step: ")) busy(line.removePrefix("step: "))
+            })
+            if (r.code != 0) throw IOException("Setup failed (exit ${r.code}).\n\n${r.out.takeLast(1500)}")
+        } finally {
+            tarball?.delete()
+        }
+        check()
+    }
+
+    /** Starts `claude auth login`; its sign-in page goes to [SetupState.signInUrl], then [submitCode] finishes it. */
+    fun signIn(console: Boolean) = step("Starting sign-in") {
+        val p = host.exec("${host.base}/enter.sh claude auth login${if (console) " --console" else ""}")
+        signIn = p
+        signInCancelled = false
+        val out = StringBuilder()
+        val code = try {
+            // The page's URL comes first; the process then waits for the code on stdin.
+            p.inputStream.bufferedReader().forEachLine { line ->
+                out.appendLine(line)
+                Regex("https://\\S+").find(line)?.let { m -> state.update { it.copy(signInUrl = m.value, busy = null) } }
+            }
+            p.waitFor()
+        } catch (e: IOException) {
+            if (signInCancelled) 0 else throw e  // Cancel closes the stream under the reader
+        } finally {
+            p.destroy()
+            signIn = null
+            state.update { it.copy(signInUrl = null) }
+        }
+        if (code != 0 && !signInCancelled) throw IOException(out.lines().lastOrNull { it.isNotBlank() }?.substringAfter("> ") ?: "Sign-in failed")
+        check()
+    }
+
+    /**
+     * Codex's ChatGPT sign-in by device code: `codex login --device-auth` prints a page and a one-time code, then waits
+     * until the code is entered there (on this phone or any other device). Nothing to paste back.
+     */
+    fun signInCodex() = step("Starting sign-in") {
+        val p = host.exec("${host.base}/enter.sh codex login --device-auth")
+        p.outputStream.close()
+        signIn = p
+        signInCancelled = false
+        val out = StringBuilder()
+        val code = try {
+            p.inputStream.bufferedReader().forEachLine { raw ->
+                val line = stripAnsi(raw)
+                out.appendLine(line)
+                val (url, otp) = parseDeviceAuth(out.toString())
+                if (url != null && otp != null) state.update { it.copy(signInUrl = url, deviceCode = otp, busy = null) }
+            }
+            p.waitFor()
+        } catch (e: IOException) {
+            if (signInCancelled) 0 else throw e
+        } finally {
+            p.destroy()
+            signIn = null
+            state.update { it.copy(signInUrl = null, deviceCode = null) }
+        }
+        if (code != 0 && !signInCancelled) throw IOException(out.lines().lastOrNull { it.isNotBlank() } ?: "Sign-in failed")
+        check()
+    }
+
+    /** Signs Codex in with an OpenAI API key (billed per use), which `codex login --with-api-key` reads from stdin. */
+    fun codexApiKey(key: String) = step("Saving the key") {
+        val r = run("${host.base}/enter.sh codex login --with-api-key", stdin = key.trim() + "\n")
+        if (r.code != 0) throw IOException(r.out.lines().lastOrNull { it.isNotBlank() } ?: "Could not save the key")
+        check()
+    }
+
+    /** Saves an API key for an OpenCode provider (e.g. "anthropic", "openai", "google", "openrouter") in its auth.json. */
+    fun openCodeKey(provider: String, key: String) = step("Saving the key") {
+        val id = provider.trim().lowercase()
+        if (!Regex("[a-z0-9][a-z0-9._-]{0,40}").matches(id)) throw IOException("A provider id is like anthropic, openai, google or openrouter")
+        val r = run("${host.base}/enter.sh python3 -I -c '$SAVE_KEY' $id", stdin = key.trim() + "\n")
+        if (r.code != 0) throw IOException(r.out.lines().lastOrNull { it.isNotBlank() } ?: "Could not save the key")
+        check()
+    }
+
+    /**
+     * Installs or updates one extra engine (downloads its musl build from GitHub, checked against GitHub's SHA-256).
+     * Only that, not a whole Update, whose package upgrades and Claude Code update have nothing to do with it. Its
+     * installer goes in first, as this app has it, by rename as install.sh puts it.
+     */
+    fun installEngine(e: Engine) = step("Installing ${e.label}") {
+        val src = unpackAssets()
+        val bin = "${host.rootfs}/usr/local/bin/droid-install-engine"
+        val r = run("cp ${src.path}/bin/droid-install-engine $bin.new && chmod 755 $bin.new && mv $bin.new $bin && " +
+            "${host.base}/enter.sh droid-install-engine ${e.id}")
+        if (r.code != 0) throw IOException("Could not install ${e.label} (exit ${r.code}).\n\n${r.out.takeLast(1500)}")
+        check()
+    }
+
+    fun submitCode(code: String) {
+        val p = signIn ?: return
+        busy("Signing in")
+        scope.launch { try { p.outputStream.use { it.write((code.trim() + "\n").toByteArray()) } } catch (_: IOException) {} }
+    }
+
+    fun cancelSignIn() {
+        signInCancelled = true
+        signIn?.destroy()
+        // Destroying the local `su` client (or the helper's shell) leaves the login running: Codex keeps polling for its code.
+        scope.launch { run("pkill -f '[c]odex login --device-auth'") }
+    }
+
+    /** On-device speech: Silero VAD, Parakeet TDT 0.6B v2 (speech-to-text), Pocket TTS (voice). About 820 MB. */
+    fun downloadVoice() = step("Downloading voice") {
+        val dir = app.speech.dir
+        val tmp = File(dir.path + ".new").apply { deleteRecursively(); mkdirs() }
+        try {
+            download("$SHERPA/asr-models/silero_vad.onnx", File(tmp, "silero_vad.onnx"), "Voice 1/3")
+            fetch("$SHERPA/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2", "Voice 2/3") { untarBz2(it, File(tmp, "parakeet")) }
+            fetch("$SHERPA/tts-models/sherpa-onnx-pocket-tts-int8-2026-01-26.tar.bz2", "Voice 3/3") { untarBz2(it, File(tmp, "pocket")) }
+            File(tmp, "pocket/test_wavs/bria.wav").renameTo(File(tmp, "pocket/voice.wav"))  // the voice it imitates
+            listOf("parakeet/test_wavs", "pocket/test_wavs").forEach { File(tmp, it).deleteRecursively() }
+            app.speech.release()
+            dir.deleteRecursively()
+            if (!tmp.renameTo(dir)) throw IOException("Could not move the voice models into place")
+        } finally {
+            tmp.deleteRecursively()  // what a failed download left, up to 820 MB (once moved into place, nothing)
+        }
+        check()
+    }
+
+    /** The voice match model (NVIDIA TitaNet small), checked against its SHA-256. */
+    fun downloadVoiceMatch() = step("Downloading voice match") {
+        val model = app.voiceMatch.model
+        val tmp = File(model.path + ".new").apply { parentFile?.mkdirs() }
+        try {
+            // "recongition" is the release tag's own spelling.
+            if (download("$SHERPA/speaker-recongition-models/${VoiceMatch.MODEL}", tmp, "Voice match") != VoiceMatch.MODEL_SHA256) {
+                throw IOException("Voice match download is corrupt (checksum mismatch)")
+            }
+            app.voiceMatch.release()
+            if (!tmp.renameTo(model)) throw IOException("Could not move the voice match model into place")
+        } finally {
+            tmp.delete()  // what a failed download left
+        }
+        check()
+    }
+
+    /**
+     * Makes Droid the digital assistant (long-press power), as root or the shell user: Android has no prompt for this role. Also
+     * turns on Android's "Use screenshot" for it, so the panel gets the app it was opened over.
+     */
+    fun makeAssistant() = step("Setting the assistant") {
+        val role = RoleManager.ROLE_ASSISTANT
+        val pkg = app.packageName
+        // Holding the role from before Droid had its assistant service: adding it again changes nothing, so drop it first.
+        val reset = if (roleHeld() && !serviceActive()) "cmd role remove-role-holder $role $pkg; " else ""
+        val r = run("${reset}cmd role add-role-holder $role $pkg && ${screenshotsCmd(true)}")
+        if (r.code != 0) throw IOException(r.out.ifBlank { "Could not set the assistant" })
+        for (i in 1..20) if (serviceActive()) break else delay(100)  // Android switches to it in the background
+        check()
+    }
+
+    /** Whether the assistant gets a screenshot of the app it opens over. */
+    fun setScreenshots(on: Boolean) {
+        state.update { it.copy(screenshots = on) }
+        scope.launch { if (run(screenshotsCmd(on)).code != 0) check() }
+    }
+
+    /**
+     * Android's "Use screenshot" setting, and "Use text from screen", without which Android takes no screenshot. Droid
+     * doesn't declare usesAssistStructureScreenContent (see assist_service.xml), so it gets no text from the screen.
+     */
+    private fun screenshotsCmd(on: Boolean) = (if (on) 1 else 0).let {
+        "settings put secure $SCREENSHOTS $it && settings put secure $SCREEN_TEXT $it"
+    }
+
+    private fun roleHeld() = app.getSystemService(RoleManager::class.java).isRoleHeld(RoleManager.ROLE_ASSISTANT)
+    private fun serviceActive() = VoiceInteractionService.isActiveService(app, ComponentName(app, AssistService::class.java))
+
+    /**
+     * Deletes the Linux environment (chats' transcripts, sign-in and instructions included). Not while tasks run. With
+     * root, the one Droid uses through Wireless debugging goes too: Remove is the step before uninstalling Droid.
+     */
+    fun remove() = step("Removing") {
+        if (app.runner.running.value.isNotEmpty()) throw IOException("Stop the running chats first")
+        // Screens held open after an answer: their agents exit once told to.
+        app.runner.closeScreens()
+        for (i in 0 until 100) { if (app.runner.screens.value.isEmpty()) break; delay(100) }
+        if (app.runner.screens.value.isNotEmpty()) throw IOException("Droid's screens are still closing; try again in a moment")
+        app.runner.dropWarm()?.join()  // it removes its display and association on the way out
+        val h = host
+        val r = if (h == RootHost) {
+            // Mounts exist only inside each run's private namespace, so none can be under the base here; check anyway.
+            run("grep -q ' ${h.base}' /proc/self/mountinfo && exit $MOUNTED; rm -rf ${h.base} $SHELL_BASE")
+        } else {
+            // The helper itself stays, for the next install.
+            run("rm -rf ${h.rootfs} ${h.rootfs}.new ${h.base}/bin ${h.base}/tmp ${h.base}/*.sh")
+        }
+        when (r.code) {
+            0 -> {}
+            MOUNTED -> throw IOException("Something is mounted under ${h.base}; restart the phone and try again")
+            else -> throw IOException("Could not remove Droid's Linux (exit ${r.code}).\n\n${r.out.takeLast(1500)}")
+        }
+        check()
+    }
+
+    fun dismissError() = state.update { it.copy(error = null) }
+
+    private fun checkEngines(installed: Boolean): Map<Engine, EngineStatus> {
+        if (!installed) return emptyMap()
+        val bin = "${host.rootfs}/root/.local/bin"
+        val out = HashMap<Engine, EngineStatus>()
+        if (run("test -x $bin/codex").code == 0) {
+            val r = run("${host.base}/enter.sh codex login status")
+            val ok = r.code == 0
+            out[Engine.CODEX] = EngineStatus(true, ok, if (ok) stripAnsi(r.out).lines().firstOrNull { it.isNotBlank() }?.trim() ?: "Signed in" else "Installed, sign-in needed")
+        }
+        if (run("test -x $bin/opencode").code == 0) {
+            // OpenCode runs on its free models with no key, so it's usable either way; keys add providers.
+            val n = Regex("(\\d+) credential").find(stripAnsi(run("${host.base}/enter.sh opencode auth list").out))?.groupValues?.get(1)?.toIntOrNull() ?: 0
+            out[Engine.OPENCODE] = EngineStatus(true, true, if (n > 0) "Installed, $n provider key${if (n == 1) "" else "s"}" else "Installed, free models only until you add a key")
+        }
+        return out
+    }
+
+    /** One check at a time, so an older one never overwrites a newer answer. */
+    private val checking = Any()
+
+    /** Reads what is in place. [ask]: the owner tapped Start, so starting the helper may ask them (see [AdbHelper.ensure]). */
+    private fun check(ask: Boolean = false): Unit = synchronized(checking) {
+        val root = exec(RootHost, "id").let { it.code == 0 && "uid=0" in it.out }
+        // Root stays on offer wherever there is an su (see SetupScreen): Magisk's is there while it refuses Droid (its
+        // prompt missed or denied). KernelSU and APatch don't ask, and show theirs once Droid is allowed in their app,
+        // which Setup notices on coming back from it.
+        val su = root || System.getenv("PATH").orEmpty().split(':').any { File(it, "su").canExecute() }
+        val access = savedAccess ?: (if (root) Access.ROOT else Access.ADB).also { a -> prefs.edit { putString("access", a.name) } }
+        state.update { it.copy(root = root, su = su, access = access, paired = app.adb.paired) }
+        var helperError: String? = null
+        val helper = access == Access.ADB && app.adb.paired && try {
+            app.adb.ensure(ask = ask); true
+        } catch (e: Exception) {  // a damaged key or a revoked permission too: the helper is what's missing
+            helperError = e.message ?: e.toString()
+            HelperJob.schedule(app)  // tries again once there is Wi-Fi
+            false
+        }
+        val connected = if (access == Access.ROOT) root else helper
+        val assistant = roleHeld() && serviceActive()
+        val reached = { s: SetupState ->
+            s.copy(checked = true, root = root, su = su, access = access, paired = app.adb.paired, helper = helper, helperError = helperError,
+                voice = app.speech.installed, voiceMatch = app.voiceMatch.installed, assistant = assistant, engine = app.prefs.engine.value)
+        }
+        // Out of reach for now: what the last check found in the Linux stands (see [needed]).
+        if (!connected) return state.update(reached)
+        val probe = run("test -L ${host.rootfs}/root/.local/bin/claude")  // links into the rootfs's own /root
+        if (probe.code !in 0..1) return state.update(reached)  // gone out of reach after all (the helper stopped, say)
+        val installed = probe.code == 0
+        val linux = installed || run("test -e ${host.rootfs} -o -e ${host.rootfs}.new").code == 0
+        val status = if (!installed) null else authStatus(run("${host.base}/enter.sh claude auth status --json").out)
+        // No answer at all (the command itself failed): what the last check found stands, as when Android is out of reach.
+        val last = state.value
+        val kept = installed && status == null
+        val signedIn = if (kept) last.signedIn else status?.optBoolean("loggedIn") == true
+        // optString gives "null" for a JSON null, which `claude auth status` reports before it has the account's profile.
+        fun field(name: String) = status?.takeIf { signedIn && !it.isNull(name) }?.optString(name)?.takeIf { it.isNotBlank() }
+        val email = if (kept) last.email else field("email")
+        val plan = if (kept) last.plan else field("subscriptionType")
+        val others = checkEngines(installed)
+        val screenshots = assistant && run("settings get secure $SCREENSHOTS; settings get secure $SCREEN_TEXT").out.lines()
+            .filter { it.isNotBlank() }.all { it.trim() == "1" }
+        state.update {
+            reached(it).copy(installed = installed, linux = linux, signedIn = signedIn, screenshots = screenshots, email = email, plan = plan, others = others)
+        }
+        prefs.edit {
+            putBoolean("ready", state.value.ready); putBoolean("installed", installed); putBoolean("signedIn", signedIn)
+            putString("email", email); putString("plan", plan)
+        }
+    }
+
+    private fun busy(what: String) = state.update { it.copy(busy = what) }
+
+    /** Runs a step in the background. One labelled [what] doesn't start while another step or a sign-in is under way. */
+    private fun step(what: String?, block: suspend () -> Unit) {
+        if (what != null) {
+            if (state.value.busy != null || signIn != null) return
+            state.update { it.copy(busy = what, error = null) }
+        }
+        scope.launch {
+            try { block() } catch (e: Exception) {
+                Log.w("Droid", "setup failed", e)
+                state.update { it.copy(error = e.message ?: e.toString()) }
+            } finally {
+                if (what != null) state.update { it.copy(busy = null) }
+            }
+        }
+    }
+
+    private class Out(val code: Int, val out: String)
+
+    /** Runs [cmd] on the current host (root, or the helper), stdout and stderr together, handing each line to [onLine]. */
+    private fun run(cmd: String, stdin: String? = null, onLine: (String) -> Unit = {}): Out = exec(host, cmd, stdin, onLine)
+
+    private fun exec(h: Host, cmd: String, stdin: String? = null, onLine: (String) -> Unit = {}): Out = try {
+        val p = h.exec(cmd)
+        if (stdin != null) p.outputStream.use { it.write(stdin.toByteArray()) } else p.outputStream.close()
+        val out = StringBuilder()
+        p.inputStream.bufferedReader().forEachLine { out.appendLine(it); onLine(it) }
+        Out(p.waitFor(), out.toString())
+    } catch (e: IOException) {
+        Out(-1, e.message.orEmpty())  // no su binary, or no helper
+    }
+
+    /**
+     * Where the app leaves files for the host to read: its private storage for root, its folder in shared storage for
+     * the shell user (who may read Android/data, while other apps may not).
+     */
+    private fun scratch(): File = (if (host == RootHost) app.cacheDir else app.externalCacheDir ?: throw IOException("No shared storage")).apply { mkdirs() }
+
+    /** The newest Alpine minirootfs for this CPU, checked against the release index's SHA-256. */
+    private fun downloadAlpine(to: File) {
+        val arch = when (Build.SUPPORTED_ABIS.firstOrNull()) {
+            "arm64-v8a" -> "aarch64"
+            "x86_64" -> "x86_64"
+            else -> throw IOException("Droid needs an arm64 or x86_64 device")
+        }
+        val (file, sha256) = minirootfs(fetch("$ALPINE/$arch/latest-releases.yaml", "Downloading Alpine Linux") { it.reader().readText() })
+        if (download("$ALPINE/$arch/$file", to, "Downloading Alpine Linux") != sha256) {
+            to.delete()
+            throw IOException("Alpine download is corrupt (checksum mismatch)")
+        }
+    }
+
+    /** Downloads [url] into [to], showing progress as [label]; returns its SHA-256. */
+    private fun download(url: String, to: File, label: String): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        fetch(url, label) { input -> to.outputStream().use { DigestInputStream(input, digest).copyTo(it) } }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    /** Streams [url] to [use], showing progress as [label]; a stalled connection fails rather than hanging Setup. */
+    private fun <T> fetch(url: String, label: String, use: (InputStream) -> T): T {
+        val c = URI(url).toURL().openConnection() as HttpURLConnection
+        c.connectTimeout = 30_000
+        c.readTimeout = 60_000
+        try {
+            if (c.responseCode != 200) throw IOException("Download failed (${c.responseCode}): $url")
+            return Progress(c.inputStream, c.contentLengthLong, label).use(use)
+        } finally {
+            c.disconnect()
+        }
+    }
+
+    /** Shows how many megabytes of [total] have been read, once per megabyte. */
+    private inner class Progress(input: InputStream, private val total: Long, private val label: String) : FilterInputStream(input) {
+        private var done = 0L
+
+        override fun read(): Int = super.read().also { if (it >= 0) count(1) }
+        override fun read(b: ByteArray, off: Int, len: Int): Int = super.read(b, off, len).also { if (it > 0) count(it) }
+
+        private fun count(n: Int) {
+            val before = done shr 20
+            done += n
+            val mb = done shr 20
+            if (mb != before) busy(if (total > 0) "$label: $mb / ${total shr 20} MB" else "$label: $mb MB")
+        }
+    }
+
+    /** The setup scripts, copied from the APK's assets to where the host can read them. */
+    private fun unpackAssets(): File {
+        val root = scratch()
+        val dir = File(root, "setup").apply { deleteRecursively() }
+        fun copy(path: String) {
+            val children = app.assets.list(path).orEmpty()
+            if (children.isEmpty()) {
+                File(root, path).apply { parentFile?.mkdirs() }.outputStream().use { out -> app.assets.open(path).use { it.copyTo(out) } }
+            } else children.forEach { copy("$path/$it") }
+        }
+        copy("setup")
+        return dir
+    }
+}
+
+/** Unpacks a release archive's single top-level directory as [to], skipping anything that would land outside it. */
+internal fun untarBz2(input: InputStream, to: File) {
+    TarArchiveInputStream(BZip2CompressorInputStream(input.buffered(1 shl 16))).use { tar ->
+        while (true) {
+            val e = tar.nextEntry ?: break
+            val rel = e.name.substringAfter('/', "")
+            if (rel.isEmpty() || rel.split('/').any { it == ".." }) continue
+            val f = File(to, rel)
+            when {
+                e.isDirectory -> f.mkdirs()
+                e.isSymbolicLink || e.isLink -> {}  // none in these archives; never follow one out of [to]
+                else -> { f.parentFile?.mkdirs(); f.outputStream().use { tar.copyTo(it) } }
+            }
+        }
+    }
+}
+
+/** The minirootfs file name and SHA-256 from Alpine's `latest-releases.yaml`. */
+internal fun minirootfs(index: String): Pair<String, String> {
+    val entry = index.split("\n-").firstOrNull { "flavor: alpine-minirootfs" in it } ?: throw IOException("No Alpine minirootfs found")
+    fun field(name: String) = Regex("\\n\\s*$name: (\\S+)").find(entry)?.groupValues?.get(1) ?: throw IOException("Bad Alpine index")
+    return field("file") to field("sha256")
+}
+
+/** `claude auth status --json`'s answer, or null if [output] holds none (the command itself failed). */
+internal fun authStatus(output: String): JSONObject? = try {
+    JSONObject(output.substring(output.indexOf('{'))).takeIf { it.has("loggedIn") }
+} catch (_: Exception) {
+    null
+}
+
+/**
+ * The Linux's resolv.conf: up to two of the network's own DNS servers, since some networks block public ones, ahead of
+ * [fallback] (assets/setup/resolv.conf, public ones). musl asks the first three at once and takes the first answer.
+ */
+internal fun resolvConf(network: List<InetAddress>, fallback: String): String =
+    network.filter { !it.isLinkLocalAddress && !it.isLoopbackAddress }.take(2)
+        .joinToString("") { "nameserver ${it.hostAddress}\n" } + fallback
+
+/** The DNS servers of the network the phone uses now (under a VPN, the VPN's). */
+fun networkDns(ctx: Context): List<InetAddress> {
+    val cm = ctx.getSystemService(ConnectivityManager::class.java)
+    return cm.activeNetwork?.let { cm.getLinkProperties(it)?.dnsServers }.orEmpty()
+}
+
+private val ANSI = Regex("\u001B\\[[0-9;?]*[ -/]*[@-~]")
+internal fun stripAnsi(s: String) = ANSI.replace(s, "")
+
+/** The page and one-time code from `codex login --device-auth`'s output (either may still be missing while it prints). */
+internal fun parseDeviceAuth(output: String): Pair<String?, String?> {
+    val text = stripAnsi(output)
+    val url = Regex("https://\\S+").find(text)?.value
+    // The code is printed on its own line, after the page's link: letters and digits in groups, e.g. ABCD-12345.
+    val code = Regex("(?m)^\\s*([A-Z0-9]{4,}-[A-Z0-9]{4,})\\s*$").find(text)?.groupValues?.get(1)
+    return url to code
+}
+
+/** Saves one API key into OpenCode's auth.json (mode 600): argv[1] is the provider, the key comes on stdin. */
+private val SAVE_KEY = """
+import json, os, sys
+p = os.path.expanduser('~/.local/share/opencode/auth.json')
+os.makedirs(os.path.dirname(p), exist_ok=True)
+try:
+    d = json.load(open(p))
+except Exception:
+    d = {}
+key = sys.stdin.readline().strip()
+if not key:
+    sys.exit('Empty key')
+d[sys.argv[1]] = {'type': 'api', 'key': key}
+fd = os.open(p + '.new', os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, 'w') as f:
+    json.dump(d, f)
+os.replace(p + '.new', p)
+""".trimIndent().replace("'", "\"")

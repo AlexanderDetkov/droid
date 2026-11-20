@@ -1,0 +1,457 @@
+#!/usr/bin/python3 -I
+"""droid: you, the agent, telling the Droid app what to show the owner.
+
+  droid dash FEELING [WORDS]     How Dash looks, and what he says beside your answer. needs_you makes it the
+                                 owner's turn. FEELING is a name (droid feelings) or a face as JSON: '{"smile": .6}'.
+  droid feelings                 The feelings Dash has.
+  droid show FILE [--full | --float] [--wait] [--id ID] [--timeout SECS]
+                                 Shows an HTML page now: in the chat (default), full screen, or floating over the app
+                                 the owner is in. --wait prints what the page sends (droid.send) as JSON {"text",
+                                 "data"}. --id ID: showing the same ID again updates that page in place.
+  droid notify TITLE [TEXT] [options]
+                                 Posts a notification, or updates the one with the same --id. Options:
+      --id ID                    names it, to update it (progress), take it away (--cancel) or wait on it. The id
+                                 "chat" is this chat's own notification: it replaces the one your answer would get
+                                 (and `droid notify --cancel chat` means your answer gets none).
+      --button LABEL ACTION      up to 3 (the reply field counts as one). ACTION is a message to you (any text), or
+                                 run:COMMAND (runs in your Linux, no turn), open:URL (a link or app: https:, tel:,
+                                 geo:, mailto:, intent:), page:FILE (an HTML page, full screen), chat: (opens this
+                                 chat), screen: (hands them your hidden screen), dismiss:.
+      --tap ACTION               what tapping it does (default chat:).
+      --reply HINT               a text field; what they type comes to you as a message.
+      --image FILE               a picture, shown when it's expanded.
+      --progress N/MAX | busy    a progress bar; update it by posting the same --id again.
+      --ongoing                  stays until you take it away (and through taps on its buttons).
+      --quiet | --urgent         no sound and low in the list, or a heads-up on the screen.
+      --private                  shows only "Droid" on the lock screen.
+      --feel FEELING             Dash's look in it (default: as you last set him).
+      --at WHEN                  posts it later instead (as for droid later), even after this task ends.
+      --wait [--timeout SECS]    waits for what the owner does with it and prints {"button", "text"}: a button's
+                                 label and action, "tap" and the tap's, "reply" and what they typed, or "dismissed"
+                                 (swiped away). A page: button's page answers instead: "page", and what it sends.
+  droid notify --cancel ID       takes notification ID away (or the one set for later).
+  droid wait ID [--timeout SECS] Keeps waiting for the answer to page ID (or notification ID: n-ID).
+  droid later WHEN MESSAGE       Wakes you in this chat at WHEN with MESSAGE, a note to yourself: 17:30, 9am,
+                                 tomorrow 9am, fri 14:00, in 2h, 45m, 2026-11-21 09:00.
+
+It works inside a Droid task (it writes to the task's output, which the app reads).
+"""
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import time
+import uuid
+from datetime import datetime, timedelta, timezone
+
+REPLIES = "/root/.droid/replies"
+FEELINGS = {
+    "content": "pleased, quietly: a job done",
+    "happy": "pleased, with a hop",
+    "celebrate": "delighted: something found, solved or won",
+    "excited": "eager: good news",
+    "love": "warm: something for someone they love",
+    "curious": "wondering: a guess you want them to check",
+    "surprised": "taken aback: something unexpected",
+    "confused": "puzzled: you're not sure what they meant",
+    "oops": "sheepish: it didn't work out",
+    "shy": "embarrassed: you got something wrong",
+    "straining": "struggling: something keeps failing",
+    "sleepy": "drowsy: waiting a long while",
+    "asleep": "asleep: nothing until later",
+    "needs_you": "calling them: it's their turn (a choice, a confirmation, a code)",
+    "thinking": "thinking it over",
+    "looking": "reading a screen",
+    "reading": "reading text",
+    "typing": "typing",
+    "scrolling": "scrolling",
+    "searching": "looking something up",
+    "waiting": "waiting for an app",
+    "working": "at work",
+    "focused": "concentrating",
+    "listening": "listening",
+    "idle": "at rest",
+}
+FACE = ["open", "smile", "size", "asym", "lookX", "lookY", "lean", "tilt", "stretch", "sway", "depth", "antenna", "curl",
+        "length", "glow", "tick", "blush", "glances", "enter", "feel"]
+
+
+def die(msg, code=1):
+    print("droid: " + msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def emit(event):
+    """One line on the task's output (one write, so it never splits), for the app."""
+    out = os.environ.get("DROID_OUT")
+    if not out:
+        die("this works inside a Droid task only")
+    line = (json.dumps(dict(type="droid", **event), ensure_ascii=False) + "\n").encode()
+    if len(line) > 4000:
+        die("too long")
+    try:
+        fd = os.open(out, os.O_WRONLY | os.O_APPEND)
+        try:
+            os.write(fd, line)
+        finally:
+            os.close(fd)
+    except OSError as e:
+        die(f"couldn't reach the app ({e.strerror})")
+
+
+def option(args, name, default=None):
+    if name in args:
+        i = args.index(name)
+        if i + 1 >= len(args):
+            die(f"{name} needs a value")
+        v = args[i + 1]
+        del args[i:i + 2]
+        return v
+    return default
+
+
+def seconds(v):
+    """A --timeout's value."""
+    try:
+        t = float(v)
+    except ValueError:
+        t = -1
+    if not t > 0:
+        die(f"--timeout takes seconds, not '{v}'")
+    return t
+
+
+ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+NOTE_ID = re.compile(r"[A-Za-z0-9_-]{1,62}")  # its answer's file is n-ID, which is an ID
+
+
+def dash(args):
+    if not args:
+        die("usage: droid dash FEELING [WORDS]")
+    feel = args[0]
+    if feel.lstrip().startswith("{"):
+        try:
+            face = json.loads(re.sub(r"(?<=[:\[,\s])(-?)\.(\d)", r"\g<1>0.\2", feel))  # .6 as JSON writes it: 0.6
+        except ValueError as e:
+            die(f"that face isn't JSON: {e}")
+        if not isinstance(face, dict) or any(k not in FACE for k in face):
+            die("a face takes these keys: " + ", ".join(FACE))
+        feel = face
+    else:
+        feel = feel.strip().lower().replace("-", "_")
+        if feel not in FEELINGS:
+            die(f"no feeling '{args[0]}'. These are: " + ", ".join(FEELINGS))
+    words = " ".join(args[1:]).strip()
+    emit(dict(op="dash", feel=feel, words=words[:200]))
+
+
+def wait(rid, timeout):
+    """Waits for the owner's answer to page RID (or to notification ID, as n-ID), which the app writes, and prints it.
+    Giving up, or stopped, it tells the app, which stops showing the owner it waits: an answer then is a message."""
+    path = f"{REPLIES}/{rid}.json"
+
+    def stopped(sig, _):
+        emit(dict(op="gave_up", id=rid))
+        sys.exit(128 + sig)
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        signal.signal(sig, stopped)
+    end = time.time() + timeout
+    while not os.path.exists(path):
+        if time.time() >= end:
+            emit(dict(op="gave_up", id=rid))
+            die(f"no answer yet. `droid wait {rid}` keeps waiting.", 2)
+        time.sleep(0.25)
+    time.sleep(0.05)  # written by rename, but be kind
+    with open(path) as f:
+        reply = f.read()
+    os.remove(path)
+    try:
+        r = json.loads(reply)
+    except ValueError:
+        r = {"text": reply}
+    if "error" in r:
+        die(r["error"])
+    print(json.dumps(r, ensure_ascii=False))
+
+
+def show(args):
+    pid = option(args, "--id")
+    timeout = seconds(option(args, "--timeout", "540"))
+    places = [w for w in ("full", "float") if f"--{w}" in args]
+    if len(places) > 1:
+        die("a page shows full screen or floating, not both")
+    where = places[0] if places else "chat"
+    waits = "--wait" in args
+    for flag in [f"--{where}", "--wait"]:
+        if flag in args:
+            args.remove(flag)
+    if len(args) != 1:
+        die("usage: droid show FILE [--full | --float] [--wait] [--id ID] [--timeout SECS]")
+    path = os.path.realpath(args[0])
+    if not os.path.isfile(path) or not os.access(path, os.R_OK):
+        die(f"no file {args[0]}")
+    if not 0 < os.path.getsize(path) <= 2_000_000:
+        die("a page is a file of up to 2 MB, and not empty")
+    if pid is None:
+        pid = uuid.uuid4().hex[:8]
+    elif not ID.fullmatch(pid):
+        die("an id is up to 64 letters, digits, - and _")
+    os.makedirs(REPLIES, exist_ok=True)
+    try:
+        os.remove(f"{REPLIES}/{pid}.json")  # an old answer isn't this one's
+    except FileNotFoundError:
+        pass
+    emit(dict(op="show", path=path, id=pid, where=where, wait=waits))
+    if waits:
+        wait(pid, timeout)
+    else:
+        print(f"Shown ({pid}).")
+
+
+ACTIONS = ("run:", "open:", "page:", "chat:", "screen:", "dismiss:")
+
+
+def action(what):
+    """A button's or the tap's action, checked: a page's file made absolute (the app reads it from there)."""
+    if what.startswith("page:"):
+        path = os.path.realpath(what[5:])
+        if not os.path.isfile(path):
+            die(f"no page {what[5:]}")
+        return "page:" + path
+    if what.startswith(("run:", "open:")) and len(what.split(":", 1)[1].strip()) == 0:
+        die(f"{what} needs what to run or open")
+    return what
+
+
+def notify(args):
+    if "--cancel" in args:
+        nid = option(args, "--cancel")
+        if not NOTE_ID.fullmatch(nid):
+            die(f"no notification '{nid}': an id is up to 62 letters, digits, - and _")
+        emit(dict(op="notify", id=nid, cancel=True))
+        print(f"Took {nid} away.")
+        return
+    spec = {}
+    buttons = []
+    words = []
+    timeout = 540.0
+    i = 0
+    while i < len(args):
+        a = args[i]
+        def val(n=1):
+            if i + n >= len(args):
+                die(f"{a} needs {'a value' if n == 1 else f'{n} values'}")
+            return args[i + 1:i + 1 + n]
+        if a == "--id":
+            spec["id"] = val()[0]; i += 2
+        elif a == "--button":
+            label, what = val(2)
+            buttons.append({"label": label, "do": action(what)}); i += 3
+        elif a == "--tap":
+            spec["tap"] = action(val()[0]); i += 2
+        elif a == "--reply":
+            spec["reply"] = val()[0]; i += 2
+        elif a == "--image":
+            path = os.path.realpath(val()[0])
+            if not os.path.isfile(path):
+                die(f"no picture {args[i + 1]}")
+            spec["image"] = path; i += 2
+        elif a == "--progress":
+            v = val()[0]
+            m = re.fullmatch(r"(\d+)\s*/\s*(\d+)", v)
+            if v == "busy":
+                spec["progress"] = {"busy": True}
+            elif m and int(m.group(2)) > 0:
+                spec["progress"] = {"n": int(m.group(1)), "max": int(m.group(2))}
+            else:
+                die("--progress takes N/MAX or busy")
+            i += 2
+        elif a == "--feel":
+            f = val()[0].strip().lower().replace("-", "_")
+            if f not in FEELINGS:
+                die(f"no feeling '{f}'. These are: " + ", ".join(FEELINGS))
+            spec["feel"] = f; i += 2
+        elif a == "--at":
+            val()
+            tz = phone_offset()
+            now = datetime.now(tz)
+            rest = args[i + 1:]
+            at, n = leading_when(rest[:next((k for k, w in enumerate(rest) if w.startswith("--")), len(rest))], now)
+            if at is None:
+                die(f"can't tell when '{args[i + 1]}' is. " + WHEN_EXAMPLES)
+            if at <= now:
+                die(f"{at:%a %b %-d %H:%M} has passed")
+            spec["at"] = int(at.timestamp() * 1000); i += 1 + n
+        elif a == "--timeout":
+            timeout = seconds(val()[0]); i += 2
+        elif a in ("--ongoing", "--private", "--wait"):
+            spec[a[2:]] = True; i += 1
+        elif a in ("--quiet", "--urgent"):
+            spec["level"] = a[2:]; i += 1
+        elif a.startswith("--"):
+            die(f"no option {a} (droid --help)")
+        else:
+            words.append(a); i += 1
+    if not words:
+        die("usage: droid notify TITLE [TEXT] [options] (droid --help)")
+    spec["title"] = words[0]
+    if len(words) > 1:
+        spec["text"] = " ".join(words[1:])[:2000]
+    if buttons:
+        spec["buttons"] = buttons
+    if len(buttons) + (1 if "reply" in spec else 0) > 3:
+        die("a notification has room for 3 buttons, the reply field counting as one")
+    if spec.get("wait") and "at" in spec:
+        die("--wait and --at don't go together: wait on it once it's posted")
+    nid = spec.setdefault("id", uuid.uuid4().hex[:8])
+    if not NOTE_ID.fullmatch(nid):
+        die("an id is up to 62 letters, digits, - and _")
+    if spec.get("wait"):
+        os.makedirs(REPLIES, exist_ok=True)
+        try:
+            os.remove(f"{REPLIES}/n-{nid}.json")
+        except FileNotFoundError:
+            pass
+    emit(dict(op="notify", **spec))
+    if spec.get("wait"):
+        wait(f"n-{nid}", timeout)
+    elif "at" in spec:
+        print(f"It will show on {datetime.fromtimestamp(spec['at'] / 1000, tz):%a %b %-d at %H:%M} ({nid}).")
+    else:
+        print(f"Notified ({nid}).")
+
+
+def phone_offset():
+    """The phone's UTC offset now (Droid's Linux runs on UTC): a time the agent gives is the owner's."""
+    try:
+        z = subprocess.run(["android", "date +%z"], capture_output=True, text=True, timeout=10).stdout.strip()
+    except (OSError, subprocess.SubprocessError) as e:
+        z = str(e)
+    m = re.fullmatch(r"([+-])(\d\d)(\d\d)", z)
+    if not m:
+        die(f"couldn't read the phone's time zone (android 'date +%z': {z or 'nothing'}); try again")
+    sign = 1 if m.group(1) == "+" else -1
+    return timezone(sign * timedelta(hours=int(m.group(2)), minutes=int(m.group(3))))
+
+
+DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+WHEN_EXAMPLES = "Try 17:30, 9am, tomorrow 9am, fri 14:00, in 2h or 2026-11-21 09:00"
+
+
+def weekday(w):
+    """'fri', 'friday' -> 4, or None ('friends' isn't a day)."""
+    return next((i for i, d in enumerate(DAYS) if len(w) >= 3 and d.startswith(w)), None)
+
+
+def clock(s):
+    """'17:30', '5:30pm', '9am', '9' -> (hour, minute), or None."""
+    m = re.fullmatch(r"(\d{1,2})(?::(\d\d))?\s*(am|pm)?", s.strip())
+    if not m:
+        return None
+    h, mi, ap = int(m.group(1)), int(m.group(2) or 0), m.group(3)
+    if mi > 59 or h > (12 if ap else 23) or (ap and h == 0):
+        return None
+    if ap == "pm" and h < 12:
+        h += 12
+    if ap == "am" and h == 12:
+        h = 0
+    return h, mi
+
+
+def when(text, now):
+    s = text.strip().lower()
+    m = re.fullmatch(r"(?:in\s+)?((?:\d+(?:\.\d+)?\s*(?:d|days?|h|hrs?|hours?|m|mins?|minutes?|s|secs?|seconds?)\s*)+)", s)
+    if m:
+        total = timedelta()
+        for n, u in re.findall(r"(\d+(?:\.\d+)?)\s*([a-z]+)", m.group(1)):
+            n = float(n)
+            total += {"d": timedelta(days=n), "h": timedelta(hours=n), "m": timedelta(minutes=n), "s": timedelta(seconds=n)}[u[0]]
+        return now + total
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%dt%H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dt%H:%M:%S"):
+        try:
+            return datetime.strptime(s, fmt).replace(tzinfo=now.tzinfo)
+        except ValueError:
+            pass
+    try:
+        return datetime.strptime(s, "%Y-%m-%d").replace(hour=9, tzinfo=now.tzinfo)
+    except ValueError:
+        pass
+    day = None
+    words = s.split(None, 1)
+    if words and (words[0] in ("today", "tonight", "tomorrow") or weekday(words[0]) is not None):
+        day, s = words[0], (words[1] if len(words) > 1 else "9am" if words[0] != "tonight" else "8pm")
+    s = re.sub(r"^at\s+", "", s)
+    t = clock(s)
+    if t is None:
+        return None
+    at = now.replace(hour=t[0], minute=t[1], second=0, microsecond=0)
+    if day == "tomorrow":
+        at += timedelta(days=1)
+    elif day and weekday(day) is not None:
+        at += timedelta(days=(weekday(day) - now.weekday()) % 7)
+        if at <= now:
+            at += timedelta(days=7)
+    elif at <= now and day is None:
+        at += timedelta(days=1)
+    return at
+
+
+def leading_when(words, now):
+    """The time the longest run of WORDS from the start reads as (a time may take a few: tomorrow at 9am), and how
+    many words it took; (None, 0) if none does."""
+    for n in range(min(len(words), 5), 0, -1):
+        at = when(" ".join(words[:n]), now)
+        if at is not None:
+            return at, n
+    return None, 0
+
+
+def later(args):
+    if len(args) < 2:
+        die("usage: droid later WHEN MESSAGE")
+    now = datetime.now(phone_offset())
+    at, n = leading_when(args, now)
+    if at is None:
+        die(f"can't tell when '{args[0]}' is. " + WHEN_EXAMPLES)
+    if at <= now:
+        die(f"{at:%a %b %-d %H:%M} has passed")
+    text = " ".join(args[n:]).strip()
+    if not text:
+        die("usage: droid later WHEN MESSAGE (the message is a note to yourself)")
+    emit(dict(op="later", at=int(at.timestamp() * 1000), text=text))
+    print(f"I'll wake you in this chat on {at:%a %b %-d at %H:%M} (phone time).")
+
+
+def main():
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help", "help"):
+        print(__doc__.strip())
+        return
+    cmd, rest = args[0], args[1:]
+    if cmd == "dash":
+        dash(rest)
+    elif cmd == "feelings":
+        for k, v in FEELINGS.items():
+            print(f"{k:11} {v}")
+    elif cmd == "show":
+        show(rest)
+    elif cmd == "notify":
+        notify(rest)
+    elif cmd == "wait":
+        timeout = seconds(option(rest, "--timeout", "540"))
+        if len(rest) != 1:
+            die("usage: droid wait ID [--timeout SECS]")
+        if not ID.fullmatch(rest[0]):
+            die(f"no page or notification '{rest[0]}'")
+        emit(dict(op="wait", id=rest[0]))  # the app shows the owner it waits again
+        wait(rest[0], timeout)
+    elif cmd == "later":
+        later(rest)
+    else:
+        die(f"no command '{cmd}' (droid --help)")
+
+
+if __name__ == "__main__":
+    main()

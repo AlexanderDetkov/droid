@@ -1,0 +1,37 @@
+#!/bin/bash
+# Install or update an agent engine in the chroot: droid-install-engine codex|opencode
+# Downloads the engine's musl build from its GitHub release (Alpine is musl), checks it against the SHA-256 GitHub
+# lists for the asset, and puts the binary in /root/.local/bin. Does nothing if that version is already installed.
+# Claude Code has its own installer (see install.sh).
+set -euo pipefail
+ENGINE=$1
+case "$(uname -m)" in
+  aarch64|arm64) CPU=arm64 TRIPLE=aarch64 ;;
+  x86_64) CPU=x64 TRIPLE=x86_64 ;;
+  *) echo "Unsupported CPU $(uname -m)" >&2; exit 1 ;;
+esac
+case "$ENGINE" in
+  codex)    REPO=openai/codex;  ASSET="codex-$TRIPLE-unknown-linux-musl.tar.gz"; BIN="codex-$TRIPLE-unknown-linux-musl"; NAME=codex ;;
+  # x64: the baseline build, which doesn't need AVX2 (emulators often lack it); phones are arm64
+  opencode) REPO=sst/opencode;  NAME=opencode; BIN=opencode
+            if [ "$CPU" = x64 ]; then ASSET=opencode-linux-x64-baseline-musl.tar.gz; else ASSET=opencode-linux-arm64-musl.tar.gz; fi ;;
+  *) echo "Unknown engine $ENGINE" >&2; exit 1 ;;
+esac
+DEST=/root/.local/bin
+mkdir -p $DEST
+REL=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest")
+TAG=$(echo "$REL" | jq -r .tag_name)
+VERSION=${TAG#rust-v}; VERSION=${VERSION#v}
+URL=$(echo "$REL" | jq -r --arg n "$ASSET" '.assets[] | select(.name==$n) | .browser_download_url')
+SHA=$(echo "$REL" | jq -r --arg n "$ASSET" '.assets[] | select(.name==$n) | .digest' | sed 's/^sha256://')
+[ -n "$URL" ] && [ -n "$SHA" ] || { echo "No $ASSET in $REPO's latest release ($TAG)" >&2; exit 1; }
+if [ -x "$DEST/$NAME" ] && "$DEST/$NAME" --version 2>/dev/null | grep -qF "$VERSION"; then
+  echo "$NAME $VERSION is up to date"; exit 0
+fi
+T=$(mktemp -d /tmp/engine.XXXXXX); trap 'rm -rf "$T"' EXIT
+curl -fsSL --retry 3 -o "$T/a.tgz" "$URL"
+[ "$(sha256sum "$T/a.tgz" | cut -d' ' -f1)" = "$SHA" ] || { echo "$ASSET is corrupt (checksum mismatch)" >&2; exit 1; }
+tar -xzf "$T/a.tgz" -C "$T"
+[ -f "$T/$BIN" ] || { echo "$BIN not in $ASSET" >&2; exit 1; }
+install -m 755 "$T/$BIN" "$DEST/$NAME.new" && mv "$DEST/$NAME.new" "$DEST/$NAME"  # rename: a running task keeps its copy
+echo "Installed $NAME $VERSION"

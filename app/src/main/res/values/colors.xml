@@ -1,0 +1,4 @@
+<resources>
+    <!-- Window background before Compose draws; matches Palette.bg in Theme.kt. -->
+    <color name="bg">#FFFFFF</color>
+</resources>

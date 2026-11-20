@@ -1,0 +1,6 @@
+#!/bin/sh
+# Run a shell command in the real Android system, outside Droid's Linux, e.g. `android input -d 4 tap 540 222` or
+# `android 'content query --uri content://sms/inbox'`. As root through the chroot; on phones without root as the
+# shell user, through Droid's helper (droid-bridge).
+[ -n "$DROID_BRIDGE" ] && exec python3 -I /usr/local/bin/droid-bridge "$*"
+exec chroot /proc/1/root /system/bin/sh -c ". /data/local/droid/rootfs/etc/android-env; $*"

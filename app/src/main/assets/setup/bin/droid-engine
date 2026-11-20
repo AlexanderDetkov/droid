@@ -1,0 +1,403 @@
+#!/usr/bin/env python3
+"""Run a non-Claude agent engine (Codex, OpenCode) and speak Claude Code's stream-json, which is all Droid parses.
+
+Usage: droid-engine ENGINE [--resume SESSION_ID] [--model MODEL]      (ENGINE: codex | opencode)
+       droid-engine --replay ENGINE FILE       (tests: convert a recorded event stream)
+  stdin:  Claude stream-json user messages, one per line: {"type":"user","message":{"role":"user","content":"..."}}.
+          Neither engine takes a message mid-turn, so a message that arrives while a turn runs is queued and sent as
+          the next turn of the same session (resumed) as soon as the current one ends. Closing stdin lets the queued
+          turns finish, then exits.
+  stdout: {"type":"system","subtype":"init","session_id":..}, {"type":"assistant","message":{"content":[text|tool_use]}}
+          and one {"type":"result",..}: after the last turn when messages were queued, not after each (the earlier
+          turns' answers stay as plain assistant text, like narration in a Claude turn that took a mid-task message).
+  SIGTERM stops the engine's process group and exits.
+
+The engines' own JSON event streams are converted by the Codex and OpenCode classes below; they are pure (an event in,
+output events out) so tests can replay recorded streams (see app/src/test/resources/engines).
+"""
+import collections
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import threading
+
+IMAGE_EXT = ('.png', '.jpg', '.jpeg', '.webp', '.gif')
+
+
+def describe_command(cmd):
+    """A short human description of a shell command, for the step log (Claude writes its own; engines don't)."""
+    c = cmd.strip()
+    m = re.match(r"^(?:/\S*/)?(?:ba|z|a)?sh -l?c (.*)$", c, re.S)  # Codex wraps commands: /bin/bash -lc '...'
+    if m:
+        c = m.group(1).strip()
+        if len(c) >= 2 and c[0] == c[-1] and c[0] in "'\"":
+            c = c[1:-1]
+    one = ' '.join(c.split())
+    if re.match(r"^(\S+/)?shot\b", one):
+        return 'Looking at the screen'
+    m = re.search(r"\binput\s+(?:-d\s+\S+\s+)?(tap|swipe|text|keyevent|draganddrop|press|roll)\b", one)
+    if m:
+        return {'tap': 'Tapping the screen', 'swipe': 'Swiping', 'text': 'Typing', 'keyevent': 'Pressing a key'}.get(
+            m.group(1), 'Using the screen')
+    if re.search(r"\bam start\b", one):
+        return 'Opening an app'
+    return one[:60] if one else 'Running a command'
+
+
+def describe_path(path, verb):
+    name = os.path.basename(path or '')
+    return f"{verb} {name}" if name else verb
+
+
+def tool_use(name, description, **inp):
+    return {'type': 'assistant', 'message': {'content': [
+        {'type': 'tool_use', 'name': name, 'input': dict(description=description, **inp)}]}}
+
+
+def text_event(text):
+    return {'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': text}]}}
+
+
+class Translator:
+    """One turn of one engine: feed() its JSON events, then end() with how the process ended."""
+
+    def __init__(self, session):
+        self.session = session          # known up front when resuming
+        self.announced = False
+        self.last_text = ''
+        self.error = None
+        self.done = False               # the engine said the turn finished (or failed)
+
+    def _init(self, sid):
+        """The init event, once the session id is known (a new session only learns it from the first event)."""
+        if sid and not self.announced:
+            self.session = sid
+            self.announced = True
+            return [{'type': 'system', 'subtype': 'init', 'session_id': sid}]
+        return []
+
+    def start(self):
+        return self._init(self.session)
+
+    def end(self, code, stderr_tail):
+        """The turn's result event, given the process's exit code and the end of its stderr."""
+        if self.error is None and code != 0:
+            self.error = (stderr_tail.strip().splitlines() or [f'The agent exited with code {code}'])[-1]
+        if self.error is None and not self.done and not self.last_text:
+            self.error = (stderr_tail.strip().splitlines() or ['The agent ended without answering'])[-1]
+        r = {'type': 'result', 'subtype': 'error' if self.error else 'success', 'is_error': bool(self.error),
+             'result': self.error if self.error else self.last_text}
+        if self.session:
+            r['session_id'] = self.session
+        return r
+
+
+class Codex(Translator):
+    """`codex exec --json`: thread.started, item.started/completed (agent_message, command_execution, file_change,
+    mcp_tool_call, web_search, ...), turn.completed | turn.failed."""
+
+    @staticmethod
+    def command(session, model, search=True):
+        args = ['codex', 'exec']
+        if session:
+            args.append('resume')
+        # The chroot is the sandbox (and codex's own can't start there): no approval prompts, no inner sandbox.
+        args += ['--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox']
+        if model:
+            args += ['-m', model]
+        if search:
+            args += ['-c', 'web_search="live"']
+        if session:
+            args.append(session)
+        return args + ['-']  # the prompt comes on stdin
+
+    prompt_on_stdin = True
+
+    def __init__(self, session):
+        super().__init__(session)
+        self.seen = set()
+        self.soft_error = None
+
+    def feed(self, ev):
+        out = []
+        t = ev.get('type')
+        if t == 'thread.started':
+            out += self._init(ev.get('thread_id'))
+        elif t in ('item.started', 'item.completed'):
+            item = ev.get('item') or {}
+            kind, iid = item.get('type'), item.get('id')
+            if kind == 'agent_message' and t == 'item.completed':
+                text = item.get('text') or ''
+                if text.strip():
+                    self.last_text = text
+                    out.append(text_event(text))
+            elif kind in ('command_execution', 'file_change', 'mcp_tool_call', 'web_search') and iid not in self.seen:
+                self.seen.add(iid)  # announced when it starts; a completion without a start announces it then
+                if kind == 'command_execution':
+                    out.append(tool_use('Bash', describe_command(item.get('command') or ''), command=item.get('command')))
+                elif kind == 'file_change':
+                    names = [os.path.basename(c.get('path', '')) for c in item.get('changes') or []]
+                    out.append(tool_use('Edit', 'Editing ' + ', '.join(n for n in names if n)[:60] if any(names) else 'Editing files'))
+                elif kind == 'web_search':
+                    out.append(tool_use('WebSearch', ('Searching the web: ' + (item.get('query') or ''))[:80]))
+                else:
+                    out.append(tool_use(item.get('tool') or 'mcp', 'Using ' + (item.get('tool') or 'a tool')))
+        elif t == 'turn.completed':
+            self.done = True
+        elif t == 'turn.failed':
+            self.done = True
+            self.error = (ev.get('error') or {}).get('message') or 'The turn failed'
+        elif t == 'error':
+            self.soft_error = ev.get('message')  # turn.failed normally follows with the same message
+        return out
+
+    def end(self, code, stderr_tail):
+        if self.error is None and not self.done and self.soft_error:
+            self.error = self.soft_error
+        return super().end(code, stderr_tail)
+
+
+class OpenCode(Translator):
+    """`opencode run --format json`: step_start/step_finish, text, tool_use (completed ones), error. No result event:
+    the turn ends when the process exits."""
+
+    @staticmethod
+    def command(session, model):
+        args = ['opencode', 'run', '--format', 'json', '--auto']  # --auto: no permission prompts (nobody to answer)
+        if session:
+            args += ['--session', session]
+        if model:
+            args += ['--model', model]
+        return args + ['--']  # then the prompt
+
+    prompt_on_stdin = False
+
+    def __init__(self, session):
+        super().__init__(session)
+        self.seen = set()
+        self.errors = []
+
+    def feed(self, ev):
+        out = self._init(ev.get('sessionID'))
+        t = ev.get('type')
+        part = ev.get('part') or {}
+        if t == 'text':
+            text = part.get('text') or ''
+            if text.strip():
+                self.last_text = text
+                out.append(text_event(text))
+        elif t == 'tool_use':
+            st = part.get('state') or {}
+            cid = part.get('callID') or part.get('id')
+            if st.get('status') in ('completed', 'error') and cid not in self.seen:
+                self.seen.add(cid)
+                out.append(self._step(part.get('tool') or '', st.get('input') or {}, st.get('title') or ''))
+        elif t == 'step_finish':
+            if part.get('reason') == 'stop':
+                self.done = True
+        elif t == 'error':
+            err = ev.get('error') or {}
+            self.errors.append((err.get('data') or {}).get('message') or err.get('name') or 'Error')
+        return out
+
+    @staticmethod
+    def _step(tool, inp, title):
+        path = inp.get('filePath') or inp.get('path') or ''
+        if tool == 'bash':
+            cmd = inp.get('command') or ''
+            return tool_use('Bash', inp.get('description') or describe_command(cmd), command=cmd)
+        if tool == 'read':
+            if path.lower().endswith(IMAGE_EXT):
+                return tool_use('Read', 'Looking at the screen', file_path=path)
+            return tool_use('Read', describe_path(path, 'Reading'), file_path=path)
+        if tool in ('write', 'edit', 'patch', 'multiedit', 'apply_patch'):
+            return tool_use('Edit', describe_path(path, 'Editing'), file_path=path)
+        if tool == 'webfetch':
+            return tool_use('WebFetch', ('Fetching ' + (inp.get('url') or ''))[:80])
+        if tool in ('grep', 'glob', 'list'):
+            return tool_use(tool.capitalize(), 'Searching files')
+        return tool_use(tool or 'tool', title or ('Using ' + (tool or 'a tool')))
+
+    def end(self, code, stderr_tail):
+        if self.errors:
+            # The first error is often a generic "Unexpected server error"; prefer a specific one.
+            self.error = next((m for m in reversed(self.errors) if 'Unexpected server error' not in m), self.errors[-1])
+        return super().end(code, stderr_tail)
+
+
+ENGINES = {'codex': Codex, 'opencode': OpenCode}
+
+
+def message_text(line):
+    """The text of one stream-json user message line, or None if it isn't one."""
+    try:
+        o = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(o, dict) or o.get('type') != 'user':
+        return None
+    c = (o.get('message') or {}).get('content')
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        return '\n'.join(b.get('text', '') for b in c if isinstance(b, dict) and b.get('type') == 'text')
+    return None
+
+
+class Inbox:
+    """Messages from stdin, read by a thread so they can arrive while a turn runs."""
+
+    def __init__(self, stream):
+        self.items = collections.deque()
+        self.eof = False
+        self.cv = threading.Condition()
+        threading.Thread(target=self._read, args=(stream,), daemon=True).start()
+
+    def _read(self, stream):
+        for line in stream:
+            text = message_text(line)
+            if text is not None:
+                with self.cv:
+                    self.items.append(text)
+                    self.cv.notify_all()
+        with self.cv:
+            self.eof = True
+            self.cv.notify_all()
+
+    def pending(self):
+        with self.cv:
+            return bool(self.items)
+
+    def take(self):
+        """The next message, waiting for one; None once stdin is closed and everything was taken."""
+        with self.cv:
+            while not self.items and not self.eof:
+                self.cv.wait()
+            return self.items.popleft() if self.items else None
+
+
+def emit(ev):
+    sys.stdout.write(json.dumps(ev, ensure_ascii=False) + '\n')
+    sys.stdout.flush()
+
+
+class Runner:
+    def __init__(self, engine, session, model):
+        self.cls = ENGINES[engine]
+        self.session = session
+        self.model = model
+        self.child = None
+
+    def kill_child(self):
+        c = self.child
+        if c and c.poll() is None:
+            try:
+                os.killpg(c.pid, signal.SIGTERM)
+            except OSError:
+                pass
+
+    def turn(self, prompt, more):
+        """Runs one turn. Its result is emitted unless more() says messages are queued (its text already went out as
+        narration) and it didn't fail."""
+        tr = self.cls(self.session)
+        for ev in tr.start():
+            emit(ev)
+        cmd = self.cls.command(self.session, self.model)
+        stdin_prompt = self.cls.prompt_on_stdin
+        if not stdin_prompt:
+            cmd = cmd + [prompt]
+        env = dict(os.environ)
+        env.setdefault('OPENCODE_DISABLE_AUTOUPDATE', 'true')
+        env.setdefault('OPENCODE_CONFIG_CONTENT', json.dumps({'autoupdate': False, 'snapshot': False, 'share': 'disabled'}))
+        try:
+            self.child = subprocess.Popen(cmd, stdin=subprocess.PIPE if stdin_prompt else subprocess.DEVNULL,
+                                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
+                                          start_new_session=True, text=True, encoding='utf-8', errors='replace')
+        except OSError as e:
+            res = {'type': 'result', 'subtype': 'error', 'is_error': True, 'result': f'Could not start {cmd[0]}: {e}'}
+            emit(res)
+            return
+        tail = collections.deque(maxlen=20)
+        reader = threading.Thread(target=lambda: [tail.append(l.rstrip()) for l in self.child.stderr], daemon=True)
+        reader.start()
+        if stdin_prompt:
+            try:
+                self.child.stdin.write(prompt)
+                self.child.stdin.close()
+            except OSError:
+                pass
+        for line in self.child.stdout:
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(ev, dict):
+                for out in tr.feed(ev):
+                    emit(out)
+        code = self.child.wait()
+        self.child.stdout.close()
+        # The last stderr lines say why it failed: wait for the reader to have them all (a while at most: something it
+        # started may hold stderr open), then join a copy, which the reader can't change meanwhile.
+        reader.join(5)
+        self.session = tr.session or self.session
+        res = tr.end(code, '\n'.join(tail.copy()))
+        if res['is_error'] or not more():
+            emit(res)
+
+    def run(self, inbox):
+        msg = inbox.take()
+        while msg is not None:
+            self.turn(msg, inbox.pending)
+            # After a result Droid closes stdin, so this normally ends; a message that slips in first is a new turn.
+            msg = inbox.take()
+
+
+def replay(engine, path, code=0):
+    """Converts a recorded event stream (a file of the engine's JSON lines) as one turn; for tests."""
+    tr = ENGINES[engine](None)
+    for ev in tr.start():
+        emit(ev)
+    for line in open(path, encoding='utf-8'):
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        for out in tr.feed(ev):
+            emit(out)
+    emit(tr.end(code, ''))
+
+
+def main(argv):
+    if len(argv) == 4 and argv[1] == '--replay':
+        replay(argv[2], argv[3])
+        return 0
+    if len(argv) < 2 or argv[1] not in ENGINES:
+        sys.stderr.write(__doc__)
+        return 2
+    engine, session, model = argv[1], None, None
+    a = argv[2:]
+    while a:
+        if a[0] == '--resume' and len(a) > 1:
+            session, a = a[1], a[2:]
+        elif a[0] == '--model' and len(a) > 1:
+            model, a = a[1], a[2:]
+        else:
+            sys.stderr.write(f'unknown argument: {a[0]}\n')
+            return 2
+    runner = Runner(engine, session, model)
+
+    def stop(*_):
+        runner.kill_child()
+        os._exit(143)
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    runner.run(Inbox(sys.stdin))
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv))

@@ -1,0 +1,173 @@
+package com.adetkov.droid
+
+import org.json.JSONException
+import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Locale
+
+/** One line inside a turn's collapsible work log: a tool step or an agent narration note. */
+class Line(val text: String, val note: Boolean, val ts: Long = 0)
+
+/** Transcript rows: messages, plus one work-log group per turn (steps and narration). */
+sealed interface Item {
+    val key: String
+    class Message(val index: Int, val msg: Msg) : Item { override val key = "m$index" }
+    /**
+     * A turn's work log; [start] is when the request was sent, [end] when its last step or its answer came. Its [key] is
+     * the turn's ([turn]: where it starts, and when, so a retry in its place is a new row), so it stays the same row, and
+     * the same Dash, when its first step comes; [stillKey] names its saved still.
+     */
+    class Steps(val stillKey: String, val lines: List<Line>, val live: Boolean, val start: Long = 0, val end: Long = 0, val turn: Int = 0) : Item {
+        override val key = "t$turn:$start"
+    }
+}
+
+/**
+ * Per turn (a user message and what follows): steps and narration notes fold into one group at the
+ * position of the first of them; the answer stays a message (a result-less run keeps all narration folded).
+ * The last turn is "live" while [running] and it has no answer since its latest work: a message sent mid-turn can go
+ * in before the answer it came during, and the agent then works on it after that answer.
+ */
+fun buildItems(messages: List<Msg>, running: Boolean): List<Item> {
+    val out = ArrayList<Item>()
+    var from = 0
+    while (from < messages.size) {
+        var to = from + 1
+        while (to < messages.size && !messages[to].kind.opensTurn) to++
+        val turn = from until to
+        val answer = turn.lastOrNull { messages[it].kind == Kind.AGENT }
+        val live = running && to == messages.size &&
+            (answer == null || turn.any { it > answer && (messages[it].kind == Kind.STEP || messages[it].kind == Kind.NOTE) })
+        val start = messages[from].ts
+        // The turn's last work; a status ("Interrupted") may come much later, when the app starts again.
+        val end = turn.lastOrNull { messages[it].kind != Kind.STATUS }?.let { messages[it].ts } ?: start
+        var group = -1
+        for (i in turn) {
+            val m = messages[i]
+            when {
+                m.kind == Kind.STEP || m.kind == Kind.NOTE -> {
+                    val line = Line(if (m.kind == Kind.NOTE) plainLine(m.text) else m.text, m.kind == Kind.NOTE, m.ts)
+                    if (group < 0) { group = out.size; out += Item.Steps("s$i", listOf(line), live, start, end, from) }
+                    else (out[group] as Item.Steps).let { out[group] = Item.Steps(it.stillKey, it.lines + line, live, start, end, from) }
+                }
+                m.kind == Kind.DASH -> {}  // Dash shows it, on the turn's work row
+                else -> out += Item.Message(i, m)
+            }
+        }
+        if (live && group < 0) out += Item.Steps("w$from", emptyList(), true, start, end, from)
+        from = to
+    }
+    return out
+}
+
+private fun plainLine(s: String) = stripMarkdown(s).replace(Regex("\\s+"), " ")
+
+/** How the last turn ended, for what Dash does after it. */
+enum class Outcome { ASKS, DONE, FAILED, STOPPED }
+
+/** How the agent set Dash (`droid dash`): his [feel], and the [words] beside him. */
+data class Mood(val feel: Feel, val words: String) {
+    /** Whether it's the owner's turn: he calls them (needs_you, or a face of the agent's own built on it). */
+    val calls get() = feel.call
+}
+
+private val moods = object : LinkedHashMap<String, Mood?>(64, .75f, true) {
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Mood?>?) = size > 64
+}
+
+/** A DASH message's [Mood] (null for one this Droid can't read). The same text gives the same Mood, so Dash keeps it. */
+fun moodOf(text: String): Mood? = synchronized(moods) {
+    moods.getOrPut(text) {
+        try {
+            val o = JSONObject(text)
+            val feel = when (val f = o.opt("feel")) {
+                is JSONObject -> Feel.face(f)
+                is String -> Feel.of(f) ?: f.takeIf { it.trimStart().startsWith("{") }?.let { Feel.face(JSONObject(it)) }
+                else -> null
+            }
+            feel?.let { Mood(it, o.optString("words").trim().take(120)) }
+        } catch (_: JSONException) { null }
+    }
+}
+
+/** The last turn's messages: everything after the request (or wake-up) that started it. */
+fun lastTurn(messages: List<Msg>): List<Msg> = messages.takeLastWhile { !it.kind.opensTurn }
+
+/** How the agent last set Dash in the last turn, if it did. */
+fun lastMood(messages: List<Msg>): Mood? = lastTurn(messages).lastOrNull { it.kind == Kind.DASH }?.let { moodOf(it.text) }
+
+/**
+ * The page the last turn is waiting on (`droid show --wait`, not answered yet), while it runs: Dash calls the owner to
+ * it. Null if there is none.
+ */
+fun waitingPage(messages: List<Msg>, running: Boolean): Msg? =
+    if (!running) null else lastTurn(messages).lastOrNull { it.kind == Kind.PAGE }?.takeIf { PageInfo.of(it).let { p -> p.wait && p.reply == null } }
+
+/**
+ * The last turn's [Outcome]: null while it runs (or before any). It's the owner's turn ([Outcome.ASKS]) only when the
+ * agent says so, with `droid dash needs_you`; the app never guesses it from the answer.
+ */
+fun lastOutcome(messages: List<Msg>, running: Boolean): Outcome? {
+    if (running) return null
+    val turn = lastTurn(messages)
+    val status = turn.lastOrNull { it.kind == Kind.STATUS }
+    val answer = turn.lastOrNull { it.kind == Kind.AGENT }
+    return when {
+        status != null && status.text == "Stopped" -> Outcome.STOPPED
+        status != null && (answer == null || status.ts >= answer.ts) -> Outcome.FAILED
+        lastMood(messages)?.calls == true -> Outcome.ASKS
+        answer != null -> Outcome.DONE
+        else -> null
+    }
+}
+
+/**
+ * The line beside Dash after a turn, and a notification's header: "Your turn" when it's the owner's turn, the agent's
+ * words when it gave some, "Couldn't finish" for a failure; null for none.
+ */
+fun turnLabel(outcome: Outcome?, mood: Mood?): String? = when {
+    outcome == Outcome.FAILED -> "Couldn't finish"
+    outcome == Outcome.STOPPED -> null
+    mood == null -> if (outcome == Outcome.ASKS) "Your turn" else null
+    mood.calls -> if (mood.words.isEmpty()) "Your turn" else "Your turn · ${mood.words}"
+    else -> mood.words.ifEmpty { null }
+}
+
+/** Current status of the last turn: its latest step or narration note, or what the agent had Dash say. */
+fun latestStatus(messages: List<Msg>): String =
+    lastTurn(messages).lastOrNull { it.kind == Kind.STEP || it.kind == Kind.NOTE || (it.kind == Kind.DASH && moodOf(it.text)?.words?.isNotEmpty() == true) }
+        ?.let { when (it.kind) { Kind.NOTE -> plainLine(it.text); Kind.DASH -> moodOf(it.text)!!.words; else -> it.text } } ?: "Working…"
+
+/** The drawer's date group for a chat last active at [ts]: Today, Yesterday, Previous 7 / 30 days, then by month. */
+fun dayGroup(ts: Long, now: Long = System.currentTimeMillis()): String {
+    val c = Calendar.getInstance().apply {
+        timeInMillis = now
+        set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+    }
+    val today = c.timeInMillis
+    val year = c.get(Calendar.YEAR)
+    c.add(Calendar.DAY_OF_YEAR, -1); val yesterday = c.timeInMillis
+    c.add(Calendar.DAY_OF_YEAR, -6); val week = c.timeInMillis
+    c.add(Calendar.DAY_OF_YEAR, -23); val month = c.timeInMillis
+    return when {
+        ts >= today -> "Today"
+        ts >= yesterday -> "Yesterday"
+        ts >= week -> "Previous 7 days"
+        ts >= month -> "Previous 30 days"
+        else -> {
+            val then = Calendar.getInstance().apply { timeInMillis = ts }
+            SimpleDateFormat(if (then.get(Calendar.YEAR) == year) "MMMM" else "MMMM yyyy", Locale.getDefault()).format(then.time)
+        }
+    }
+}
+
+/** "12s", "4m 05s", "1h 02m". */
+fun duration(ms: Long): String {
+    val s = (ms / 1000).coerceAtLeast(0)
+    return when {
+        s < 60 -> "${s}s"
+        s < 3600 -> "%dm %02ds".format(s / 60, s % 60)
+        else -> "%dh %02dm".format(s / 3600, s % 3600 / 60)
+    }
+}

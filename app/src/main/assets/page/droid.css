@@ -1,0 +1,97 @@
+/*
+ * Droid's stylesheet for pages the agent makes: plain HTML looks like the app (its font, colors, light or dark), and
+ * text reads exactly like an answer's Markdown. Everything here can be overridden by the page. Colors are variables
+ * (set for the theme by the app), by what they're for: --bg the page; --surface a card or field on it, --raised one on
+ * a card; --hairline a line; --text and --muted text; --ink a main button and --on-ink its text; --call Dash's accent
+ * and --on-call text on it; --danger, --success; --sheet, --code-bg, --code-header.
+ */
+@font-face { font-family: "Droid Sans"; src: url(/_droid/font.ttf); font-weight: 100 1000; font-display: block; }
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html { color-scheme: light dark; }
+html.light { color-scheme: light; }
+html.dark { color-scheme: dark; }
+html, body { margin: 0; padding: 0; background: transparent; }
+body {
+  font-family: "Droid Sans", "Google Sans", Roboto, system-ui, sans-serif;
+  font-size: 16px; line-height: 24px; letter-spacing: .1px; color: var(--text);
+  overflow-wrap: anywhere; -webkit-text-size-adjust: 100%;
+}
+html.full body { padding: 8px 20px 24px; background: var(--bg); }
+html.float body { padding: 4px 20px 20px; }
+html.inline, html.inline body { overflow: hidden; }
+/* In the chat the page is 2px wider each side than the text column (PageView), so outlines and focus rings at its
+   edges are never cut off, while its text lines up with the answer's. */
+html.inline body { padding: 0 2px; }
+
+/* Text, as an answer's Markdown shows it */
+p, ul, ol, pre, table, blockquote, figure, details, form, fieldset { margin: 12px 0; }
+#droid > :first-child, body > :first-child { margin-top: 0; }
+#droid > :last-child, body > :last-child { margin-bottom: 0; }
+h1, h2, h3, h4, h5, h6 { margin: 18px 0 0; font-weight: 600; }
+h1 + *, h2 + *, h3 + *, h4 + *, h5 + *, h6 + * { margin-top: 12px; }
+h1 { font-size: 20px; line-height: 28px; }
+h2 { font-size: 18px; line-height: 24px; }
+h3, h4, h5, h6 { font-size: 17px; line-height: 24px; }
+b, strong { font-weight: 600; }
+a { color: var(--text); text-decoration: underline; text-decoration-color: var(--muted); text-underline-offset: 2px; }
+ul, ol { padding-left: 22px; }
+li + li { margin-top: 6px; }
+li::marker { color: var(--muted); }
+blockquote { padding-left: 14px; border-left: 3px solid var(--hairline); color: var(--muted); }
+hr { border: 0; height: 1px; background: var(--hairline); margin: 18px 0; }
+code { font-family: "Droid Mono", ui-monospace, monospace; font-size: 14px; background: var(--code-header); border-radius: 4px; padding: 1px 4px; }
+pre { padding: 14px; background: var(--code-bg); border: 1px solid var(--hairline); border-radius: 12px; overflow-x: auto; }
+pre code { background: none; padding: 0; font-size: 13px; line-height: 19px; }
+table { display: block; max-width: 100%; overflow-x: auto; border-collapse: separate; border-spacing: 0; border: 1px solid var(--hairline); border-radius: 12px; }
+th, td { height: 42px; padding: 0 14px; font-size: 15px; line-height: 21px; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--hairline); }
+tr:last-child td { border-bottom: 0; }
+th { background: var(--code-header); font-weight: 600; }
+img, video, canvas, svg { max-width: 100%; }
+img { border-radius: 14px; height: auto; }
+figcaption, small, .small { font-size: 13px; line-height: 18px; color: var(--muted); }
+.muted { color: var(--muted); }
+.card { background: var(--surface); border-radius: 16px; padding: 14px 16px; }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.stack { display: flex; flex-direction: column; gap: 10px; }
+
+/* Controls */
+/* Sizes come from padding (44px tall by default), so a page's own padding makes a compact chip. */
+button, .button {
+  font: inherit; font-size: 15px; font-weight: 600; line-height: 20px; color: var(--text);
+  padding: 11px 18px; border: 1px solid var(--hairline); border-radius: 22px; background: none;
+  cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 8px; text-decoration: none;
+  transition: background .15s, opacity .15s;
+}
+button:active, .button:active { background: var(--raised); }
+button.primary, .button.primary { background: var(--ink); border-color: var(--ink); color: var(--on-ink); }
+button.quiet, .button.quiet { border-color: transparent; color: var(--muted); font-weight: 500; padding: 11px 12px; }
+button.danger { color: var(--danger); }
+button:disabled { opacity: .38; cursor: default; }
+input, textarea, select {
+  font: inherit; font-size: 16px; line-height: 22px; color: var(--text); width: 100%;
+  padding: 11.5px 16px; border: 1.5px solid transparent; border-radius: 14px; background: var(--surface); outline: none;
+}
+.card input, .card textarea, .card select { background: var(--raised); }
+textarea { line-height: 22px; resize: vertical; }
+input:focus, textarea:focus, select:focus { border-color: var(--muted); }
+::placeholder { color: var(--muted); opacity: 1; }
+input[type=checkbox], input[type=radio] { width: 20px; height: 20px; padding: 0; margin: 0; accent-color: var(--ink); flex: none; }
+input[type=range] { padding: 0; height: 32px; background: none; accent-color: var(--ink); }
+input[type=color] { padding: 4px; width: 64px; }
+label { display: block; font-size: 14px; line-height: 20px; color: var(--muted); margin: 14px 0 0; }
+label > input:not([type=checkbox]):not([type=radio]), label > textarea, label > select { margin-top: 6px; }
+/* A choice to tap: <label class="option"><input type="radio" name="x"> <b>Title</b> <span>detail</span></label> */
+label.option {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 14px; align-items: center; align-content: center;
+  min-height: 62px; padding: 10px 16px; margin: 0;
+  background: var(--surface); border: 1.5px solid transparent; border-radius: 16px; color: var(--text); font-size: 16px; line-height: 24px; cursor: pointer;
+}
+label.option + label.option { margin-top: 10px; }
+label.option + :not(label.option) { margin-top: 14px; }
+.card label.option { background: var(--raised); }
+label.option:has(input:checked) { border-color: var(--ink); }
+label.option > input { grid-column: 2; grid-row: 1 / span 3; }
+label.option > :not(input) { grid-column: 1; }
+label.option > span { font-size: 14px; line-height: 20px; color: var(--muted); }
+details > summary { cursor: pointer; font-weight: 600; }
+progress, meter { width: 100%; accent-color: var(--ink); }

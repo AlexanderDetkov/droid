@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Droid as the digital assistant: see AssistService.kt. From Android 17 an assistant gets only the context it
+    declares here; older versions ignore these attributes and send everything the user's settings allow. The
+    screenshot comes only with a request for assist data. Not declaring usesAssistStructureScreenContent keeps the
+    text on screen out of that data, and Droid doesn't read the data anyway.
+-->
+<voice-interaction-service xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    tools:ignore="UnusedAttribute"
+    android:sessionService="com.adetkov.droid.AssistSessionService"
+    android:recognitionService="com.adetkov.droid.AssistRecognizer"
+    android:supportsAssist="true"
+    android:usesAssistData="true"
+    android:usesAssistScreenshots="true" />
