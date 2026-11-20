@@ -9,9 +9,7 @@ class Model(val alias: String, val label: String, val detail: String)
  * [sessionId] is what the engine's session ids look like; [custom]: the model is free text (provider/model names change
  * too often to list), with [models] as shortcuts.
  */
-enum class Engine(val id: String, val label: String, val models: List<Model>, val sessionId: Regex, val custom: Boolean = false,
-    /** Used when no model is chosen, for an engine whose own default can't see the screenshots (OpenCode's is text-only). */
-    val defaultModel: String = "") {
+enum class Engine(val id: String, val label: String, val models: List<Model>, val sessionId: Regex, val custom: Boolean = false) {
     CLAUDE("claude", "Claude Code", listOf(
         Model("", "Default", "Your plan's default model"),
         Model("opus", "Opus", "Most capable, for complex tasks"),
@@ -21,7 +19,7 @@ enum class Engine(val id: String, val label: String, val models: List<Model>, va
     CODEX("codex", "Codex", listOf(Model("", "Default", "The model Codex picks for your account")),
         Regex("[0-9a-fA-F-]{36}"), custom = true),
     OPENCODE("opencode", "OpenCode", listOf(Model("", "Default", "A free model that sees images; pick your own with Other…")),
-        Regex("ses_[A-Za-z0-9]{10,40}"), custom = true, defaultModel = "opencode/glm-5.3-flash-free");
+        Regex("ses_[A-Za-z0-9]{10,40}"), custom = true);  // its default is picked each run (droid-engine)
 
     /** The model entry for [alias]; an unlisted alias of a [custom] engine is shown as itself. */
     fun model(alias: String): Model = models.firstOrNull { it.alias == alias } ?: if (custom && alias.matches(MODEL_NAME)) Model(alias, alias, "Custom model") else models[0]

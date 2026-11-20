@@ -97,6 +97,17 @@ class OpenCode(unittest.TestCase):
         self.assertTrue(r['is_error'])
         self.assertEqual(r['result'], 'Session not found')
 
+    def test_default_model_is_a_free_one_that_sees_images(self):
+        def model(provider, name, image, cost=0, tools=True):
+            return provider + '/' + name + '\n' + json.dumps({
+                'id': name, 'providerID': provider, 'status': 'active', 'cost': {'input': cost, 'output': cost},
+                'capabilities': {'toolcall': tools, 'input': {'text': True, 'image': image}}}, indent=2) + '\n'
+        listing = (model('opencode', 'beam-free', False) + model('anthropic', 'claude-x', True, cost=3)
+                   + model('opencode', 'vl-free', True, tools=False) + model('opencode', 'super-vl-free', True))
+        self.assertEqual(de.pick_opencode_model(listing), 'opencode/super-vl-free')
+        self.assertIsNone(de.pick_opencode_model(model('opencode', 'beam-free', False)))
+        self.assertIsNone(de.pick_opencode_model('Error: no network'))
+
     def test_command(self):
         c = de.OpenCode.command('ses_x', 'anthropic/claude-sonnet-4-5')
         self.assertEqual(c[-1], '--')

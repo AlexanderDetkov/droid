@@ -23,8 +23,9 @@ class EngineTest {
             startCommand("/a.apk", ses, "anthropic/claude-sonnet-4-5", Engine.OPENCODE))
     }
 
-    @Test fun openCodeDefaultsToAModelThatSeesImages() {
-        assertEquals("DROID_APK='/a' ${RootHost.base}/enter.sh phone-agent --engine opencode --model opencode/glm-5.3-flash-free", startCommand("/a", null, "", Engine.OPENCODE))
+    @Test fun openCodesDefaultIsLeftToTheAdapter() {
+        // droid-engine picks a free model that sees images from OpenCode's own list, each run (they come and go)
+        assertEquals("DROID_APK='/a' ${RootHost.base}/enter.sh phone-agent --engine opencode", startCommand("/a", null, "", Engine.OPENCODE))
     }
 
     @Test fun sessionIdsAreCheckedPerEngineBeforeReachingAShell() {

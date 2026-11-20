@@ -284,11 +284,36 @@ def emit(ev):
     sys.stdout.flush()
 
 
+def pick_opencode_model(listing):
+    """From `opencode models --verbose` ("provider/model" lines, each followed by that model's JSON): a free model of
+    OpenCode's own that calls tools and takes images (the agent reads screenshots), or None."""
+    for name, body in re.findall(r'^(\S+/\S+)\n(\{.*?\n\})$', listing, re.S | re.M):
+        try:
+            m = json.loads(body)
+        except ValueError:
+            continue
+        caps, cost = m.get('capabilities') or {}, m.get('cost') or {}
+        if (m.get('providerID') == 'opencode' and m.get('status', 'active') == 'active' and not cost.get('input')
+                and not cost.get('output') and caps.get('toolcall') and (caps.get('input') or {}).get('image')):
+            return name
+    return None
+
+
+def opencode_default():
+    """OpenCode's free models come and go, so the default is asked of OpenCode each run (about a second, while the
+    owner is still typing) rather than named here; None leaves the choice to OpenCode."""
+    try:
+        listing = subprocess.run(['opencode', 'models', '--verbose'], capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return pick_opencode_model(listing)
+
+
 class Runner:
     def __init__(self, engine, session, model):
         self.cls = ENGINES[engine]
         self.session = session
-        self.model = model
+        self.model = model or (opencode_default() if engine == 'opencode' else None)
         self.child = None
 
     def kill_child(self):

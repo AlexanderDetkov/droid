@@ -254,7 +254,7 @@ internal fun isOldDefaultInstructions(text: String): Boolean =
 internal fun startCommand(apk: String, sessionId: String?, model: String, engine: Engine, base: String = RootHost.base): String {
     val e = if (engine == Engine.CLAUDE) "" else " --engine ${engine.id}"
     val resume = sessionId?.takeIf { engine.sessionId.matches(it) }?.let { " --resume $it" }.orEmpty()
-    val m = model.ifEmpty { engine.defaultModel }.takeIf { engine.validModel(it) && it.isNotEmpty() }?.let { " --model $it" }.orEmpty()
+    val m = model.takeIf { engine.validModel(it) && it.isNotEmpty() }?.let { " --model $it" }.orEmpty()
     return "DROID_APK='$apk' $base/enter.sh phone-agent$e$resume$m"
 }
 

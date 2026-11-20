@@ -86,10 +86,14 @@ data class SetupState(
     /** The one-time code to enter at [signInUrl] while a device-code sign-in (Codex) waits; null for Claude's paste-the-code. */
     val deviceCode: String? = null,
 ) {
-    private val engineReady get() = if (engine == Engine.CLAUDE) signedIn else others[engine]?.let { it.installed && it.signedIn } == true
+    /** Whether agent [e] can take a chat: Claude signed in, or the other agent installed and signed in. */
+    fun usable(e: Engine) = if (e == Engine.CLAUDE) signedIn else others[e]?.let { it.installed && it.signedIn } == true
+    /** The agent for new chats: the one picked in Settings, or else the first that can take one (say OpenCode's free
+     *  models, for someone without a Claude account). */
+    val readyEngine: Engine? get() = engine.takeIf(::usable) ?: Engine.entries.firstOrNull(::usable)
     /** Droid can run commands in Android: root, or its helper. */
     val connected get() = if (access == Access.ROOT) root else helper
-    val ready get() = isEmulator || (connected && installed && engineReady)
+    val ready get() = isEmulator || (connected && installed && readyEngine != null)
 }
 
 /**
@@ -116,6 +120,9 @@ class Setup(private val app: DroidApp) {
      * helper just now, e.g. after a restart away from Wi-Fi), the last answer that could stands: the chats stay open,
      * and a task that can't start says why.
      */
+    /** New chats use [e] (Setup's Start, when the agent picked can't take a chat but [e] can). */
+    fun useEngine(e: Engine) { if (app.prefs.engine.value != e) { app.prefs.setEngine(e); state.update { it.copy(engine = e) } } }
+
     fun needed(s: SetupState = state.value) = !s.ready && (s.checked && s.connected || !prefs.getBoolean("ready", false))
 
     fun refresh() = step(null) { check() }

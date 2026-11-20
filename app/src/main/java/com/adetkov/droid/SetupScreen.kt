@@ -205,7 +205,7 @@ fun SetupScreen(setup: Setup, firstRun: Boolean, onClose: () -> Unit) {
 
             if (s.ready && firstRun) Box(
                 Modifier.padding(top = 20.dp).fillMaxWidth().height(52.dp).clip(RoundedCornerShape(26.dp)).background(P.ink)
-                    .clickable(onClick = onClose).testTag("setup_done"),
+                    .clickable { s.readyEngine?.let(setup::useEngine); onClose() }.testTag("setup_done"),
                 contentAlignment = Alignment.Center,
             ) { Text("Start", style = MaterialTheme.typography.labelLarge, color = P.onInk) }
             // Whatever is there, even half installed, but only while Droid can reach it
