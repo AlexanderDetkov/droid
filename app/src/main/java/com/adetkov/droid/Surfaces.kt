@@ -60,19 +60,21 @@ fun ownerSend(ctx: Context, conv: String?, text: String, files: List<Attachment>
 }
 
 /**
- * A page's calls in chat [conv]: [pageId] for a page the agent showed (null: one in an answer); [latest]: whether it is
- * in the chat's latest turn (an older page doesn't set Dash); [onScreen]: hand over the hidden screen; [onClose]: for
- * a page full screen or floating.
+ * A page's calls in chat [conv]: [pageId] for a page the agent showed (null: one in an answer); [isLive]: whether it may
+ * still act (see [PageActions.live]; by default, from the chat, for a page the agent showed); [onScreen]: hand over the
+ * hidden screen; [onClose]: for a page full screen or floating.
  */
 class ChatPageActions(
     private val ctx: Context, private val conv: String, private val pageId: String?,
-    private val latest: () -> Boolean = { true }, private val onScreen: () -> Unit = {}, private val onClose: () -> Unit = {},
+    private val isLive: () -> Boolean = { pageId == null || (ctx.applicationContext as DroidApp).store.get(conv)?.pageLive(pageId) == true },
+    private val onScreen: () -> Unit = {}, private val onClose: () -> Unit = {},
 ) : PageActions {
     private val app = ctx.applicationContext as DroidApp
     private val main = Handler(Looper.getMainLooper())
     override fun send(text: String, data: String?) = pageSend(ctx, conv, pageId, text, data)
     override fun run(command: String) = app.backend.run(command)
-    override fun dash(feel: String, words: String) { if (latest()) app.runner.dash(conv, feel, words) }
+    override val live get() = isLive()
+    override fun dash(feel: String, words: String) { if (live) app.runner.dash(conv, feel, words) }
     override fun screen() { main.post(onScreen) }
     override fun open(url: String) = openLink(ctx, url)
     override fun close() { main.post(onClose) }

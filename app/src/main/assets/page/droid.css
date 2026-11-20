@@ -67,6 +67,9 @@ button.primary, .button.primary { background: var(--ink); border-color: var(--in
 button.quiet, .button.quiet { border-color: transparent; color: var(--muted); font-weight: 500; padding: 11px 12px; }
 button.danger { color: var(--danger); }
 button:disabled { opacity: .38; cursor: default; }
+/* A page that was answered, or is from an earlier turn, stays to read; its controls no longer act (see PageView). */
+html.droid-done :is(button, .button, input, select, textarea, label.option) { pointer-events: none; }
+html.droid-done :is(button, .button, label.option, input[type=checkbox], input[type=radio]) { opacity: .38; }
 input, textarea, select {
   font: inherit; font-size: 16px; line-height: 22px; color: var(--text); width: 100%;
   padding: 11.5px 16px; border: 1.5px solid transparent; border-radius: 14px; background: var(--surface); outline: none;

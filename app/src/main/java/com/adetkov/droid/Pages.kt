@@ -38,6 +38,12 @@ data class PageInfo(
 /** The PAGE message [pageId] (its latest, if shown again), or null. */
 fun Conv.page(pageId: String): Msg? = messages.lastOrNull { it.kind == Kind.PAGE && PageInfo.of(it).id == pageId }
 
+/** Whether page [pageId] may still act: it was shown in the chat's latest turn and isn't answered yet. */
+fun Conv.pageLive(pageId: String): Boolean {
+    val i = messages.indexOfLast { it.kind == Kind.PAGE && PageInfo.of(it).id == pageId }
+    return i > messages.indexOfLast { it.kind.opensTurn } && PageInfo.of(messages[i]).reply == null
+}
+
 /**
  * The chat with the agent's command waiting on page [pageId] again (`droid wait`), or no longer ([on] false: it gave
  * up; [pageId] null: any page, as its run ended). A page already answered stays as it is.

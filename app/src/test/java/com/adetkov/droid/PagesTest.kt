@@ -176,4 +176,16 @@ class PagesTest {
         proc.lines.put(LinesProc.END)  // the run ends: nothing waits any more
         until("the run ended") { runner.running.value.isEmpty() && !pageWaits() && runner.noteWaits.isEmpty() }
     }
+
+    @Test fun aPageAnswersOnce() {
+        val shown = Conv("c", "t", createdAt = 0).add(Kind.USER, "plan it", 0)
+            .add(Kind.PAGE, "<p>Pick</p>", 0, data = PageInfo("p", wait = true).json())
+        assertTrue(shown.pageLive("p"))
+        // answered while the agent waited on it
+        val answered = shown.copy(messages = shown.messages.map { if (it.kind == Kind.PAGE) it.copy(data = PageInfo("p", wait = true, reply = "Fri").json()) else it })
+        assertFalse(answered.pageLive("p"))
+        // or the owner wrote again: the page is from an earlier turn now
+        assertFalse(shown.add(Kind.USER, "actually Monday", 0).pageLive("p"))
+        assertFalse(shown.pageLive("other"))
+    }
 }

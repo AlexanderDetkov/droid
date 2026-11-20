@@ -318,7 +318,7 @@ private fun Answer(
     Column(Modifier.fillMaxWidth()) {
         if (html) {
             val isLatest by rememberUpdatedState(latest)
-            val actions = remember(conv, index) { ChatPageActions(ctx, conv, null, latest = { isLatest }, onScreen = onTakeOver) }
+            val actions = remember(conv, index) { ChatPageActions(ctx, conv, null, isLive = { isLatest }, onScreen = onTakeOver) }
             val dark = P.dark
             InlinePage("a:$conv:$index:${text.hashCode()}", "answer:$conv:$index", dark, { cx -> answerDocument(cx, text, dark) },
                 namedPaths(text), actions, Modifier.testTag("answer"))
@@ -344,9 +344,10 @@ private fun PageMessage(m: Msg, conv: String, latest: Boolean, onTakeOver: () ->
     val ctx = LocalContext.current
     val info = remember(m.data) { PageInfo.of(m) }
     val isLatest by rememberUpdatedState(latest)
+    val answered by rememberUpdatedState(info.reply != null)
     Column(Modifier.fillMaxWidth()) {
         if (info.where == "chat") {
-            val actions = remember(conv, info.id) { ChatPageActions(ctx, conv, info.id, latest = { isLatest }, onScreen = onTakeOver) }
+            val actions = remember(conv, info.id) { ChatPageActions(ctx, conv, info.id, isLive = { isLatest && !answered }, onScreen = onTakeOver) }
             val dark = P.dark
             InlinePage("p:$conv:${info.id}:${m.text.hashCode()}", "page:$conv:${info.id}", dark, { cx -> pageDocument(cx, m.text, dark, PageMode.INLINE) },
                 namedPaths(m.text), actions, Modifier.testTag("page"))

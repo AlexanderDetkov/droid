@@ -89,6 +89,8 @@ interface PageActions {
     fun fetch(path: String): File?
     /** Droid's copies of what its chat's answers showed (files/shown/<chat>), which it may load. */
     val shown: File
+    /** Whether the page may still act (send, run, screen, Dash): one from an earlier turn, or answered, is done. */
+    val live: Boolean get() = true
 }
 
 /** How a page is shown: in the chat (as tall as its content, never scrolling itself), full screen, or floating. */
@@ -163,6 +165,10 @@ class PageWebView(ctx: Context, val origin: String) : WebView(ctx) {
     /** Paths in the agent's Linux the page names, which it may load. */
     var named: Set<String> = emptySet()
     var actions: PageActions? = null
+    /** See [PageActions.live]. Once it has sent it is done for good, wherever it shows: a page answers once. */
+    var live = true
+        set(v) { if (field != v) { field = v; markDone() } }
+    private var sent = false
     /** Its content height in px, as it changes. */
     var onHeight: (Int) -> Unit = {}
     var pageHeight = 0; private set
@@ -201,6 +207,9 @@ class PageWebView(ctx: Context, val origin: String) : WebView(ctx) {
 
     private fun byTap() = SystemClock.uptimeMillis() - tapped < TAP_GRACE
 
+    /** A done page stays to read; droid.css dims its controls. */
+    private fun markDone() = evaluateJavascript("document.documentElement.classList.toggle('droid-done', ${sent || !live})", null)
+
     private fun onMessage(data: String, reply: JavaScriptReplyProxy) {
         val o = try { JSONObject(data) } catch (_: JSONException) { return }
         val id = o.optInt("id")
@@ -217,7 +226,11 @@ class PageWebView(ctx: Context, val origin: String) : WebView(ctx) {
             "send", "run", "screen", "open" -> when {
                 a == null -> answer(error = "Not available here")
                 !byTap() -> answer(error = "droid.$op works from the owner's tap")
-                op == "send" -> { a.send(o.optString("text"), if (o.isNull("data")) null else o.optString("data")); answer() }
+                op != "open" && (sent || !live) -> answer(error = "This page was answered already")
+                op == "send" -> {
+                    sent = true; markDone()
+                    a.send(o.optString("text"), if (o.isNull("data")) null else o.optString("data")); answer()
+                }
                 op == "screen" -> { a.screen(); answer() }
                 op == "open" -> { a.open(o.optString("url")); answer() }
                 else -> thread(isDaemon = true, name = "page-run") {
@@ -257,6 +270,8 @@ class PageWebView(ctx: Context, val origin: String) : WebView(ctx) {
             if (req.isForMainFrame && byTap()) actions?.open(req.url.toString())
             return req.isForMainFrame
         }
+
+        override fun onPageFinished(view: WebView, url: String?) { markDone() }
 
         override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
             Log.w("Droid", "page renderer gone (crash=${detail.didCrash()})")
@@ -418,6 +433,7 @@ fun InlinePage(
             .let { if (inline) it.passVerticalDrags(drag) else it },
         update = { v ->
             v.actions = actions
+            v.live = actions.live
             v.onHeight = { px -> val more = px > height; height = px; cache.setHeight(ck, px); if (more) drag?.grew?.invoke() }
             if (v.pageHeight > 0 && v.pageHeight != height) height = v.pageHeight
         },
@@ -442,7 +458,7 @@ fun FillPage(key: String, name: String, document: (Context) -> String, named: Se
     AndroidView(
         factory = { ctx -> cache.obtain(ctx, key, pageOrigin(name)) { it.isVerticalScrollBarEnabled = true; it.show(document(ctx), named) } },
         modifier = modifier,
-        update = { v -> v.actions = actions },
+        update = { v -> v.actions = actions; v.live = actions.live },
     )
 }
 
