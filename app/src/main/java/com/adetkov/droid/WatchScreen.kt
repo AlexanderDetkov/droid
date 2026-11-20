@@ -227,7 +227,7 @@ fun WatchScreen(
                         colors = IconButtonDefaults.iconButtonColors(containerColor = chrome, contentColor = Color.White)) {
                         Icon(painterResource(R.drawable.ic_close), "Close", Modifier.size(20.dp))
                     }
-                    if (control) IconButton({ feed.send("k 4") }, Modifier.padding(start = 8.dp).size(40.dp).testTag("back_key"),
+                    if (control) IconButton({ onTouched(); feed.send("k 4") }, Modifier.padding(start = 8.dp).size(40.dp).testTag("back_key"),
                         colors = IconButtonDefaults.iconButtonColors(containerColor = chrome, contentColor = Color.White)) {
                         Icon(painterResource(R.drawable.ic_back), "Back", Modifier.size(20.dp))
                     }
@@ -237,7 +237,7 @@ fun WatchScreen(
                             contentColor = if (typing) Color.Black else Color.White)) {
                         Icon(painterResource(R.drawable.ic_keyboard), if (typing) "Hide the keyboard" else "Type", Modifier.size(20.dp))
                     }
-                    if (control) AndroidView({ KeySink(it, feed::send).also { k -> sink = k } }, Modifier.size(1.dp))
+                    if (control) AndroidView({ KeySink(it) { m -> onTouched(); feed.send(m) }.also { k -> sink = k } }, Modifier.size(1.dp))
                     Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
                         if (!control && app != null) Text(app, color = Color(0xFF9A9A9A), style = MaterialTheme.typography.labelMedium,
                             maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -312,7 +312,8 @@ private class KeySink(ctx: Context, private val send: (String) -> Unit) : View(c
     }
 
     private fun key(code: Int) = send("k $code")
-    private fun type(text: String) = text.split('\n').forEachIndexed { i, line ->
+    // (a \r is a line break too: the helper reads its commands by line, so one inside a "t" would start a command)
+    private fun type(text: String) = text.split(Regex("\r\n|\r|\n")).forEachIndexed { i, line ->
         if (i > 0) key(KeyEvent.KEYCODE_ENTER)
         if (line.isNotEmpty()) send("t $line")
     }

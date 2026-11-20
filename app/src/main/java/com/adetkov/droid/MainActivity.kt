@@ -95,7 +95,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.filter
 
 /** An intent-derived request; a fresh instance each time so it re-triggers effects. */
-class Request(val conv: String?, val watch: Boolean, val handoff: Boolean = false)
+class Request(val conv: String?, val watch: Boolean, val handoff: Boolean = false, val at: Long = System.nanoTime())
 
 class MainActivity : ComponentActivity() {
     private var request by mutableStateOf<Request?>(null)
@@ -189,14 +189,20 @@ private fun Root(request: Request?, modifier: Modifier) {
         haptic()
         return ownerSend(ctx, convId, text.trim(), files).also { convId = it; draft = ""; files = emptyList() }
     }
-    var saving by remember { mutableStateOf(false) }  // the camera's picture is being kept
+    var saving by remember { mutableStateOf<Boolean?>(null) }  // the camera's picture is being kept (true: to send)
+    var queued by remember { mutableStateOf<(() -> Unit)?>(null) }
     /**
-     * Puts the camera's picture in the message box and closes the camera; [then] runs once it is there. A second tap
-     * meanwhile does nothing: it would take another picture, and send the message again.
+     * Puts the camera's picture in the message box and closes the camera; [then] runs once it is there. Meanwhile a
+     * second picture isn't taken: a Send (say, voice's, after a tap) waits for the one being kept and goes with it, and
+     * a second Send does nothing (it would send the message again).
      */
-    fun takePhoto(then: () -> Unit = {}) {
-        if (saving) return
-        saving = true
+    fun takePhoto(send: Boolean = false, then: () -> Unit = {}) {
+        when (saving) {
+            null -> {}
+            false -> { if (send) queued = then; return }
+            true -> return
+        }
+        saving = send
         val photo = camera.picture()
         scope.launch {
             try {
@@ -204,12 +210,13 @@ private fun Root(request: Request?, modifier: Modifier) {
                 if (a != null) files = files + a else if (photo != null) toast("Couldn't save the picture")
                 shooting = false
                 then()
-            } finally { saving = false }
+                queued?.also { queued = null }?.invoke()
+            } finally { saving = null }
         }
     }
     /** Sends [text], with the camera's picture if it's open, and then calls [after] with the chat. */
     fun sendNow(text: String, after: (String) -> Unit = {}) {
-        if (shooting) takePhoto { send(text)?.let(after) } else send(text)?.let(after)
+        if (shooting || saving == false) takePhoto(send = true) { send(text)?.let(after) } else send(text)?.let(after)
     }
 
     // Voice: dictation fills the box; voice mode sends when the user stops talking and reads the answer aloud.
@@ -240,7 +247,8 @@ private fun Root(request: Request?, modifier: Modifier) {
     LaunchedEffect(Unit) {
         app.runner.results.collect { (id, text) -> if (speakAfter.remove(id)) speaker.speak("auto:$id", text) }
     }
-    LaunchedEffect(info == null, watching) { if (info == null) watching = false }  // no screen (any more) to watch
+    // no screen (any more) to watch: none, or one closing (its run gone, its port with it)
+    LaunchedEffect(info?.port == null, watching) { if (info?.port == null) watching = false }
     LaunchedEffect(watching) { if (!watching) handoff = false }
 
     fun open(id: String?) {
@@ -265,12 +273,15 @@ private fun Root(request: Request?, modifier: Modifier) {
     }
     // A notification's chat: opened as from the drawer; Watch only if its screen is up. A frame later, so Watch grows
     // out of this chat's window, not the one that was open.
+    var handled by rememberSaveable { mutableStateOf(0L) }  // once each (not again when Setup was shown meanwhile)
     LaunchedEffect(request) {
         val r = request ?: return@LaunchedEffect
-        if (r.conv == null) return@LaunchedEffect
+        if (r.conv == null || r.at == handled) return@LaunchedEffect
+        handled = r.at
+        if (r.conv != convId) { watching = false; handoff = false }  // Watch was another chat's
         open(r.conv)
         withFrameNanos {}
-        if ((r.watch || r.handoff) && r.conv in app.runner.screens.value) { watching = true; handoff = r.handoff }
+        if ((r.watch || r.handoff) && app.runner.screens.value[r.conv]?.port != null) { watching = true; handoff = r.handoff }
     }
 
     // Dialogs and sheets
@@ -390,19 +401,27 @@ private fun Root(request: Request?, modifier: Modifier) {
         if (watching && info?.port != null && info.token != null) {
             val watched = convId
             // A screen held after answering stays open while it's watched.
-            DisposableEffect(watched) {
-                watched?.let { app.runner.watching(it, true) }
-                onDispose { watched?.let { app.runner.watching(it, false) } }
+            // Watched only while it's on screen: Watch left open behind Home or the lock screen lets the hold count down
+            // (else the screen would stay up, keeping the phone awake, until the owner came back).
+            val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+            DisposableEffect(watched, lifecycle) {
+                fun set(on: Boolean) = watched?.let { app.runner.watching(it, on) }
+                val obs = androidx.lifecycle.LifecycleEventObserver { _, e ->
+                    if (e == androidx.lifecycle.Lifecycle.Event.ON_START) set(true) else if (e == androidx.lifecycle.Lifecycle.Event.ON_STOP) set(false)
+                }
+                lifecycle.addObserver(obs)  // (it's told ON_START at once if already started)
+                onDispose { lifecycle.removeObserver(obs); set(false) }
             }
-            WatchScreen(info.port, info.token, latestStatus(conv.messages), working = running,
+            key(watched) { WatchScreen(info.port, info.token, latestStatus(conv.messages), working = running,
                 isUp = { convId in app.runner.screens.value },
                 onStop = { convId?.let(app.runner::stop); watching = false }, onClose = { watching = false },
                 onTouched = { convId?.let(app.runner::touched) },
                 // Handed over by the answer: the owner's touches go to it at once, and Done gives it back to the agent.
-                startInControl = handoff, onHandBack = if (handoff) ({ handoff = false; watching = false; convId?.let { startTask(ctx, it, HANDED_BACK) } }) else null,
+                // (as the owner's message: it answers the page that handed the screen over, if the agent waits on it)
+                startInControl = handoff, onHandBack = if (handoff) ({ handoff = false; watching = false; convId?.let { ownerSend(ctx, it, HANDED_BACK) } }) else null,
                 taps = remember(watched) { app.runner.taps.filter { it.first == watched }.map { it.second to it.third } },
                 doing = doingMap[conv.id], asks = !running && lastOutcome(conv.messages, false) == Outcome.ASKS,
-                mood = lastMood(conv.messages), waiting = waitingPage(conv.messages, running) != null)
+                mood = lastMood(conv.messages), waiting = waitingPage(conv.messages, running) != null) }
         }
     }
 }
