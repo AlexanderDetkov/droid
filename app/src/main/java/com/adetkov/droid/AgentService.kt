@@ -79,6 +79,8 @@ const val EXTRA_WATCH = "watch"
 /** Opened to take over the agent's screen, as a page handed it over (droid.screen). */
 const val EXTRA_HANDOFF = "handoff"
 private const val ACTION_STOP = "stop"
+/** Which run, and whether working or holding its screen, a Stop or Close screen was shown for. */
+private const val EXTRA_RUN = "run"
 private const val CH_RUN = "running"
 private const val CH_DONE = "done"
 
@@ -108,7 +110,10 @@ class AgentService : Service() {
         // Stop, or a button or the reply field of a notification the agent posted (droid notify). A watch loop stops the
         // service once nothing is up, after it has said how each request ended; without one nothing keeps it.
         if (intent != null && (intent.action == ACTION_STOP || intent.action == Notify.ACTION)) {
-            if (intent.action == ACTION_STOP) id?.let { app.runner.stop(it) } else Notify.act(this, intent)
+            // A Stop from a notification that's out of date (the run has moved on: a reply to its held screen started a
+            // turn, or a new run began) would stop what the owner just asked for: it stops only what it was shown for.
+            if (intent.action == ACTION_STOP) id?.takeIf { intent.getStringExtra(EXTRA_RUN) == runKey(it) }?.let { app.runner.stop(it) }
+            else Notify.act(this, intent)
             if (loop?.isActive != true) stopSelf(startId)
             return START_NOT_STICKY
         }
@@ -166,9 +171,11 @@ class AgentService : Service() {
     /** Stop for a working run; for one that answered, closes its screen (see [Runner.stop]). */
     private fun stop(id: String): PendingIntent = PendingIntent.getService(
         this, nid(id) * 4 + 2,
-        Intent(this, AgentService::class.java).setAction(ACTION_STOP).putExtra(EXTRA_CONV, id),
+        Intent(this, AgentService::class.java).setAction(ACTION_STOP).putExtra(EXTRA_CONV, id).putExtra(EXTRA_RUN, runKey(id)),
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )
+
+    private fun runKey(id: String) = "${app.runner.screens.value[id]?.started}/${id in app.runner.running.value}"
 
     private fun ongoing(id: String) = if (id in app.runner.running.value) runningNotification(id) else heldNotification(id)
 

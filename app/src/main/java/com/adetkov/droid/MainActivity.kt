@@ -189,14 +189,22 @@ private fun Root(request: Request?, modifier: Modifier) {
         haptic()
         return ownerSend(ctx, convId, text.trim(), files).also { convId = it; draft = ""; files = emptyList() }
     }
-    /** Puts the camera's picture in the message box and closes the camera; [then] runs once it is there. */
+    var saving by remember { mutableStateOf(false) }  // the camera's picture is being kept
+    /**
+     * Puts the camera's picture in the message box and closes the camera; [then] runs once it is there. A second tap
+     * meanwhile does nothing: it would take another picture, and send the message again.
+     */
     fun takePhoto(then: () -> Unit = {}) {
+        if (saving) return
+        saving = true
         val photo = camera.picture()
         scope.launch {
-            val a = photo?.let { withContext(Dispatchers.IO) { savePhoto(ctx, it) } }
-            if (a != null) files = files + a else if (photo != null) toast("Couldn't save the picture")
-            shooting = false
-            then()
+            try {
+                val a = photo?.let { withContext(Dispatchers.IO) { savePhoto(ctx, it) } }
+                if (a != null) files = files + a else if (photo != null) toast("Couldn't save the picture")
+                shooting = false
+                then()
+            } finally { saving = false }
         }
     }
     /** Sends [text], with the camera's picture if it's open, and then calls [after] with the chat. */

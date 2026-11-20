@@ -43,6 +43,8 @@ object Notify {
     const val EXTRA_DO = "do"
     const val EXTRA_LABEL = "label"
     const val EXTRA_ONGOING = "ongoing"
+    /** When this posting of the notification was made: an act on it counts once (see [act]). */
+    private const val EXTRA_POSTED = "posted"
     private const val REPLY = "reply"
     private const val CONV = "droid.conv"
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -116,7 +118,8 @@ object Notify {
         val title = o.optString("title").ifEmpty { c.title }
         val text = o.optString("text")
         val ongoing = o.optBoolean("ongoing")
-        fun pi(i: Int, label: String, what: String, mutable: Boolean = false) = pending(ctx, conv, id, i, label, what, ongoing, mutable)
+        val posted = System.currentTimeMillis()
+        fun pi(i: Int, label: String, what: String, mutable: Boolean = false) = pending(ctx, conv, id, i, label, what, ongoing, posted, mutable)
         val b = Notification.Builder(ctx, ch)
             .addExtras(Bundle().apply { putString(CONV, conv) })  // whose it is, for when the chat is deleted
             .setSmallIcon(R.drawable.ic_notify)
@@ -167,12 +170,12 @@ object Notify {
      * What the tap ([i] -1), a button, the reply field, or swiping it away ([i] -2) does: what opens a screen goes
      * through [NoteActivity] (Android lets only an activity start one), the rest through AgentService. Both [act].
      */
-    private fun pending(ctx: Context, conv: String, id: String, i: Int, label: String, what: String, ongoing: Boolean, mutable: Boolean): PendingIntent {
+    private fun pending(ctx: Context, conv: String, id: String, i: Int, label: String, what: String, ongoing: Boolean, posted: Long, mutable: Boolean): PendingIntent {
         val data = "droid://note/$conv/$id/$i".toUri()
         val screen = what.startsWith("open:") || what.startsWith("page:") || what == "chat:" || what == "screen:"
         val intent = Intent(ctx, if (screen) NoteActivity::class.java else AgentService::class.java).setData(data)
             .putExtra(EXTRA_CONV, conv).putExtra(EXTRA_NOTE, id).putExtra(EXTRA_DO, what).putExtra(EXTRA_LABEL, label)
-            .putExtra(EXTRA_ONGOING, ongoing)
+            .putExtra(EXTRA_ONGOING, ongoing).putExtra(EXTRA_POSTED, posted)
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or if (mutable) PendingIntent.FLAG_MUTABLE else PendingIntent.FLAG_IMMUTABLE
         return if (screen) PendingIntent.getActivity(ctx, 0, intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), flags)
             else PendingIntent.getService(ctx, 0, intent.setAction(ACTION), flags)
@@ -188,6 +191,10 @@ object Notify {
         val conv = intent.getStringExtra(EXTRA_CONV) ?: return
         val id = intent.getStringExtra(EXTRA_NOTE) ?: return
         if (app.store.get(conv) == null) return  // a chat deleted meanwhile
+        // A notification answers once, as a page does: a second tap before it has gone (or one Android delivers twice)
+        // doesn't send or run it again. One the agent made ongoing stays, a control to use as often as the owner likes.
+        val ongoing = intent.getBooleanExtra(EXTRA_ONGOING, false)
+        if (!ongoing && !acted.add("$conv/$id@${intent.getLongExtra(EXTRA_POSTED, 0)}")) return
         val what = intent.getStringExtra(EXTRA_DO).orEmpty()
         val label = intent.getStringExtra(EXTRA_LABEL).orEmpty()
         val typed = RemoteInput.getResultsFromIntent(intent)?.getCharSequence(REPLY)?.toString()
@@ -195,7 +202,7 @@ object Notify {
             // a reply stays on screen a moment with what was sent (Android keeps a replied-to notification it was
             // asked to take away until the shade closes, so it is replaced with one that ends by itself instead)
             typed != null -> sent(ctx, conv, id, typed)
-            !intent.getBooleanExtra(EXTRA_ONGOING, false) || what == "dismiss:" -> cancel(ctx, conv, id)
+            !ongoing || what == "dismiss:" -> cancel(ctx, conv, id)
         }
         if (what.startsWith("run:")) scope.launch {
             try { app.backend.run(what.removePrefix("run:")).let { (out, code) -> Log.i("Droid", "note run exit=$code ${out.take(200)}") } }
@@ -206,6 +213,9 @@ object Notify {
         val message = typed ?: what.takeUnless { ACTIONS.any { what.startsWith(it) } }
         if (!answer(ctx, conv, id, reply) && !message.isNullOrBlank()) startTask(ctx, conv, message)
     }
+
+    /** The postings acted on (chat/id@posted), so each answers once. */
+    private val acted: MutableSet<String> = java.util.Collections.synchronizedSet(LinkedHashSet())
 
     /** Notification [id] shows [typed] as sent, without its buttons, and goes a moment later. */
     private fun sent(ctx: Context, conv: String, id: String, typed: String) {

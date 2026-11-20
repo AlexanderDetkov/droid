@@ -246,7 +246,7 @@ fun WatchScreen(
                         }, color = Color(0xFFE6E6E6), style = MaterialTheme.typography.bodyMedium,
                             maxLines = if (!control && app != null) 1 else 2, overflow = TextOverflow.Ellipsis)
                     }
-                    if (control) Pill("Done", Modifier.testTag("done_control")) { control = false; onHandBack?.invoke() }
+                    if (control) Pill("Done", Modifier.testTag("done_control")) { if (control) { control = false; onHandBack?.invoke() } }  // once
                     else {
                         if (f != null) Pill("Take over", Modifier.testTag("take_over")) { control = true }
                         if (working) Box(Modifier.padding(start = 8.dp).size(40.dp).clip(CircleShape).background(Color.White)
