@@ -51,6 +51,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** First-run setup and later maintenance: one row per step, each with its state and action. */
 @Composable
@@ -147,6 +152,8 @@ fun SetupScreen(setup: Setup, firstRun: Boolean, onClose: () -> Unit) {
                 }
             }
 
+            if (s.inputBlocked) InputBlocked()
+
             if (s.installed) {
                 Text("Other agents", Modifier.padding(start = 4.dp, top = 24.dp, bottom = 8.dp), style = MaterialTheme.typography.labelLarge, color = P.muted)
                 Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(P.surface)) {
@@ -198,7 +205,8 @@ fun SetupScreen(setup: Setup, firstRun: Boolean, onClose: () -> Unit) {
                 Text(
                     (if (s.access == Access.ROOT) "Droid gives the agent a root shell on this phone, with web access. "
                     else "Droid gives the agent a shell on this phone with adb's rights (your apps and settings, not their private data), with web access. ") +
-                        "Anything it reads (web pages, messages, files) could try to steer it, so give it tasks you'd trust it with.",
+                        "Anything it reads (web pages, messages, files) could try to steer it, so give it tasks you'd trust it with." +
+                        (if (s.access == Access.ROOT) "" else " Without root, Droid keeps USB debugging on, which some banking apps refuse to run with."),
                     Modifier.padding(start = 12.dp), style = MaterialTheme.typography.bodySmall, color = P.muted,
                 )
             }
@@ -212,6 +220,7 @@ fun SetupScreen(setup: Setup, firstRun: Boolean, onClose: () -> Unit) {
             if (s.linux && s.connected && !firstRun) TextButton({ confirmRemove = true }, Modifier.align(Alignment.CenterHorizontally).padding(top = 8.dp), enabled = idle) {
                 Text("Remove Droid's Linux", color = P.danger)
             }
+            CopyDiagnostics(setup, Modifier.align(Alignment.CenterHorizontally))
             Spacer(Modifier.height(24.dp))
         }
     }
@@ -254,19 +263,70 @@ private fun Action(label: String, enabled: Boolean, primary: Boolean = false, on
 }
 
 /**
+ * Opens Developer options, scrolled to the setting [key] where the phone supports that. While they're off, About phone
+ * instead, at Build number (tapped seven times to turn them on): Developer options' own page would only say they're off.
+ */
+private fun openDeveloperOptions(ctx: android.content.Context, key: String? = null) {
+    fun open(action: String, key: String?) = ctx.startActivity(android.content.Intent(action)
+        .apply { key?.let { putExtra(":settings:fragment_args_key", it) } }.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+    val on = android.provider.Settings.Global.getInt(ctx.contentResolver, android.provider.Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 0) == 1
+    try {
+        if (on) open(android.provider.Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS, key)
+        else open(android.provider.Settings.ACTION_DEVICE_INFO_SETTINGS, "build_number")
+    } catch (_: Exception) {
+        open(android.provider.Settings.ACTION_SETTINGS, null)
+    }
+}
+
+/**
+ * Android refused Droid's test tap: some makers keep adb from tapping and typing until a switch of theirs in Developer
+ * options is on (Xiaomi's is documented by scrcpy; OPPO's, OnePlus', realme's and vivo's go by another name).
+ */
+@Composable
+private fun InputBlocked() {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val fix = when (android.os.Build.MANUFACTURER.lowercase()) {
+        "xiaomi" -> "In Developer options, turn on USB debugging (Security settings), then restart the phone. Xiaomi asks you to sign in to a Xiaomi account first."
+        "oppo", "oneplus", "realme", "vivo" -> "In Developer options, turn on Disable permission monitoring."
+        else -> "Look in Developer options for a switch that lets USB debugging control the phone."
+    }
+    Column(Modifier.padding(top = 16.dp).fillMaxWidth().clip(RoundedCornerShape(16.dp)).border(1.dp, P.danger.copy(alpha = .5f), RoundedCornerShape(16.dp))
+        .padding(16.dp).testTag("setup_input_blocked")) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(painterResource(R.drawable.ic_error), null, Modifier.size(18.dp), tint = P.danger)
+            Text("The agent can't tap or type", Modifier.padding(start = 8.dp), style = MaterialTheme.typography.titleSmall, color = P.danger)
+        }
+        Text("This phone refused Droid's test tap. $fix", Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodySmall, color = P.muted)
+        Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.End) {
+            Action("Open settings", true, primary = true) { openDeveloperOptions(ctx) }
+        }
+    }
+}
+
+/** Copies [Setup.diagnostics] for a bug report: the phone, Droid and its setup, nothing private. */
+@Composable
+private fun CopyDiagnostics(setup: Setup, modifier: Modifier) {
+    val copy = rememberCopy()
+    val scope = rememberCoroutineScope()
+    var state by remember { mutableStateOf(0) }  // 0: idle, 1: collecting, 2: copied
+    LaunchedEffect(state) { if (state == 2) { delay(3000); state = 0 } }
+    TextButton({
+        state = 1
+        scope.launch { copy(withContext(Dispatchers.IO) { setup.diagnostics() }); state = 2 }
+    }, modifier.testTag("setup_diagnostics"), enabled = state == 0) {
+        Text(when (state) { 1 -> "Collecting diagnostics…"; 2 -> "Diagnostics copied"; else -> "Copy diagnostics for a bug report" },
+            color = P.muted, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+/**
  * While Droid pairs with Wireless debugging ([status] is what it's doing): where to find the pairing code, which goes
  * into Droid's notification, since Settings closes the code's dialog when you leave it.
  */
 @Composable
 private fun Pairing(status: String, setup: Setup) {
     val ctx = androidx.compose.ui.platform.LocalContext.current
-    fun openSettings() = try {
-        // Opens Developer options scrolled to Wireless debugging; without Developer options, About phone (Build number).
-        ctx.startActivity(android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
-            .putExtra(":settings:fragment_args_key", "toggle_adb_wireless").addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
-    } catch (_: Exception) {
-        ctx.startActivity(android.content.Intent(android.provider.Settings.ACTION_DEVICE_INFO_SETTINGS).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
-    }
+    fun openSettings() = openDeveloperOptions(ctx, "toggle_adb_wireless")
     Column(Modifier.fillMaxWidth().padding(start = 54.dp, end = 16.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         listOf(
             "Turn on Developer options: Settings → About phone → tap Build number seven times.",

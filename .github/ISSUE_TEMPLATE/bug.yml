@@ -1,0 +1,21 @@
+name: Something doesn't work
+description: Setup stuck, a task that fails, or Droid doing the wrong thing
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what Droid did instead. A screenshot helps.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: >
+        In Droid, open Setup (Settings → Setup, or the first screen) and tap "Copy diagnostics for a bug report" at the
+        bottom, then paste here. It holds your phone's model, Android version and how far setup got; no account, chats
+        or files.
+      render: text
+    validations:
+      required: true

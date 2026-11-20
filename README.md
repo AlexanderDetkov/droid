@@ -44,6 +44,12 @@ Claude Code on your Android phone, rooted or not. Tell it what to do, by voice o
 
 Voice match is set up later, from Settings → **Voice match**: download its model, then read six sentences aloud.
 
+**Something not working?** Open Setup (the first screen, or Settings → **Setup and updates**), tap **Copy diagnostics
+for a bug report** at the bottom and paste it into an [issue](https://github.com/AlexanderDetkov/droid/issues/new/choose).
+It holds the phone's model, Android version and how far setup got, nothing private: no account, chats or files. On some
+phones (Xiaomi's, OPPO's, OnePlus', realme's, vivo's) Android won't let Wireless debugging tap or type until a switch in
+Developer options is on; Setup checks with one harmless key press and says which switch.
+
 Setup → **Update** upgrades Alpine's packages and updates Claude Code (and Codex or OpenCode, if you set them up); Droid's own scripts in its Linux come with each app update. Setup → **Remove Droid's Linux** deletes everything Droid put on the phone: with root both Linuxes (`/data/local/droid` and `/data/local/tmp/droid`), without root everything under `/data/local/tmp/droid` but the helper; then uninstall the app as usual. Without root, also remove "droid@…" from Wireless debugging's paired devices, and turn USB debugging off if you don't otherwise use it.
 
 ## Security

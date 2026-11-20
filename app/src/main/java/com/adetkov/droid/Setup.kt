@@ -1,10 +1,12 @@
 package com.adetkov.droid
 
+import android.app.NotificationManager
 import android.app.role.RoleManager
 import android.content.ComponentName
 import android.content.Context
 import android.net.ConnectivityManager
 import android.os.Build
+import android.os.PowerManager
 import android.service.voice.VoiceInteractionService
 import android.util.Log
 import androidx.core.content.edit
@@ -85,6 +87,8 @@ data class SetupState(
     val others: Map<Engine, EngineStatus> = emptyMap(),
     /** The one-time code to enter at [signInUrl] while a device-code sign-in (Codex) waits; null for Claude's paste-the-code. */
     val deviceCode: String? = null,
+    /** Android refuses the input Droid injects (some makers' phones until a Developer options switch is on), so the agent can't tap or type. */
+    val inputBlocked: Boolean = false,
 ) {
     /** Whether agent [e] can take a chat: Claude signed in, or the other agent installed and signed in. */
     fun usable(e: Engine) = if (e == Engine.CLAUDE) signedIn else others[e]?.let { it.installed && it.signedIn } == true
@@ -380,6 +384,24 @@ class Setup(private val app: DroidApp) {
 
     fun dismissError() = state.update { it.copy(error = null) }
 
+    /** A bug report's facts ([diagnosticsReport]) for the owner to copy. Blocking: call it off the main thread. */
+    fun diagnostics(): String {
+        val s = state.value
+        val props = parseProps(runCatching { ProcessBuilder("getprop").start().inputStream.bufferedReader().readText() }.getOrDefault(""))
+        val versions = if (!s.connected || !s.installed) emptyList() else buildList {
+            run("cat ${host.rootfs}/etc/alpine-release").takeIf { it.code == 0 }?.let { add("Alpine" to it.out.trim()) }
+            for ((cmd, label) in listOf("claude" to Engine.CLAUDE.label) + s.others.keys.map { it.id to it.label }) {
+                val r = run("${host.base}/enter.sh $cmd --version")
+                if (r.code == 0) add("$label version" to stripAnsi(r.out).lines().firstOrNull { it.isNotBlank() }.orEmpty().trim())
+            }
+        }
+        val droid = listOf(
+            "Battery use" to if (app.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(app.packageName)) "unrestricted" else "optimized",
+            "Notifications" to if (app.getSystemService(NotificationManager::class.java).areNotificationsEnabled()) "on" else "off",
+        )
+        return diagnosticsReport(Updates.version(app), phoneFacts(props) + droid, setupFacts(s, versions))
+    }
+
     private fun checkEngines(installed: Boolean): Map<Engine, EngineStatus> {
         if (!installed) return emptyMap()
         val bin = "${host.rootfs}/root/.local/bin"
@@ -430,6 +452,9 @@ class Setup(private val app: DroidApp) {
         if (!connected) return state.update(reached)
         val probe = run("test -L ${host.rootfs}/root/.local/bin/claude")  // links into the rootfs's own /root
         if (probe.code !in 0..1) return state.update(reached)  // gone out of reach after all (the helper stopped, say)
+        // Some makers' phones (Xiaomi's, OPPO's) refuse input from adb until a switch in Developer options is on, which
+        // would leave the agent able to see the hidden screen but not tap it. A key no app handles shows whether they do.
+        val inputBlocked = inputRefused(run("input keyevent 0").out)
         val installed = probe.code == 0
         val linux = installed || run("test -e ${host.rootfs} -o -e ${host.rootfs}.new").code == 0
         val status = if (!installed) null else authStatus(run("${host.base}/enter.sh claude auth status --json").out)
@@ -445,7 +470,8 @@ class Setup(private val app: DroidApp) {
         val screenshots = assistant && run("settings get secure $SCREENSHOTS; settings get secure $SCREEN_TEXT").out.lines()
             .filter { it.isNotBlank() }.all { it.trim() == "1" }
         state.update {
-            reached(it).copy(installed = installed, linux = linux, signedIn = signedIn, screenshots = screenshots, email = email, plan = plan, others = others)
+            reached(it).copy(installed = installed, linux = linux, signedIn = signedIn, screenshots = screenshots, email = email, plan = plan,
+                others = others, inputBlocked = inputBlocked)
         }
         prefs.edit {
             putBoolean("ready", state.value.ready); putBoolean("installed", installed); putBoolean("signedIn", signedIn)
