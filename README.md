@@ -117,7 +117,7 @@ phone can use on itself, as Shizuku does. So Droid runs the same agent either wa
   fork, built from source by [`tools/proot/build.sh`](tools/proot/build.sh) and carried in the APK as `libproot.so`).
   `android` reaches the bridge with `droid-bridge` (Python); `shot` reads the display's folder, bound at its own path.
 
-- Inside Alpine, `android '<command>'` runs a command in Android as root, or as the shell user without root (`input -d $AGENT_DISPLAY tap ...`, `am start --display ...`). The agent gets nothing else: no per-app tools, recipes or UI-tree scaffolding. It works the phone out from screenshots and a shell.
+- Inside Alpine, `android '<command>'` runs a command in Android as root, or as the shell user without root. In a task, its `am start` and `input` act on the task's hidden display unless the command names one (`--display 0`, `-d 0`: the owner's screen), so an app the agent opens or a tap it makes can't land on the owner's screen by accident: shell functions [`android`](app/src/main/assets/setup/bin/android) puts ahead of the command, in Android's shell, so they hold with root or without. The agent gets nothing else: no per-app tools, recipes or UI-tree scaffolding. It works the phone out from screenshots and a shell.
 
 | On the phone | What |
 |---|---|

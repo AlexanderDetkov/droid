@@ -1,6 +1,36 @@
 #!/bin/sh
-# Run a shell command in the real Android system, outside Droid's Linux, e.g. `android input -d 4 tap 540 222` or
+# Run a shell command in the real Android system, outside Droid's Linux, e.g. `android input tap 540 222` or
 # `android 'content query --uri content://sms/inbox'`. As root through the chroot; on phones without root as the
 # shell user, through Droid's helper (droid-bridge).
-[ -n "$DROID_BRIDGE" ] && exec python3 -I /usr/local/bin/droid-bridge "$*"
-exec chroot /proc/1/root /system/bin/sh -c ". /data/local/droid/rootfs/etc/android-env; $*"
+#
+# In a task, `am start` and `input` act on its hidden display ($AGENT_DISPLAY) unless the command names a display:
+# an app the agent opens, or a tap it makes, never lands on the owner's screen by accident, while `--display 0` and
+# `-d 0` still reach it on purpose. They're shell functions defined ahead of the command, in Android's own shell, so
+# they work the same through the chroot and the helper (which gets only the command's text, not this environment).
+P=
+case "$AGENT_DISPLAY" in
+  '' | *[!0-9]*) ;;
+  *) P="DROID_DISPLAY=$AGENT_DISPLAY
+$(cat <<'EOF'
+am() {
+  case "$1" in start | start-activity)
+    for _droid_arg; do [ "$_droid_arg" = --display ] && { command am "$@"; return; }; done
+    _droid_sub=$1; shift; set -- "$_droid_sub" --display "$DROID_DISPLAY" "$@" ;;
+  esac
+  command am "$@"
+}
+input() {
+  case "$1" in
+    -d) ;;
+    keyboard | gamepad | touchscreen | touchpad | touchnavigation | stylus | trackball | mouse | joystick | dpad | rotaryencoder)
+      [ "$2" = -d ] || { _droid_src=$1; shift; set -- "$_droid_src" -d "$DROID_DISPLAY" "$@"; } ;;
+    *) set -- -d "$DROID_DISPLAY" "$@" ;;
+  esac
+  command input "$@"
+}
+EOF
+)
+" ;;
+esac
+[ -n "$DROID_BRIDGE" ] && exec python3 -I /usr/local/bin/droid-bridge "$P$*"
+exec chroot /proc/1/root /system/bin/sh -c ". /data/local/droid/rootfs/etc/android-env; $P$*"
