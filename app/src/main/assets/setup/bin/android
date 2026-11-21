@@ -3,7 +3,8 @@
 # `android 'content query --uri content://sms/inbox'`. As root through the chroot; on phones without root as the
 # shell user, through Droid's helper (droid-bridge).
 #
-# In a task, `am start` and `input` act on its hidden display ($AGENT_DISPLAY) unless the command names a display:
+# In a task, `am start` and `input` (and `monkey -p APP`, which opens APP) act on its hidden display ($AGENT_DISPLAY)
+# unless the command names a display:
 # an app the agent opens, or a tap it makes, never lands on the owner's screen by accident, while `--display 0` and
 # `-d 0` still reach it on purpose. They're shell functions defined ahead of the command, in Android's own shell, so
 # they work the same through the chroot and the helper (which gets only the command's text, not this environment).
@@ -18,6 +19,15 @@ am() {
     _droid_sub=$1; shift; set -- "$_droid_sub" --display "$DROID_DISPLAY" "$@" ;;
   esac
   command am "$@"
+}
+monkey() {
+  # `monkey -p APP 1`, the usual way to open an app by name, ignores displays: here it opens APP's launcher screen
+  # with `am start`, on the hidden display. Any other use of monkey is left as it is.
+  _droid_prev= _droid_pkg=
+  for _droid_arg; do [ "$_droid_prev" = -p ] && { _droid_pkg=$_droid_arg; break; }; _droid_prev=$_droid_arg; done
+  [ -n "$_droid_pkg" ] || { command monkey "$@"; return; }
+  _droid_comp=$(cmd package resolve-activity --brief -c android.intent.category.LAUNCHER "$_droid_pkg" | tail -n 1)
+  case "$_droid_comp" in */*) am start -n "$_droid_comp" ;; *) echo "monkey: $_droid_pkg has no launcher screen" >&2; return 1 ;; esac
 }
 input() {
   case "$1" in

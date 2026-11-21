@@ -76,6 +76,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.focus.onFocusChanged
@@ -781,7 +782,8 @@ fun EmptyState(onSuggestion: (String) -> Unit, modifier: Modifier, listening: Bo
 /** Dash's words over him, in a speech bubble that points down at him. */
 @Composable
 private fun Bubble(text: String) {
-    val bg = P.call.copy(alpha = if (P.dark) .22f else .12f)
+    // solid, so the tail and the bubble are one shape where they overlap
+    val bg = P.call.copy(alpha = if (P.dark) .22f else .12f).compositeOver(P.bg)
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(text, Modifier.clip(RoundedCornerShape(24.dp)).background(bg).padding(horizontal = 22.dp, vertical = 14.dp).testTag("dash_says"),
             style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold), textAlign = TextAlign.Center)

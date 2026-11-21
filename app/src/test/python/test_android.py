@@ -12,6 +12,9 @@ ANDROID = os.path.join(HERE, '../../main/assets/setup/bin/android')
 STANDINS = {
     'am': '#!/bin/sh\necho "am $*"\n',
     'input': '#!/bin/sh\necho "input $*"\n',
+    'monkey': '#!/bin/sh\necho "monkey $*"\n',
+    # Android's `cmd package resolve-activity --brief`: a line about the match, then the component
+    'cmd': '#!/bin/sh\ncase " $* " in *" com.whatsapp "*) printf "priority=0 preferredOrder=0\\ncom.whatsapp/.home.ui.HomeActivity\\n" ;; *) echo "No activity found" ;; esac\n',
     # droid-bridge's place: the helper runs the command's text in Android's shell, which gets nothing else
     'python3': '#!/bin/sh\nshift 2\nexec env -i PATH="$PATH" sh -c "$1"\n',
 }
@@ -61,6 +64,11 @@ class DisplayDefault(unittest.TestCase):
         self.assertEqual(self.android('for s in 1 2; do input touchscreen tap $s $s; echo s=$s; done'),
                          'input touchscreen -d 7 tap 1 1\ns=1\ninput touchscreen -d 7 tap 2 2\ns=2')
         self.assertEqual(self.android('am start -n a/.b && input keyevent 66; echo rc=$?'), 'am start --display 7 -n a/.b\ninput -d 7 keyevent 66\nrc=0')
+
+    def test_opening_an_app_with_monkey_lands_on_the_hidden_display(self):
+        self.assertEqual(self.android('monkey -p com.whatsapp -c android.intent.category.LAUNCHER 1'),
+                         'am start --display 7 -n com.whatsapp/.home.ui.HomeActivity')
+        self.assertEqual(self.android('monkey --throttle 50 100'), 'monkey --throttle 50 100')  # not opening an app
 
     def test_outside_a_task_nothing_changes(self):
         self.assertEqual(self.android('input tap 1 2', display=None), 'input tap 1 2')
