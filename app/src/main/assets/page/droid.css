@@ -51,6 +51,9 @@ img { border-radius: 14px; height: auto; }
 figcaption, small, .small { font-size: 13px; line-height: 18px; color: var(--muted); }
 .muted { color: var(--muted); }
 .card { background: var(--surface); border-radius: 22px; padding: 16px 18px; }
+/* Cards one after another stand apart; in a grid or flex row, its gap does that */
+.card + .card { margin-top: 10px; }
+:is(.tiles, .row, .stack) > .card { margin: 0; }
 /* A number or word to see from across the room */
 .big { font-size: 44px; line-height: 50px; font-weight: 700; letter-spacing: -.5px; }
 .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
