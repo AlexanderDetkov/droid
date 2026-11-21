@@ -101,9 +101,6 @@ cd /root
 # memory; Codex and OpenCode read their AGENTS.md, which install.sh links to CLAUDE.md, so that link becomes both.
 SYSTEM=/root/.droid/system.md
 if [ "$ENGINE" = claude ]; then
-  # Low effort: on phone tasks (open an app, read it, tap) it answered as well as the default, in half the time
-  # (measured on a Pixel 6a). Older versions of Claude Code ignore the variable.
-  export CLAUDE_CODE_EFFORT_LEVEL=low
   [ -s $SYSTEM ] && set -- "$@" --append-system-prompt-file $SYSTEM
   feed | claude -p "$@" --tools Bash,Read,Write,Edit,Grep,Glob,WebSearch,WebFetch \
     --disable-slash-commands --strict-mcp-config \
