@@ -18,7 +18,7 @@ enum class Engine(val id: String, val label: String, val models: List<Model>, va
     ), Regex("[0-9a-fA-F-]{36}")),
     CODEX("codex", "Codex", listOf(Model("", "Default", "The model Codex picks for your account")),
         Regex("[0-9a-fA-F-]{36}"), custom = true),
-    OPENCODE("opencode", "OpenCode", listOf(Model("", "Default", "A free model that sees images; pick your own with Other…")),
+    OPENCODE("opencode", "OpenCode", listOf(Model("", "Default", "A free model that sees images, or with a key OpenCode's choice; pick your own with Other…")),
         Regex("ses_[A-Za-z0-9]{10,40}"), custom = true);  // its default is picked each run (droid-engine)
 
     /** The model entry for [alias]; an unlisted alias of a [custom] engine is shown as itself. */
