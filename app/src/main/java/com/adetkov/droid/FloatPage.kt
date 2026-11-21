@@ -44,8 +44,9 @@ import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 /**
  * A page floating over whatever app is open (`droid show --float`), rising from the bottom edge like the assistant
  * panel, with Dash peeking over its top as its handle. Touches beside it go to the app below; it takes the keyboard
- * only once touched, so the app below keeps it until then. Close, Back, or the page itself (droid.send, droid.close)
- * take it away. One at a time: a new one replaces it, and the same one shown again stays, updated in place.
+ * only once touched, so the app below keeps it until then. Close, Back, the page itself (droid.send, droid.close), or
+ * its answer from elsewhere (the chat) take it away. One at a time: a new one replaces it, and the same one shown again
+ * stays, updated in place.
  */
 object FloatPage {
     // the application's context only: no activity is kept
@@ -135,15 +136,17 @@ private fun FloatCard(conv: String, pageId: String, onClose: () -> Unit) {
     val convs by app.store.convs.collectAsState()
     val running by app.runner.running.collectAsState()  // whether the agent still waits on it changes with its run
     val c = convs.firstOrNull { it.id == conv }
-    val m = c?.page(pageId)
-    if (c == null || m == null) { LaunchedEffect(Unit) { onClose() }; return }
+    val i = c?.pageIndex(pageId) ?: -1
+    if (c == null || i < 0) { LaunchedEffect(Unit) { onClose() }; return }
+    val m = c.messages[i]
     val info = PageInfo.of(m)
-    val waits = remember(info, running) { awaited(app, conv, info) }
+    // as the chat and its run are now (both collected above, so this follows them)
+    val waits = remember(c, running) { awaited(app, c, i) }
+    val live = remember(c, running) { pageLive(app, c, i) }
+    CloseWhenAnswered(info.reply != null, onClose)
     val dark = P.dark
     val actions = remember(conv, pageId) {
-        object : PageActions by ChatPageActions(ctx, conv, pageId, onScreen = { openChat(ctx, conv, handoff = true); onClose() }, onClose = onClose) {
-            override fun send(text: String, data: String?) { pageSend(ctx, conv, pageId, text, data); onClose() }
-        }
+        ChatPageActions(ctx, conv, pageId, onScreen = { openChat(ctx, conv, handoff = true); onClose() }, onClose = onClose, onSent = onClose)
     }
     val feel = if (waits) Feel.NEEDS_YOU else lastMood(c.messages)?.feel ?: Feel.IDLE
     val max = LocalConfiguration.current.screenHeightDp.dp * .62f
@@ -158,7 +161,7 @@ private fun FloatCard(conv: String, pageId: String, onClose: () -> Unit) {
             }
             key(m.text, dark) {
                 InlinePage("float:$pageId:${m.text.hashCode()}", "page:$conv:$pageId", dark, { cx -> pageDocument(cx, m.text, dark, PageMode.FLOAT) },
-                    namedPaths(m.text), actions, mode = PageMode.FLOAT, maxHeight = max)
+                    namedPaths(m.text), actions, mode = PageMode.FLOAT, maxHeight = max, live = live)
             }
             Spacer(Modifier.height(12.dp))
         }

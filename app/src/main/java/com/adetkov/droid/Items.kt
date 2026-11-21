@@ -107,11 +107,11 @@ fun lastMood(messages: List<Msg>): Mood? = lastTurn(messages).let { turn ->
 }
 
 /**
- * The page the last turn is waiting on (`droid show --wait`, not answered yet), while it runs: Dash calls the owner to
- * it. Null if there is none.
+ * The page the agent's command waits on (`droid show --wait`, not answered yet), in any turn while the chat runs (a
+ * message or a wake-up meanwhile doesn't end the wait): Dash calls the owner to it. Null if there is none.
  */
 fun waitingPage(messages: List<Msg>, running: Boolean): Msg? =
-    if (!running) null else lastTurn(messages).lastOrNull { it.kind == Kind.PAGE }?.takeIf { PageInfo.of(it).let { p -> p.wait && p.reply == null } }
+    if (!running) null else messages.indices.lastOrNull { messages.awaits(it, true) { false } }?.let(messages::get)
 
 /**
  * The last turn's [Outcome]: null while it runs (or before any). It's the owner's turn ([Outcome.ASKS]) only when the

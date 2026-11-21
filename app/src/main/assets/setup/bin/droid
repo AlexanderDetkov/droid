@@ -32,7 +32,9 @@
   droid notify --cancel ID       takes notification ID away (or the one set for later).
   droid wait ID [--timeout SECS] Keeps waiting for the answer to page ID (or notification ID: n-ID).
   droid later WHEN MESSAGE       Wakes you in this chat at WHEN with MESSAGE, a note to yourself: 17:30, 9am,
-                                 tomorrow 9am, fri 14:00, in 2h, 45m, 2026-11-21 09:00.
+                                 tomorrow 9am, fri 14:00, in 2h, 45m, 2026-11-21 09:00. A bare hour is the next
+                                 time the clock shows it (5 at 15:00 is 17:00); a duration is written one way
+                                 (2h30m, or 2 hours 30 minutes), so in `2h 10 mins of yoga` the time is 2h.
 
 It works inside a Droid task (it writes to the task's output, which the app reads).
 """
@@ -286,14 +288,8 @@ def notify(args):
             spec["feel"] = f; i += 2
         elif a == "--at":
             val()
-            tz = phone_offset()
-            now = datetime.now(tz)
             rest = args[i + 1:]
-            at, n = leading_when(rest[:next((k for k, w in enumerate(rest) if w.startswith("--")), len(rest))], now)
-            if at is None:
-                die(f"can't tell when '{args[i + 1]}' is. " + WHEN_EXAMPLES)
-            if at <= now:
-                die(f"{at:%a %b %-d %H:%M} has passed")
+            shown_at, at, n = time_ahead(rest[:next((k for k, w in enumerate(rest) if w.startswith("--")), len(rest))])
             spec["at"] = int(at.timestamp() * 1000); i += 1 + n
         elif a == "--timeout":
             timeout = seconds(val()[0]); i += 2
@@ -309,7 +305,7 @@ def notify(args):
         die("usage: droid notify TITLE [TEXT] [options] (droid --help)")
     spec["title"] = words[0]
     if len(words) > 1:
-        spec["text"] = " ".join(words[1:])[:2000]
+        spec["text"] = cut(" ".join(words[1:]), 2000)
     if buttons:
         spec["buttons"] = buttons
     if len(buttons) + (1 if "reply" in spec else 0) > 3:
@@ -329,9 +325,14 @@ def notify(args):
     if spec.get("wait"):
         wait(f"n-{nid}", timeout)
     elif "at" in spec:
-        print(f"It will show on {datetime.fromtimestamp(spec['at'] / 1000, tz):%a %b %-d at %H:%M} ({nid}).")
+        print(f"It will show on {shown_at:%a %b %-d at %H:%M} ({nid}).")
     else:
         print(f"Notified ({nid}).")
+
+
+def cut(text, size):
+    """TEXT in at most SIZE bytes of UTF-8 (the app takes a line of 4000), cut at a character's edge."""
+    return text.encode()[:size].decode(errors="ignore")
 
 
 def phone_offset():
@@ -345,6 +346,27 @@ def phone_offset():
         die(f"couldn't read the phone's time zone (android 'date +%z': {z or 'nothing'}); try again")
     sign = 1 if m.group(1) == "+" else -1
     return timezone(sign * timedelta(hours=int(m.group(2)), minutes=int(m.group(3))))
+
+
+def phone_moment(wall):
+    """When the phone's clock shows WALL (a time without a zone), by the phone's own zone rules: a clock change between
+    now and then moves the UTC offset, so the offset now won't do. Android's date works it out."""
+    try:
+        s = subprocess.run(["android", f"date -d '{wall:%Y-%m-%d %H:%M:%S}' +%s"], capture_output=True, text=True,
+                           timeout=10).stdout.strip()
+    except (OSError, subprocess.SubprocessError) as e:
+        s = str(e)
+    if not re.fullmatch(r"-?\d+", s):
+        die(f"couldn't read the phone's time for {wall:%Y-%m-%d %H:%M} (android 'date -d': {s or 'nothing'}); try again")
+    try:
+        return datetime.fromtimestamp(int(s), timezone.utc)
+    except (ValueError, OverflowError, OSError):
+        die(f"{wall:%Y-%m-%d %H:%M} is too far off")
+
+
+def moment(at):
+    """A time when() read, as a moment: one on the phone's clock placed by the phone (see phone_moment)."""
+    return at if at.tzinfo else phone_moment(at)
 
 
 DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
@@ -371,22 +393,29 @@ def clock(s):
     return h, mi
 
 
+UNIT = r"(?:d|days?|h|hrs?|hours?|m|mins?|minutes?|s|secs?|seconds?)"
+# A duration is written one way throughout (2h30m, 2h 30m, 2 hours 30 minutes): in "2h 10 mins of yoga" it's 2h.
+DURATION = re.compile(rf"(?:in\s+)?((?:\d+(?:\.\d+)?{UNIT}\s*)+|(?:\d+(?:\.\d+)?\s+{UNIT}\s*)+)")
+STEP = {"d": timedelta(days=1), "h": timedelta(hours=1), "m": timedelta(minutes=1), "s": timedelta(seconds=1)}
+
+
 def when(text, now):
+    """When TEXT says, from NOW (the phone's time, with its offset): a moment for a duration (in 2h); for the rest a
+    time on the phone's clock, without a zone (tomorrow 9am: see phone_moment); None if it says no time."""
     s = text.strip().lower()
-    m = re.fullmatch(r"(?:in\s+)?((?:\d+(?:\.\d+)?\s*(?:d|days?|h|hrs?|hours?|m|mins?|minutes?|s|secs?|seconds?)\s*)+)", s)
+    m = DURATION.fullmatch(s)
     if m:
-        total = timedelta()
-        for n, u in re.findall(r"(\d+(?:\.\d+)?)\s*([a-z]+)", m.group(1)):
-            n = float(n)
-            total += {"d": timedelta(days=n), "h": timedelta(hours=n), "m": timedelta(minutes=n), "s": timedelta(seconds=n)}[u[0]]
-        return now + total
+        try:
+            return now + sum((STEP[u[0]] * float(n) for n, u in re.findall(r"(\d+(?:\.\d+)?)\s*([a-z]+)", m.group(1))), timedelta())
+        except OverflowError:  # 99999999d
+            return None
     for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%dt%H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dt%H:%M:%S"):
         try:
-            return datetime.strptime(s, fmt).replace(tzinfo=now.tzinfo)
+            return datetime.strptime(s, fmt)
         except ValueError:
             pass
     try:
-        return datetime.strptime(s, "%Y-%m-%d").replace(hour=9, tzinfo=now.tzinfo)
+        return datetime.strptime(s, "%Y-%m-%d").replace(hour=9)
     except ValueError:
         pass
     day = None
@@ -397,16 +426,34 @@ def when(text, now):
     t = clock(s)
     if t is None:
         return None
-    at = now.replace(hour=t[0], minute=t[1], second=0, microsecond=0)
+    wall = now.replace(tzinfo=None, second=0, microsecond=0)
+    base = wall.replace(hour=0, minute=0)
     if day == "tomorrow":
-        at += timedelta(days=1)
+        base += timedelta(days=1)
     elif day and weekday(day) is not None:
-        at += timedelta(days=(weekday(day) - now.weekday()) % 7)
-        if at <= now:
-            at += timedelta(days=7)
-    elif at <= now and day is None:
+        base += timedelta(days=(weekday(day) - now.weekday()) % 7)
+    # A bare hour (5) is the next time the clock shows it: 5:00 or 17:00.
+    hours = sorted({t[0] % 12, t[0] % 12 + 12}) if re.fullmatch(r"\d{1,2}", s) and 1 <= t[0] <= 12 else [t[0]]
+    times = [base.replace(hour=h, minute=t[1]) for h in hours]
+    at = next((x for x in times if x > wall), times[0])
+    if at <= wall and day is None:
         at += timedelta(days=1)
+    elif at <= wall and day not in ("today", "tonight", "tomorrow"):
+        at += timedelta(days=7)  # this weekday's has passed: next week's
     return at
+
+
+def time_ahead(words):
+    """The time the first of WORDS give (see leading_when), yet to come: as the phone's clock shows it, as a moment, and
+    how many words it took."""
+    now = datetime.now(phone_offset())
+    at, n = leading_when(words, now)
+    if at is None:
+        die(f"can't tell when '{words[0] if words else ''}' is. " + WHEN_EXAMPLES)
+    t = moment(at)
+    if t <= now:
+        die(f"{at:%a %b %-d %H:%M} has passed")
+    return at, t, n
 
 
 def leading_when(words, now):
@@ -422,17 +469,12 @@ def leading_when(words, now):
 def later(args):
     if len(args) < 2:
         die("usage: droid later WHEN MESSAGE")
-    now = datetime.now(phone_offset())
-    at, n = leading_when(args, now)
-    if at is None:
-        die(f"can't tell when '{args[0]}' is. " + WHEN_EXAMPLES)
-    if at <= now:
-        die(f"{at:%a %b %-d %H:%M} has passed")
+    shown_at, at, n = time_ahead(args)
     text = " ".join(args[n:]).strip()
     if not text:
         die("usage: droid later WHEN MESSAGE (the message is a note to yourself)")
     emit(dict(op="later", at=int(at.timestamp() * 1000), text=text))
-    print(f"I'll wake you in this chat on {at:%a %b %-d at %H:%M} (phone time).")
+    print(f"I'll wake you in this chat on {shown_at:%a %b %-d at %H:%M} (phone time).")
 
 
 def main():

@@ -11,8 +11,12 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputConnection
+import android.view.inputmethod.InputConnectionWrapper
 import android.view.inputmethod.InputMethodManager
 import android.view.ViewGroup
 import android.webkit.MimeTypeMap
@@ -89,7 +93,10 @@ interface PageActions {
     fun fetch(path: String): File?
     /** Droid's copies of what its chat's answers showed (files/shown/<chat>), which it may load. */
     val shown: File
-    /** Whether the page may still act (send, run, screen, Dash): one from an earlier turn, or answered, is done. */
+    /**
+     * Whether the page may still act (send, run, screen, Dash), as the chat has it this moment (see [pageLive]): one
+     * answered, or from an earlier turn that nothing waits on, is done.
+     */
     val live: Boolean get() = true
 }
 
@@ -165,16 +172,22 @@ class PageWebView(ctx: Context, val origin: String) : WebView(ctx) {
     /** Paths in the agent's Linux the page names, which it may load. */
     var named: Set<String> = emptySet()
     var actions: PageActions? = null
-    /** See [PageActions.live]. Once it has sent it is done for good, wherever it shows: a page answers once. */
+    /**
+     * Whether its surface shows it live (from the state it collects; what it may do is [PageActions.live], asked fresh
+     * each time). Live again (shown again), it is no longer [sent].
+     */
     var live = true
-        set(v) { if (field != v) { field = v; markDone() } }
+        set(v) { field = v; if (v && actions?.live == true) sent = false; markDone() }
+    /** It sent, before its surface has heard (the store has the answer at once, the surface a frame later). */
     private var sent = false
+    private var dimmed: Boolean? = null
     /** Its content height in px, as it changes. */
     var onHeight: (Int) -> Unit = {}
     var pageHeight = 0; private set
     /** Its renderer died: it can't be shown again, only replaced. */
     var dead = false; private set
-    private var tapped = 0L
+    /** When the owner last tapped or typed in it. Typing comes on the keyboard's thread. */
+    @Volatile private var tapped = 0L
     private val main = Handler(Looper.getMainLooper())
 
     init {
@@ -205,10 +218,27 @@ class PageWebView(ctx: Context, val origin: String) : WebView(ctx) {
         return super.dispatchTouchEvent(e)
     }
 
+    // What the owner types counts as a tap: a draft typed for longer than the grace still sends from the keyboard.
+    override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? {
+        val ic = super.onCreateInputConnection(outAttrs) ?: return null
+        return object : InputConnectionWrapper(ic, false) {
+            override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean { typed(); return super.commitText(text, newCursorPosition) }
+            override fun sendKeyEvent(event: KeyEvent?): Boolean { typed(); return super.sendKeyEvent(event) }
+            override fun performEditorAction(editorAction: Int): Boolean { typed(); return super.performEditorAction(editorAction) }
+        }
+    }
+
+    private fun typed() { tapped = SystemClock.uptimeMillis() }
+
     private fun byTap() = SystemClock.uptimeMillis() - tapped < TAP_GRACE
 
-    /** A done page stays to read; droid.css dims its controls. */
-    private fun markDone() = evaluateJavascript("document.documentElement.classList.toggle('droid-done', ${sent || !live})", null)
+    /** A done page stays to read; droid.css dims its controls. [again]: a new document, which hasn't been told. */
+    private fun markDone(again: Boolean = false) {
+        val done = sent || !live
+        if (done == dimmed && !again) return
+        dimmed = done
+        evaluateJavascript("document.documentElement.classList.toggle('droid-done', $done)", null)
+    }
 
     private fun onMessage(data: String, reply: JavaScriptReplyProxy) {
         val o = try { JSONObject(data) } catch (_: JSONException) { return }
@@ -226,10 +256,12 @@ class PageWebView(ctx: Context, val origin: String) : WebView(ctx) {
             "send", "run", "screen", "open" -> when {
                 a == null -> answer(error = "Not available here")
                 !byTap() -> answer(error = "droid.$op works from the owner's tap")
-                op != "open" && (sent || !live) -> answer(error = "This page was answered already")
+                op != "open" && !a.live -> answer(error = "This page was answered already")
                 op == "send" -> {
-                    sent = true; markDone()
-                    a.send(o.optString("text"), if (o.isNull("data")) null else o.optString("data")); answer()
+                    a.send(o.optString("text"), if (o.isNull("data")) null else o.optString("data"))
+                    // sent now (not waiting for the unlock): done here at once
+                    if (!a.live) { sent = true; markDone() }
+                    answer()
                 }
                 op == "screen" -> { a.screen(); answer() }
                 op == "open" -> { a.open(o.optString("url")); answer() }
@@ -267,11 +299,11 @@ class PageWebView(ctx: Context, val origin: String) : WebView(ctx) {
 
         override fun shouldOverrideUrlLoading(view: WebView, req: WebResourceRequest): Boolean {
             if (req.url.host == origin) return false
-            if (req.isForMainFrame && byTap()) actions?.open(req.url.toString())
+            if (req.isForMainFrame && byTap()) browsable(req.url.toString())?.let { actions?.open(it) }
             return req.isForMainFrame
         }
 
-        override fun onPageFinished(view: WebView, url: String?) { markDone() }
+        override fun onPageFinished(view: WebView, url: String?) { markDone(again = true) }
 
         override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
             Log.w("Droid", "page renderer gone (crash=${detail.didCrash()})")
@@ -282,10 +314,11 @@ class PageWebView(ctx: Context, val origin: String) : WebView(ctx) {
     }
 
     private inner class Chrome : WebChromeClient() {
-        // The camera and microphone, for the page itself (Droid holds both permissions), not a frame it embeds.
+        // The camera and microphone (Droid holds both permissions): for the page itself, not a frame it embeds, while
+        // it may act, and from the owner's tap.
         override fun onPermissionRequest(request: PermissionRequest) {
             val ok = request.resources.filter { it == PermissionRequest.RESOURCE_VIDEO_CAPTURE || it == PermissionRequest.RESOURCE_AUDIO_CAPTURE }
-            if (ok.isEmpty() || request.origin.host != origin) request.deny() else request.grant(ok.toTypedArray())
+            if (ok.isEmpty() || request.origin.host != origin || actions?.live != true || !byTap()) request.deny() else request.grant(ok.toTypedArray())
         }
     }
 
@@ -409,12 +442,14 @@ fun Modifier.dismissesKeyboard(drag: ListDrag, focus: FocusManager, view: View):
 /**
  * A page as tall as its content: in the chat ([PageMode.INLINE]), seamless with the answer around it (no frame, the
  * chat's own background), never scrolling itself; floating ([PageMode.FLOAT]), up to [maxHeight] and then scrolling.
- * [key] names it in the [PageCache] (with the theme), [name] its origin; [document] makes its HTML.
+ * [key] names it in the [PageCache] (with the theme), [name] its origin; [document] makes its HTML; [live]: whether it
+ * shows live, from the state its surface collects (see [PageWebView.live]).
  */
 @Composable
 fun InlinePage(
     key: String, name: String, dark: Boolean, document: (Context) -> String, named: Set<String>, actions: PageActions,
     modifier: Modifier = Modifier, mode: PageMode = PageMode.INLINE, maxHeight: androidx.compose.ui.unit.Dp = 4000.dp,
+    live: Boolean = actions.live,
 ) {
     val own = remember { PageCache() }
     val cache = LocalPageCache.current ?: own
@@ -433,7 +468,7 @@ fun InlinePage(
             .let { if (inline) it.passVerticalDrags(drag) else it },
         update = { v ->
             v.actions = actions
-            v.live = actions.live
+            v.live = live
             v.onHeight = { px -> val more = px > height; height = px; cache.setHeight(ck, px); if (more) drag?.grew?.invoke() }
             if (v.pageHeight > 0 && v.pageHeight != height) height = v.pageHeight
         },
@@ -452,13 +487,16 @@ private fun Modifier.bleed(by: androidx.compose.ui.unit.Dp) = layout { m, c ->
 
 /** A page filling its place, scrolling itself: full screen, or floating over another app. */
 @Composable
-fun FillPage(key: String, name: String, document: (Context) -> String, named: Set<String>, actions: PageActions, modifier: Modifier = Modifier) {
+fun FillPage(
+    key: String, name: String, document: (Context) -> String, named: Set<String>, actions: PageActions, modifier: Modifier = Modifier,
+    live: Boolean = actions.live,
+) {
     val cache = remember { PageCache() }
     DisposableEffect(cache) { onDispose { cache.clear() } }
     AndroidView(
         factory = { ctx -> cache.obtain(ctx, key, pageOrigin(name)) { it.isVerticalScrollBarEnabled = true; it.show(document(ctx), named) } },
         modifier = modifier,
-        update = { v -> v.actions = actions; v.live = actions.live },
+        update = { v -> v.actions = actions; v.live = live },
     )
 }
 
@@ -476,6 +514,20 @@ fun openLink(ctx: Context, url: String) {
     } catch (e: Exception) {
         if (e !is ActivityNotFoundException && e !is java.net.URISyntaxException) Log.w("Droid", "open $url: $e")
     }
+}
+
+/**
+ * A link a page navigated to (not one it opened with droid.open), as Chrome takes one: an intent: link may reach only
+ * an app that takes links from the web (BROWSABLE), and names no component or selector of its own, so a page (or a
+ * frame it embeds) can't start any app's inner screens with extras of its choosing. Null: one that can't be read.
+ */
+internal fun browsable(url: String): String? {
+    if (!url.startsWith("intent:")) return url
+    val i = try { Intent.parseUri(url, Intent.URI_INTENT_SCHEME) } catch (_: Exception) { return null }
+    i.addCategory(Intent.CATEGORY_BROWSABLE)
+    i.component = null
+    i.selector = null
+    return i.toUri(Intent.URI_INTENT_SCHEME)
 }
 
 /** Whether [i] names Droid, or would open one of its screens. */

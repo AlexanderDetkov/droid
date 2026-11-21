@@ -1,7 +1,6 @@
 package com.adetkov.droid
 
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.Crossfade
@@ -173,7 +172,7 @@ fun Transcript(
         grew = { if (follow) scope.launch { state.scrollToItem(state.layoutInfo.totalItemsCount - 1, BOTTOM) } })
     val focus = LocalFocusManager.current
     val view = LocalView.current
-    val latestIndex = remember(messages) { messages.indices.lastOrNull { messages[it].kind.opensTurn } ?: 0 }
+    val droid = LocalContext.current.applicationContext as DroidApp
     Box(modifier) { CompositionLocalProvider(LocalPageCache provides pages, LocalListDrag provides drag) {
         LazyColumn(
             Modifier.fillMaxSize().testTag("messages").dismissesKeyboard(drag, focus, view), state,
@@ -201,8 +200,8 @@ fun Transcript(
                                 Kind.USER -> UserMessage(m) { menuFor = m }
                                 // Copy, read aloud and share are under every answer; a long press selects its text.
                                 Kind.AGENT -> Answer(m.text, speakingKey == key, { onSpeak(key, m.text) }, onTakeOver = onTakeOver,
-                                    conv = conv.id, index = item.index, latest = item.index > latestIndex) { selecting = stripMarkdown(m.text) }
-                                Kind.PAGE -> PageMessage(m, conv.id, item.index > latestIndex, onTakeOver)
+                                    conv = conv.id, index = item.index, live = pageLive(droid, conv, item.index)) { selecting = stripMarkdown(m.text) }
+                                Kind.PAGE -> PageMessage(m, conv.id, pageLive(droid, conv, item.index), onTakeOver)
                                 Kind.WAKE -> WakeLine(m.text)
                                 Kind.STATUS -> StatusRow(m.text, retry = if (item === items[lastIndex] && !running) onRetry else null)
                                 else -> Text(m.text, style = MaterialTheme.typography.bodySmall, color = P.muted)
@@ -303,8 +302,8 @@ fun AttachmentView(a: Attachment, big: Boolean, modifier: Modifier = Modifier) {
 @Composable
 private fun Answer(
     text: String, speaking: Boolean, onSpeak: () -> Unit, onTakeOver: () -> Unit,
-    /** The chat and the answer's place in it, and whether it is in the latest turn (a page there may set Dash). */
-    conv: String = "", index: Int = 0, latest: Boolean = true,
+    /** The chat and the answer's place in it, and whether a page in it may act ([pageLive]: in the latest turn). */
+    conv: String = "", index: Int = 0, live: Boolean = true,
     onLongPress: () -> Unit,
 ) {
     val copy = rememberCopy()
@@ -317,11 +316,11 @@ private fun Answer(
     val shown = remember(text) { if (html) stripMarkdown(text) else answerText(text) }
     Column(Modifier.fillMaxWidth()) {
         if (html) {
-            val isLatest by rememberUpdatedState(latest)
-            val actions = remember(conv, index) { ChatPageActions(ctx, conv, null, isLive = { isLatest }, onScreen = onTakeOver) }
+            val app = ctx.applicationContext as DroidApp
+            val actions = remember(conv, index) { ChatPageActions(ctx, conv, null, isLive = { pageLiveNow(app, conv, null, index) }, onScreen = onTakeOver) }
             val dark = P.dark
             InlinePage("a:$conv:$index:${text.hashCode()}", "answer:$conv:$index", dark, { cx -> answerDocument(cx, text, dark) },
-                namedPaths(text), actions, Modifier.testTag("answer"))
+                namedPaths(text), actions, Modifier.testTag("answer"), live = live)
         } else Markdown(shown, Modifier.fillMaxWidth().combinedClickable(remember { MutableInteractionSource() }, null,
             onLongClick = onLongPress, onClick = {}).testTag("answer"))
         Row(Modifier.offset(x = (-10).dp).padding(top = 4.dp)) {
@@ -336,21 +335,20 @@ private fun Answer(
 }
 
 /**
- * A page the agent showed (`droid show`): in the chat, the page itself, and the owner's answer under it once given;
- * one shown elsewhere (full screen, floating, a notification) is a line here that opens it full screen.
+ * A page the agent showed (`droid show`): in the chat, the page itself, and the owner's answer under it once given
+ * (one that went as a message is the chat's); one shown elsewhere (full screen, floating, a notification) is a line
+ * here that opens it full screen. [live]: whether it may still act ([pageLive]).
  */
 @Composable
-private fun PageMessage(m: Msg, conv: String, latest: Boolean, onTakeOver: () -> Unit) {
+private fun PageMessage(m: Msg, conv: String, live: Boolean, onTakeOver: () -> Unit) {
     val ctx = LocalContext.current
     val info = remember(m.data) { PageInfo.of(m) }
-    val isLatest by rememberUpdatedState(latest)
-    val answered by rememberUpdatedState(info.reply != null)
     Column(Modifier.fillMaxWidth()) {
         if (info.where == "chat") {
-            val actions = remember(conv, info.id) { ChatPageActions(ctx, conv, info.id, isLive = { isLatest && !answered }, onScreen = onTakeOver) }
+            val actions = remember(conv, info.id) { ChatPageActions(ctx, conv, info.id, onScreen = onTakeOver) }
             val dark = P.dark
             InlinePage("p:$conv:${info.id}:${m.text.hashCode()}", "page:$conv:${info.id}", dark, { cx -> pageDocument(cx, m.text, dark, PageMode.INLINE) },
-                namedPaths(m.text), actions, Modifier.testTag("page"))
+                namedPaths(m.text), actions, Modifier.testTag("page"), live = live)
         } else Row(
             Modifier.clip(RoundedCornerShape(14.dp)).border(1.dp, P.hairline, RoundedCornerShape(14.dp))
                 .clickable { ctx.startActivity(pageIntent(ctx, conv, info.id)) }.padding(start = 12.dp, end = 16.dp, top = 10.dp, bottom = 10.dp).testTag("page_link"),
@@ -359,7 +357,7 @@ private fun PageMessage(m: Msg, conv: String, latest: Boolean, onTakeOver: () ->
             Icon(painterResource(R.drawable.ic_screen), null, Modifier.size(18.dp), tint = P.muted)
             Text(info.title.ifEmpty { "Page" }, Modifier.padding(start = 10.dp), style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        info.reply?.let { r ->
+        info.reply?.takeIf { it.isNotEmpty() }?.let { r ->
             Text(r, Modifier.align(Alignment.End).padding(top = 10.dp, start = 48.dp).clip(RoundedCornerShape(22.dp)).background(P.surface)
                 .padding(horizontal = 16.dp, vertical = 10.dp).testTag("page_reply"), style = MaterialTheme.typography.bodyLarge)
         }

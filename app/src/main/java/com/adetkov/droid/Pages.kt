@@ -14,8 +14,9 @@ import org.json.JSONTokener
 /**
  * A page the agent showed with `droid show` (a PAGE message, its HTML in the text): [id] names it (and the answer file
  * a waiting command reads), [wait]: the agent's command waits for the page's answer, [where]: chat, full, float or
- * notify, [title]: its <title>, [reply]: what the owner answered (null until then). [note]: for a page a notification's
- * button opens (`page:`), that notification's id: while the agent waits on the notification, the page answers it.
+ * notify, [title]: its <title>, [reply]: what the owner answered (null until then; empty when it went to the chat as a
+ * message). [note]: for a page a notification's button opens (`page:`), that notification's id: while the agent waits
+ * on the notification, the page answers it.
  */
 data class PageInfo(
     val id: String, val wait: Boolean = false, val where: String = "chat", val title: String = "", val reply: String? = null,
@@ -36,12 +37,52 @@ data class PageInfo(
 }
 
 /** The PAGE message [pageId] (its latest, if shown again), or null. */
-fun Conv.page(pageId: String): Msg? = messages.lastOrNull { it.kind == Kind.PAGE && PageInfo.of(it).id == pageId }
+fun Conv.page(pageId: String): Msg? = messages.getOrNull(pageIndex(pageId))
 
-/** Whether page [pageId] may still act: it was shown in the chat's latest turn and isn't answered yet. */
-fun Conv.pageLive(pageId: String): Boolean {
-    val i = messages.indexOfLast { it.kind == Kind.PAGE && PageInfo.of(it).id == pageId }
-    return i > messages.indexOfLast { it.kind.opensTurn } && PageInfo.of(messages[i]).reply == null
+/** Where the PAGE message [pageId] is in the chat (its latest), or -1. */
+fun Conv.pageIndex(pageId: String): Int = messages.indexOfLast { it.kind == Kind.PAGE && PageInfo.of(it).id == pageId }
+
+/**
+ * Whether the agent's command waits on the PAGE at [index] of these messages now, while its chat's run [working]: one
+ * shown with --wait (or waited on again, `droid wait`) that isn't answered, in any turn, unless a status after it says
+ * its run ended (an app that died mid-run leaves the wait behind); or one a notification's button opens, while the
+ * command waits on that notification ([noteWaited], by the notification's id).
+ */
+fun List<Msg>.awaits(index: Int, working: Boolean, noteWaited: (String) -> Boolean): Boolean {
+    val m = getOrNull(index)?.takeIf { it.kind == Kind.PAGE } ?: return false
+    val p = PageInfo.of(m)
+    if (!working || p.reply != null) return false
+    return if (p.note.isNotEmpty()) noteWaited(p.note) else p.wait && (index + 1 until size).none { this[it].kind == Kind.STATUS }
+}
+
+/**
+ * The one test of whether the page at [index] may still act (send, run, screen, Dash): a page answers once. A PAGE
+ * the agent showed may while it isn't answered and it is in the chat's latest turn, or the agent's command still waits
+ * on it ([awaits]); an answer with HTML, while it is in the latest turn.
+ */
+fun List<Msg>.pageLive(index: Int, working: Boolean, noteWaited: (String) -> Boolean): Boolean {
+    val m = getOrNull(index) ?: return false
+    if (m.kind == Kind.PAGE && PageInfo.of(m).reply != null) return false
+    return index > indexOfLast { it.kind.opensTurn } || awaits(index, working, noteWaited)
+}
+
+/**
+ * The chat with page [info] shown, [html] its content: a new PAGE message, or the one with its id shown again (live
+ * again, unanswered): in place while it is in the latest turn, else moved to the end, into the turn that shows it.
+ */
+fun Conv.withPage(info: PageInfo, html: String, now: Long = System.currentTimeMillis()): Conv {
+    val i = pageIndex(info.id)
+    if (i < 0) return add(Kind.PAGE, html, now, data = info.json())
+    val m = messages[i].copy(text = html, data = info.json())
+    if (i > messages.indexOfLast { it.kind.opensTurn }) return copy(messages = messages.toMutableList().also { it[i] = m })
+    return copy(messages = messages.filterIndexed { j, _ -> j != i } + m.copy(ts = now), updatedAt = now)
+}
+
+/** The chat with page [pageId] answered: [reply] is what the agent's command got, or empty for a message (the chat shows that). */
+fun Conv.answered(pageId: String, reply: String): Conv {
+    val i = pageIndex(pageId)
+    if (i < 0) return this
+    return copy(messages = messages.toMutableList().also { it[i] = it[i].copy(data = PageInfo.of(it[i]).copy(reply = reply).json()) })
 }
 
 /**

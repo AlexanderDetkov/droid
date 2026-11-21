@@ -42,8 +42,8 @@ import androidx.compose.ui.unit.dp
 /**
  * A page the agent showed full screen (`droid show --full`): Back to the chat, the page's title, the page, and a
  * message box under it to tell the agent something about it (its answer, while the agent waits on it). A page that
- * answers (droid.send) or closes itself (droid.close) is done here. A page shown full screen while one is (the same,
- * updated, or another) takes its place.
+ * answers (droid.send, or elsewhere: the chat's message box) or closes itself (droid.close) is done here. A page shown
+ * full screen while one is (the same, updated, or another) takes its place.
  */
 class PageActivity : ComponentActivity() {
     /** The chat and the page it shows. */
@@ -78,16 +78,18 @@ private fun PageScreen(conv: String, pageId: String, onClose: () -> Unit) {
     val convs by app.store.convs.collectAsState()
     val running by app.runner.running.collectAsState()  // whether the agent still waits on it changes with its run
     val c = convs.firstOrNull { it.id == conv }
-    val m = c?.page(pageId)
-    if (c == null || m == null) { LaunchedEffect(Unit) { onClose() }; return }
+    val i = c?.pageIndex(pageId) ?: -1
+    if (c == null || i < 0) { LaunchedEffect(Unit) { onClose() }; return }
+    val m = c.messages[i]
     val info = PageInfo.of(m)
-    val waits = remember(info, running) { awaited(app, conv, info) }
+    // as the chat and its run are now (both collected above, so this follows them)
+    val waits = remember(c, running) { awaited(app, c, i) }
+    val live = remember(c, running) { pageLive(app, c, i) }
+    CloseWhenAnswered(info.reply != null, onClose)
     val dark = P.dark
     val actions = remember(conv, pageId) {
-        val chat = { openChat(ctx, conv, handoff = false) }
-        object : PageActions by ChatPageActions(ctx, conv, pageId, onScreen = { openChat(ctx, conv, handoff = true); onClose() }, onClose = onClose) {
-            override fun send(text: String, data: String?) { pageSend(ctx, conv, pageId, text, data); chat(); onClose() }
-        }
+        ChatPageActions(ctx, conv, pageId, onScreen = { openChat(ctx, conv, handoff = true); onClose() }, onClose = onClose,
+            onSent = { openChat(ctx, conv, handoff = false); onClose() })
     }
     Column(Modifier.fillMaxSize().background(P.bg).systemBarsPadding().imePadding()) {
         Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -99,9 +101,19 @@ private fun PageScreen(conv: String, pageId: String, onClose: () -> Unit) {
         }
         key(m.text, dark) {
             FillPage("full:$pageId:${m.text.hashCode()}:$dark", "page:$conv:$pageId", { cx -> pageDocument(cx, m.text, dark, PageMode.FULL) },
-                namedPaths(m.text), actions, Modifier.weight(1f).fillMaxWidth())
+                namedPaths(m.text), actions, Modifier.weight(1f).fillMaxWidth(), live = live)
         }
         PageComposer("Message Droid") { text -> pageSend(ctx, conv, pageId, text, null); openChat(ctx, conv, handoff = false); onClose() }
+    }
+}
+
+/** Calls [onClose] once the page shown here is answered, wherever that was; not for one that was answered when shown. */
+@Composable
+internal fun CloseWhenAnswered(answered: Boolean, onClose: () -> Unit) {
+    val before = remember { booleanArrayOf(answered) }
+    LaunchedEffect(answered) {
+        if (answered && !before[0]) onClose()
+        before[0] = answered
     }
 }
 

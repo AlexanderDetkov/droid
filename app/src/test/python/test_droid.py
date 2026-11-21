@@ -17,10 +17,17 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 loader = importlib.machinery.SourceFileLoader('droid', os.path.join(HERE, '../../main/assets/setup/bin/droid'))
 d = importlib.util.module_from_spec(importlib.util.spec_from_loader('droid', loader))
 loader.exec_module(d)
-phone_offset = d.phone_offset  # the real one; tests have the phone in PST
+phone_offset = d.phone_offset  # the real ones; tests have the phone in PST
+phone_moment = d.phone_moment
 
 PST = timezone(timedelta(hours=-8))
+PDT = timezone(timedelta(hours=-7))
 NOW = datetime(2026, 11, 19, 10, 0, tzinfo=PST)  # a Thursday
+
+
+def pacific(wall):
+    """The phone's clock in California, which went back an hour at 2:00 on Nov 1, 2026."""
+    return wall.replace(tzinfo=PST if wall >= datetime(2026, 11, 1, 1) else PDT)
 
 
 class Command(unittest.TestCase):
@@ -33,6 +40,7 @@ class Command(unittest.TestCase):
         os.environ['DROID_OUT'] = self.out
         d.REPLIES = os.path.join(self.dir, 'replies')
         d.phone_offset = lambda: PST
+        d.phone_moment = lambda wall: wall.replace(tzinfo=PST)
 
     def tearDown(self):
         for sig in (signal.SIGTERM, signal.SIGHUP):
@@ -71,12 +79,50 @@ class Times(unittest.TestCase):
         self.assertIsNone(d.weekday('fr'))
 
     def test_when(self):
-        self.assertEqual(d.when('tomorrow 9am', NOW), datetime(2026, 11, 20, 9, 0, tzinfo=PST))
-        self.assertEqual(d.when('fri 14:00', NOW), datetime(2026, 11, 20, 14, 0, tzinfo=PST))
-        self.assertEqual(d.when('thu 9am', NOW), datetime(2026, 11, 26, 9, 0, tzinfo=PST))  # this one has passed
+        # a time on the phone's clock, which the phone places (see test_a_clock_change_between)
+        self.assertEqual(d.when('tomorrow 9am', NOW), datetime(2026, 11, 20, 9, 0))
+        self.assertEqual(d.when('fri 14:00', NOW), datetime(2026, 11, 20, 14, 0))
+        self.assertEqual(d.when('thu 9am', NOW), datetime(2026, 11, 26, 9, 0))  # this one has passed
+        self.assertEqual(d.when('9am', NOW), datetime(2026, 11, 20, 9, 0))  # tomorrow's
+        self.assertEqual(d.when('2026-11-21 09:00', NOW), datetime(2026, 11, 21, 9, 0))
+        # a moment
         self.assertEqual(d.when('in 2h', NOW), NOW + timedelta(hours=2))
-        self.assertEqual(d.when('9am', NOW), datetime(2026, 11, 20, 9, 0, tzinfo=PST))  # tomorrow's
         self.assertIsNone(d.when('friends', NOW))
+
+    def test_a_bare_hour_is_the_next_time_the_clock_shows_it(self):
+        at = lambda h, m=0: NOW.replace(hour=h, minute=m)
+        self.assertEqual(d.when('at 5', at(15)), datetime(2026, 11, 19, 17, 0))
+        self.assertEqual(d.when('5', at(3)), datetime(2026, 11, 19, 5, 0))
+        self.assertEqual(d.when('9', at(10)), datetime(2026, 11, 19, 21, 0))
+        self.assertEqual(d.when('5', at(18)), datetime(2026, 11, 20, 5, 0))
+        self.assertEqual(d.when('12', at(15)), datetime(2026, 11, 20, 0, 0))  # midnight
+        self.assertEqual(d.when('tonight 8', at(10)), datetime(2026, 11, 19, 20, 0))
+        # said in full, it is what it says
+        self.assertEqual(d.when('5am', at(15)), datetime(2026, 11, 20, 5, 0))
+        self.assertEqual(d.when('05:00', at(15)), datetime(2026, 11, 20, 5, 0))
+        self.assertEqual(d.when('17', at(15)), datetime(2026, 11, 19, 17, 0))
+
+    def test_a_clock_change_between(self):
+        before = datetime(2026, 10, 31, 10, 0, tzinfo=PDT)  # the day before the clocks go back
+        with mock.patch.object(d, 'phone_moment', pacific):
+            self.assertEqual(d.moment(d.when('tomorrow 9am', before)), datetime(2026, 11, 1, 17, 0, tzinfo=timezone.utc))
+            self.assertEqual(d.moment(d.when('in 24h', before)), before + timedelta(hours=24))  # a moment stays one
+
+    def test_the_phone_places_a_time_on_its_clock(self):
+        done = mock.Mock(stdout='1793552400\n')
+        with mock.patch.object(d.subprocess, 'run', return_value=done) as run:
+            self.assertEqual(phone_moment(datetime(2026, 11, 1, 9, 0)), datetime(2026, 11, 1, 17, 0, tzinfo=timezone.utc))
+        self.assertEqual(run.call_args[0][0], ['android', "date -d '2026-11-01 09:00:00' +%s"])
+        with mock.patch.object(d.subprocess, 'run', return_value=mock.Mock(stdout='date: bad date\n')), \
+                contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit):
+            phone_moment(datetime(2026, 11, 1, 9, 0))
+        self.assertIn("couldn't read the phone's time", err.getvalue())
+
+    def test_a_duration_is_written_one_way(self):
+        self.assertEqual(d.leading_when(['2h', '10', 'mins', 'of', 'stretching'], NOW), (NOW + timedelta(hours=2), 1))
+        self.assertEqual(d.leading_when(['2h30m', 'tea'], NOW), (NOW + timedelta(minutes=150), 1))
+        self.assertEqual(d.leading_when(['2h', '30m', 'tea'], NOW), (NOW + timedelta(minutes=150), 2))
+        self.assertIsNone(d.when('99999999d', NOW))
 
     def test_the_longest_run_of_words_that_reads_as_a_time(self):
         self.assertEqual(d.leading_when(['tomorrow', '9am', 'Call', 'mom'], NOW)[1], 2)
@@ -106,6 +152,11 @@ class Later(Command):
         self.assertEqual(code, 1)
         self.assertEqual(events, [])
 
+    def test_too_far_off_is_an_error_not_a_traceback(self):
+        code, _, err, events = self.run_droid('later', '99999999d', 'x')
+        self.assertEqual((code, events), (1, []))
+        self.assertTrue(err.startswith('droid: '), err)
+
     def test_the_phone_time_zone_must_be_known(self):
         d.phone_offset = phone_offset
         with mock.patch.object(d.subprocess, 'run', side_effect=OSError('no android')):
@@ -130,6 +181,12 @@ class Notify(Command):
             self.assertEqual(code, 1, args)
             self.assertTrue(err.startswith('droid: '), err)
             self.assertEqual(events, [], args)
+
+    def test_text_is_cut_to_what_the_app_takes(self):
+        code, _, _, events = self.run_droid('notify', 'T', '€' * 3000)  # 3 bytes each
+        self.assertEqual(code, 0)
+        text = events[0]['text']
+        self.assertEqual(text, '€' * 666)  # whole characters, in 2000 bytes
 
     def test_an_unanswered_wait_tells_the_app(self):
         code, _, err, events = self.run_droid('notify', 'T', '--id', 'q', '--wait', '--timeout', '0.3')

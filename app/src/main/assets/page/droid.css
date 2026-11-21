@@ -67,8 +67,9 @@ button.primary, .button.primary { background: var(--ink); border-color: var(--in
 button.quiet, .button.quiet { border-color: transparent; color: var(--muted); font-weight: 500; padding: 11px 12px; }
 button.danger { color: var(--danger); }
 button:disabled { opacity: .38; cursor: default; }
-/* A page that was answered, or is from an earlier turn, stays to read; its controls no longer act (see PageView). */
-html.droid-done :is(button, .button, input, select, textarea, label.option) { pointer-events: none; }
+/* A page that was answered, or is from an earlier turn, stays to read; its controls no longer act (see PageView). A
+   draft in it still scrolls, full screen or floating (in the chat it is as tall as its text). */
+html.droid-done :is(button, .button, input, select, label.option), html.droid-done.inline textarea { pointer-events: none; }
 html.droid-done :is(button, .button, label.option, input[type=checkbox], input[type=radio]) { opacity: .38; }
 input, textarea, select {
   font: inherit; font-size: 16px; line-height: 22px; color: var(--text); width: 100%;
@@ -76,6 +77,8 @@ input, textarea, select {
 }
 .card input, .card textarea, .card select { background: var(--raised); }
 textarea { line-height: 22px; resize: vertical; }
+/* In the chat, whose drags scroll the chat, a draft is as tall as its text: it never needs a scroll or a resize. */
+html.inline textarea { field-sizing: content; resize: none; }
 input:focus, textarea:focus, select:focus { border-color: var(--muted); }
 ::placeholder { color: var(--muted); opacity: 1; }
 input[type=checkbox], input[type=radio] { width: 20px; height: 20px; padding: 0; margin: 0; accent-color: var(--ink); flex: none; }

@@ -69,16 +69,12 @@ object Notify {
             val f = File(dir, "$id-${hash(path)}")
             try { if (app.backend.fetch(path, f)) o.put("imageFile", f.path) } catch (e: IOException) { Log.w("Droid", "note image: ${e.message}") }
         }
-        // a page it opens goes into the chat (as one shown full screen), so it opens from there and stays in the chat
+        // a page it opens is copied out now too, and goes into the chat when the notification is posted (see [post])
         fun page(what: String): String {
             if (!what.startsWith("page:")) return what
             val path = what.removePrefix("page:")
             val pid = "n-$id-${hash(path)}"
-            val f = File(dir, "$pid.html")
-            val html = try { if (app.backend.fetch(path, f)) f.readText().also { f.delete() } else null } catch (e: IOException) { null }
-            if (html == null) return "chat:"
-            app.runner.putPage(conv, PageInfo(pid, where = "full", title = pageTitle(html), note = id), html)
-            return "page:$pid"
+            return try { if (app.backend.fetch(path, File(dir, "$pid.html"))) "page:$pid" else "chat:" } catch (e: IOException) { "chat:" }
         }
         o.optJSONArray("buttons")?.let { a -> for (i in 0 until a.length()) a.optJSONObject(i)?.let { b -> b.put("do", page(b.optString("do"))) } }
         o.optString("tap").takeIf { it.isNotEmpty() }?.let { o.put("tap", page(it)) }
@@ -122,6 +118,16 @@ object Notify {
         val text = o.optString("text")
         val ongoing = o.optBoolean("ongoing")
         val posted = System.currentTimeMillis()
+        // A page a button opens goes into the chat now, as it is posted (one set for later, when it goes off), as one
+        // shown full screen: it opens from there, stays in the chat, and may act as any page in the latest turn does.
+        fun page(what: String): String {
+            if (!what.startsWith("page:")) return what
+            val pid = what.removePrefix("page:")
+            val f = File(ctx.filesDir, "notes/$conv/$pid.html")
+            val html = try { f.readText().also { f.delete() } } catch (_: IOException) { null }
+            if (html != null) app.runner.putPage(conv, PageInfo(pid, where = "full", title = pageTitle(html), note = id), html)
+            return if (html != null || app.store.get(conv)?.page(pid) != null) what else "chat:"
+        }
         fun pi(i: Int, label: String, what: String, mutable: Boolean = false) = pending(ctx, conv, id, i, label, what, ongoing, posted, mutable)
         val b = Notification.Builder(ctx, ch)
             .addExtras(Bundle().apply { putString(CONV, conv) })  // whose it is, for when the chat is deleted
@@ -132,7 +138,7 @@ object Notify {
             .setShowWhen(true)
             .setOngoing(ongoing)
             .setAutoCancel(!ongoing)
-            .setContentIntent(pi(-1, "tap", o.optString("tap").ifEmpty { "chat:" }))
+            .setContentIntent(pi(-1, "tap", page(o.optString("tap").ifEmpty { "chat:" })))
             .setDeleteIntent(pi(-2, SWIPED, ""))
         if (text.isNotEmpty()) b.setContentText(text.replace(Regex("\\s+"), " "))
         if (feel.call) b.setSubText("Your turn")
@@ -148,7 +154,7 @@ object Notify {
         for (i in 0 until (buttons?.length() ?: 0)) {
             val bt = buttons!!.optJSONObject(i) ?: continue
             val label = bt.optString("label").ifEmpty { continue }
-            val what = bt.optString("do").ifEmpty { label }
+            val what = page(bt.optString("do").ifEmpty { label })
             b.addAction(Notification.Action.Builder(Icon.createWithResource(ctx, R.drawable.ic_send), label, pi(i, label, what))
                 .setAuthenticationRequired(what != "dismiss:").build())  // nothing acts from the lock screen
         }
@@ -202,9 +208,9 @@ object Notify {
         val label = intent.getStringExtra(EXTRA_LABEL).orEmpty()
         val typed = RemoteInput.getResultsFromIntent(intent)?.getCharSequence(REPLY)?.toString()
         when {
-            // a reply stays on screen a moment with what was sent (Android keeps a replied-to notification it was
-            // asked to take away until the shade closes, so it is replaced with one that ends by itself instead)
-            typed != null -> sent(ctx, conv, id, typed)
+            // a reply shows what was sent; then one not ongoing goes by itself (Android keeps a replied-to notification
+            // it was asked to take away until the shade closes)
+            typed != null -> sent(ctx, conv, id, typed, ongoing)
             !ongoing || what == "dismiss:" -> cancel(ctx, conv, id)
         }
         if (what.startsWith("run:")) scope.launch {
@@ -220,12 +226,18 @@ object Notify {
     /** The postings acted on (chat/id@posted), so each answers once. */
     private val acted: MutableSet<String> = java.util.Collections.synchronizedSet(LinkedHashSet())
 
-    /** Notification [id] shows [typed] as sent, without its buttons, and goes a moment later. */
-    private fun sent(ctx: Context, conv: String, id: String, typed: String) {
+    /**
+     * Notification [id] shows [typed] as sent: an [ongoing] one stays as it was, a control, with what was sent under it;
+     * any other goes a moment later, without its buttons, and without telling anyone it went (it wasn't dismissed: a
+     * command waiting on the same id later must not hear so).
+     */
+    private fun sent(ctx: Context, conv: String, id: String, typed: String, ongoing: Boolean) {
         val nm = ctx.getSystemService(NotificationManager::class.java)
         val n = nm.activeNotifications.firstOrNull { it.id == nid(conv, id) }?.notification ?: return cancel(ctx, conv, id)
-        nm.notify(nid(conv, id), Notification.Builder.recoverBuilder(ctx, n).setActions().setRemoteInputHistory(arrayOf(typed))
-            .setOngoing(false).setOnlyAlertOnce(true).setTimeoutAfter(2500).build())
+        val before = if (ongoing) n.extras.getCharSequenceArray(Notification.EXTRA_REMOTE_INPUT_HISTORY).orEmpty() else emptyArray()
+        val b = Notification.Builder.recoverBuilder(ctx, n).setRemoteInputHistory(arrayOf<CharSequence>(typed) + before).setOnlyAlertOnce(true)
+        if (!ongoing) b.setActions().setOngoing(false).setTimeoutAfter(2500).setDeleteIntent(null)
+        nm.notify(nid(conv, id), b.build())
     }
 
     /** If the agent's command waits on notification [id] in chat [conv], it gets [reply] (true); it waits for one only. */
