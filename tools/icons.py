@@ -37,14 +37,13 @@ def antenna(bx, by, length, a0=.15, curl=.5, n=12):
     return d, pts[-1]
 C = dict(top='#BAC0FF', bot='#A3ABFF', stalk='#8A91EC', tip='#D2C4FF', ink='#16151B', shade='#2A1E6E')
 def dash(cx, ground, w, small=.8, col=C, a0=.15, curl=.5, look=(0, 0), eyes=1.0, mono=False, tipglow=False, sw_min=0, tr_min=0, light=True,
-         mark=False, stalk=1.0):
-    """Elements for Dash standing on [ground], body [w] wide. small: the app's small-size feature boost (0..1). stalk: his
-    antenna's length, as a share of the usual.
+         mark=False):
+    """Elements for Dash standing on [ground], body [w] wide. small: the app's small-size feature boost (0..1).
     mark: symmetric, as Droid's mark (the site's favicon): his light and catchlights centred (pass a0=0, curl=0 too)."""
     h = w*1.02; y0 = ground - h; E = []
     # antenna (behind the body)
     by = y0 + max(.05*w, 0)
-    length = w*.27*(1 + .2*small)*stalk; sw = max(sw_min, w*.037*(1 + .45*small)); tr = max(tr_min, w*.058*(1 + .35*small))
+    length = w*.27*(1 + .2*small); sw = max(sw_min, w*.037*(1 + .45*small)); tr = max(tr_min, w*.058*(1 + .35*small))
     ad, (tx, ty) = antenna(cx, by, length, a0, curl)
     E.append(dict(d=ad, stroke=('#FFFFFF' if mono else col['stalk']), sw=sw, cap='round'))
     if tipglow and not mono:
@@ -139,10 +138,9 @@ def main():
     open(R + 'ic_launcher_background.xml', 'w').write(to_vd(bg, "Launcher icon, back layer: Droid's periwinkle field."))
     open(R + 'ic_launcher_foreground.xml', 'w').write(to_vd(fg, "Launcher icon, front layer: Dash peeking up from the bottom edge. Generated from his own proportions in the app (Dash.kt), features a little larger, as the app draws him small."))
     open(R + 'ic_launcher_monochrome.xml', 'w').write(to_vd(mono, "Themed icon layer: the same peeking Dash as one color, his eyes cut out."))
-    # status bar / logo: all of him as a silhouette, eyes cut out, drawn as the site's mark (antenna straight up). His body
-    # takes the whole box (20 x 23 dp) so he holds his own beside the system's icons: the antenna is only its tip, sitting
-    # on his head, and his eyes are big
-    small = dash(12, 23.6, 20, small=1, mono=True, a0=0, curl=0, stalk=.3, sw_min=1.9, tr_min=1.85, eyes=1.25)
+    # status bar / logo: all of him as a silhouette, eyes cut out, his antenna hooked as in the app; as big as the 24 dp box
+    # takes with 1 dp to spare top and bottom; hook and tip thick enough to read at status bar size
+    small = dash(12, 23, 16.5, small=1, mono=True, sw_min=1.57, tr_min=1.68)
     open(R + 'ic_notify.xml', 'w').write(to_vd(small, "Status bar icon and Droid's mark: Dash as one color, his eyes cut out.", vb=24, size=24))
     open(R + 'ic_logo.xml', 'w').write(to_vd(small, "Droid's mark: Dash as one color, his eyes cut out. Tinted where it's used.", vb=24, size=24))
     # splash (Android draws it in a 160 dp circle of a 240 dp box, on the window's background): all of Dash, as in the app
