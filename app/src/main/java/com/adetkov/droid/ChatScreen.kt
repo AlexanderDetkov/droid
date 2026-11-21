@@ -759,7 +759,8 @@ fun EmptyState(onSuggestion: (String) -> Unit, modifier: Modifier, listening: Bo
             }
             if (made != null) Text("Dash made this page for you $made", Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 8.dp),
                 style = MaterialTheme.typography.bodySmall, color = P.faint, textAlign = TextAlign.Center)
-            if (before.isNotEmpty()) AppTiles(before, onOpen, Modifier.padding(top = 12.dp, bottom = 16.dp))
+            // earlier ones only without his page, which already says what the day holds (all of it is in the chats)
+            if (home == null && before.isNotEmpty()) AppTiles(before, onOpen, Modifier.padding(top = 12.dp, bottom = 16.dp))
         }
         return
     }

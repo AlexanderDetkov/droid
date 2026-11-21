@@ -89,8 +89,9 @@ fun HomeBar(onMenu: () -> Unit, onSettings: () -> Unit) {
 fun TurnBar(title: String, onBack: () -> Unit, onMore: () -> Unit, onTalk: (() -> Unit)?, typeOnly: Boolean = false) {
     Row(Modifier.fillMaxWidth().statusBarsPadding().height(60.dp).padding(start = 4.dp, end = 6.dp), verticalAlignment = Alignment.CenterVertically) {
         IconBtn(R.drawable.ic_back, "Back", onBack, Modifier.testTag("back"), size = 48.dp, iconSize = 24.dp)
+        // quiet: Dash's words below are what to read first
         Text(title, Modifier.weight(1f).padding(start = 4.dp, end = 8.dp).testTag("title"),
-            style = MaterialTheme.typography.titleMedium.copy(fontSize = 19.sp, fontWeight = FontWeight.Bold), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            style = MaterialTheme.typography.bodyLarge.copy(fontSize = 16.sp), color = P.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
         // (a keyboard where the phone has no voice set up)
         if (onTalk != null) Box(Modifier.size(48.dp).clip(CircleShape).background(P.call.copy(alpha = .14f)).clickable(onClick = onTalk)
             .testTag("talk_top").semantics { contentDescription = if (typeOnly) "Type to Dash" else "Talk to Dash" }, contentAlignment = Alignment.Center) {
@@ -192,22 +193,14 @@ private fun Headline(
         else -> Feel.IDLE
     }
     LaunchedEffect(feel) { rig.feel(feel) }
-    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(held, closesAt) { while (held && closesAt != null) { now = System.currentTimeMillis(); delay(1000) } }
     Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 20.dp, top = 2.dp, bottom = 14.dp), verticalAlignment = Alignment.CenterVertically) {
         Dash(rig, Modifier.size(width = 66.dp, height = 74.dp).testTag("dash"), label = "Dash. Tap to hear him",
             onPoke = { rig.poke(); onSpeak(listOfNotNull(words, note).joinToString(". ")) })
+        // his words alone (he calls you with his look when it's your turn); the rest of an answer in words, briefly
         Column(Modifier.weight(1f).padding(start = 6.dp)) {
-            if (calls) Text("Your turn", Modifier.padding(start = 14.dp, bottom = 4.dp), style = MaterialTheme.typography.labelLarge,
-                color = P.call, fontWeight = FontWeight.Bold)
             SpeechBubble(words)
             if (note != null) Text(note, Modifier.padding(start = 14.dp, top = 8.dp).testTag("said"),
-                style = MaterialTheme.typography.bodyLarge.copy(fontSize = 16.sp, lineHeight = 22.sp), color = P.muted, maxLines = 4, overflow = TextOverflow.Ellipsis)
-            val app = rememberAppInfo(feed?.app?.takeIf { held })?.label
-            val left = closesAt?.let { ((it - now + 59_999) / 60_000).coerceIn(0, HOLD_FOR / 60_000) }
-            if (held && app != null) Text("$app open" + (if (left != null && left > 0) " · $left min" else ""),
-                Modifier.padding(start = 14.dp, top = 6.dp).clip(RoundedCornerShape(8.dp)).clickable(onClick = onWatch).testTag("held"),
-                style = MaterialTheme.typography.bodySmall, color = P.faint, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                style = MaterialTheme.typography.bodyLarge.copy(fontSize = 16.sp, lineHeight = 22.sp), color = P.muted, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
     }
 }
