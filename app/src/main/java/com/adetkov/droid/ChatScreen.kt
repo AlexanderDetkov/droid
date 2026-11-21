@@ -41,6 +41,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -451,7 +452,7 @@ private fun SelectTextSheet(text: String, onDismiss: () -> Unit) {
 
 /** How a turn ended without an answer: stopped, failed, interrupted. The last one offers Retry. */
 @Composable
-private fun StatusRow(text: String, engine: Engine, retry: (() -> Unit)?, onSetup: () -> Unit) {
+internal fun StatusRow(text: String, engine: Engine, retry: (() -> Unit)?, onSetup: () -> Unit) {
     val stopped = text == "Stopped"
     // The agent's words when they already say it; otherwise what they mean, with theirs a tap away (and Setup when
     // that's where it's fixed). A long one opens in full on a tap too.
@@ -726,7 +727,11 @@ private val SUGGESTIONS = listOf(
 
 @Composable
 fun EmptyState(onSuggestion: (String) -> Unit, modifier: Modifier, listening: Boolean = false, level: () -> Float = { 0f }, typing: Boolean = false,
-               home: (@Composable () -> Unit)? = null) {
+               home: (@Composable () -> Unit)? = null,
+               /** The home page's greeting (Dash's words when he made it), and when he made it ("this morning"). */
+               greeting: String? = null, made: String? = null,
+               /** He's making today's home page. */
+               preparing: Boolean = false) {
     // Dash says hi, then rests: he listens while you talk and reads along while you type.
     val rig = rememberDash()  // at rest, so the greeting below is a change: he hops
     var greeted by remember { mutableStateOf(false) }
@@ -734,15 +739,21 @@ fun EmptyState(onSuggestion: (String) -> Unit, modifier: Modifier, listening: Bo
     val feel = when { listening -> Feel.LISTENING; typing -> Feel.READING; !greeted -> Feel.HAPPY; else -> Feel.IDLE }
     LaunchedEffect(feel) { rig.feel(feel) }
     rig.level = level
-    // The agent's own page for the home screen (droid show --home): under Dash, in place of the starting points.
+    // The agent's own page for the home screen (droid show --home), the owner's day: Dash greets them, and his page is
+    // under him in place of the starting points.
     if (home != null) {
         val scroll = rememberScrollState()
         val drag = rememberListDrag(scroll)
-        Column(modifier.verticalScroll(scroll).padding(horizontal = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Dash(rig, Modifier.padding(top = 8.dp).size(width = 96.dp, height = 106.dp).testTag("dash"), label = null)
-            CompositionLocalProvider(LocalListDrag provides drag) {
-                Box(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 16.dp).testTag("home_page")) { home() }
+        Column(modifier.verticalScroll(scroll).padding(horizontal = 16.dp)) {
+            Row(Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                Dash(rig, Modifier.size(width = 66.dp, height = 74.dp).testTag("dash"), label = null)
+                Box(Modifier.weight(1f).padding(start = 6.dp)) { SpeechBubble(if (preparing) "Getting your day ready…" else greeting ?: "Hi! What should I do?") }
             }
+            CompositionLocalProvider(LocalListDrag provides drag) {
+                Box(Modifier.fillMaxWidth().testTag("home_page")) { home() }
+            }
+            if (made != null) Text("Dash made this page for you $made", Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 16.dp),
+                style = MaterialTheme.typography.bodySmall, color = P.faint, textAlign = TextAlign.Center)
         }
         return
     }
@@ -755,7 +766,7 @@ fun EmptyState(onSuggestion: (String) -> Unit, modifier: Modifier, listening: Bo
         Column(Modifier.fillMaxSize()) {
             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 Column(Modifier.padding(horizontal = 28.dp).onSizeChanged { words = it.height }, horizontalAlignment = Alignment.CenterHorizontally) {
-                    Bubble("Hi! What should I do?")
+                    Bubble(if (preparing) "Getting your day ready…" else "Hi! What should I do?")
                     Dash(rig, Modifier.padding(top = 4.dp).size(width = 150.dp, height = 166.dp).testTag("dash"), label = null)
                     Text("I use your apps for you, on my own little screen. You can keep using your phone.", Modifier.padding(top = 4.dp),
                         style = MaterialTheme.typography.bodyLarge, color = P.muted, textAlign = TextAlign.Center)
@@ -805,12 +816,16 @@ fun Composer(
     listening: Listen?, level: () -> Float, running: Boolean,
     onAttach: () -> Unit, onSend: () -> Unit, onStop: () -> Unit, onDictate: () -> Unit, onVoice: () -> Unit,
     onFinishListening: () -> Unit, onCancelListening: () -> Unit, modifier: Modifier = Modifier,
+    /** Typing: the message box is open (with the keyboard), rather than the talk bar. */
+    typing: Boolean = false, onTyping: (Boolean) -> Unit = {},
+    /** The page's own next step is at the bottom (its footer): no talk bar under it (the top bar has a microphone). */
+    hidden: Boolean = false,
 ) {
     val canSend = text.isNotBlank() || files.isNotEmpty()
     var field by remember { mutableStateOf(TextFieldValue(text, TextRange(text.length))) }
-    var typing by rememberSaveable { mutableStateOf(false) }
     if (!typing && text.isEmpty() && files.isEmpty() && listening == null) {
-        TalkBar(running, onVoice, onStop, onType = { typing = true }, modifier)
+        // (out of the way, it still keeps the page's footer clear of the system's gesture bar)
+        if (!hidden) TalkBar(running, onVoice, onStop, onType = { onTyping(true) }, modifier) else Spacer(modifier.fillMaxWidth().height(4.dp))
         return
     }
     // Opened to type: the keyboard comes up at once; left empty, it closes back into the talk bar.
@@ -850,7 +865,7 @@ fun Composer(
                     val value = if (field.text == text) field else TextFieldValue(text, TextRange(text.length))
                     BasicTextField(
                         value, { field = it; onText(it.text) }, Modifier.fillMaxWidth().testTag("input").focusRequester(focus)
-                            .onFocusChanged { f -> if (focused && !f.isFocused && text.isEmpty() && files.isEmpty()) typing = false; focused = f.isFocused },
+                            .onFocusChanged { f -> if (focused && !f.isFocused && text.isEmpty() && files.isEmpty()) onTyping(false); focused = f.isFocused },
                         textStyle = MaterialTheme.typography.bodyLarge.copy(color = P.text), cursorBrush = SolidColor(P.text), maxLines = 6,
                         keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
                     )
@@ -889,12 +904,27 @@ fun Composer(
     }
 }
 
-/** The talk bar: Tap to talk, the way in for anyone; typing beside it; Stop while the chat runs. */
+/**
+ * The talk bar: Tap to talk, the way in for anyone, with typing beside it. While Dash works: Stop, big, and talking to
+ * him (to add something) beside it.
+ */
 @Composable
 private fun TalkBar(running: Boolean, onVoice: () -> Unit, onStop: () -> Unit, onType: () -> Unit, modifier: Modifier) {
     val onCall = if (P.dark) Color(0xFF0D0D0D) else Color.White
     Row(modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (running) {
+            Row(Modifier.weight(1f).height(60.dp).clip(RoundedCornerShape(30.dp)).background(P.surface).clickable(onClick = onStop).testTag("stop"),
+                horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                Icon(painterResource(R.drawable.ic_stop), null, Modifier.size(18.dp), tint = P.text)
+                Text("Stop", Modifier.padding(start = 10.dp), style = MaterialTheme.typography.titleMedium.copy(fontSize = 19.sp, fontWeight = FontWeight.Bold))
+            }
+            Box(Modifier.size(60.dp).clip(CircleShape).background(P.call.copy(alpha = .14f)).clickable(onClick = onVoice).testTag("voice")
+                .semantics { contentDescription = "Talk to Dash" }, contentAlignment = Alignment.Center) {
+                Icon(painterResource(R.drawable.ic_mic), null, Modifier.size(24.dp), tint = P.text)
+            }
+            return@Row
+        }
         Row(Modifier.weight(1f).height(60.dp).clip(RoundedCornerShape(30.dp)).background(P.call).clickable(onClick = onVoice).testTag("voice"),
             horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
             Icon(painterResource(R.drawable.ic_mic), null, Modifier.size(24.dp), tint = onCall)
@@ -903,10 +933,6 @@ private fun TalkBar(running: Boolean, onVoice: () -> Unit, onStop: () -> Unit, o
         Box(Modifier.size(60.dp).clip(CircleShape).background(P.call.copy(alpha = .14f)).clickable(onClick = onType).testTag("type")
             .semantics { contentDescription = "Type instead" }, contentAlignment = Alignment.Center) {
             Icon(painterResource(R.drawable.ic_keyboard), null, Modifier.size(24.dp), tint = P.text)
-        }
-        if (running) Box(Modifier.size(60.dp).clip(CircleShape).background(P.ink).clickable(onClick = onStop).testTag("stop")
-            .semantics { contentDescription = "Stop" }, contentAlignment = Alignment.Center) {
-            Icon(painterResource(R.drawable.ic_stop), null, Modifier.size(20.dp), tint = P.onInk)
         }
     }
 }

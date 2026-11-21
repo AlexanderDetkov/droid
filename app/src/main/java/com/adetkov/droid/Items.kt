@@ -99,6 +99,39 @@ fun moodOf(text: String): Mood? = synchronized(moods) {
 /** The last turn's messages: everything after the request (or wake-up) that started it. */
 fun lastTurn(messages: List<Msg>): List<Msg> = messages.takeLastWhile { !it.kind.opensTurn }
 
+/** How the agent last set Dash in the turn that holds message [index] (the home page's greeting, say), if it did. */
+fun moodAt(messages: List<Msg>, index: Int): Mood? {
+    if (index !in messages.indices) return null
+    val from = (index downTo 0).firstOrNull { messages[it].kind.opensTurn } ?: 0
+    val to = (index + 1 until messages.size).firstOrNull { messages[it].kind.opensTurn } ?: messages.size
+    return (from until to).lastOrNull { messages[it].kind == Kind.DASH }?.let { moodOf(messages[it].text) }
+}
+
+/**
+ * Asking Dash for the day's home page: when the owner comes to the home screen, if he hasn't made one today (since 4
+ * in the morning) and wasn't asked in the last 3 hours (it may be making it, or have failed), and the owner wants it.
+ */
+object HomeDay {
+    const val REQUEST = "Make my home page for today"
+    const val VIA = "Droid asked you for this by itself, as I opened it: put the page on my home screen, and greet me with Dash's words"
+    fun dayStart(now: Long): Long = Calendar.getInstance().apply {
+        timeInMillis = now - 4 * 3600_000L
+        set(Calendar.HOUR_OF_DAY, 4); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+    }.timeInMillis
+    fun due(on: Boolean, madeAt: Long?, askedAt: Long, now: Long = System.currentTimeMillis()): Boolean =
+        on && (madeAt == null || madeAt < dayStart(now)) && now - askedAt > 3 * 3600_000L
+    /** "this morning", "this afternoon", "this evening", "yesterday", or the day's name. */
+    fun madeWhen(ts: Long, now: Long = System.currentTimeMillis()): String {
+        val c = Calendar.getInstance().apply { timeInMillis = ts }
+        val today = Calendar.getInstance().apply { timeInMillis = now; set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0) }.timeInMillis
+        return when {
+            ts >= today -> when (c.get(Calendar.HOUR_OF_DAY)) { in 0..11 -> "this morning"; in 12..16 -> "this afternoon"; else -> "this evening" }
+            ts >= today - 86_400_000L -> "yesterday"
+            else -> "on " + SimpleDateFormat("EEEE", Locale.getDefault()).format(c.time)
+        }
+    }
+}
+
 /** How the agent last set Dash in the last turn, if it did. */
 fun lastMood(messages: List<Msg>): Mood? = lastTurn(messages).let { turn ->
     // a turn the owner stopped keeps no mood it was given on the way (no "Your turn" for what they stopped)

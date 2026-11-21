@@ -48,7 +48,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.DrawerValue
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -143,18 +142,20 @@ private fun Root(request: Request?, modifier: Modifier) {
     val scope = rememberCoroutineScope()
     val convs by app.store.convs.collectAsState()
     val homePage = remember(convs) { homePageOf(convs) }  // the agent's page for the home screen, if it made one
+    val homeOn by app.prefs.homePage.collectAsState()
     val runningMap by app.runner.running.collectAsState()
     val screens by app.runner.screens.collectAsState()
     val doingMap by app.runner.doing.collectAsState()
     val setup by app.setup.state.collectAsState()
-    val models by app.prefs.models.collectAsState()
-    val prefEngine by app.prefs.engine.collectAsState()
 
     var convId by rememberSaveable { mutableStateOf<String?>(null) }
     var screen by rememberSaveable { mutableStateOf(Screen.CHAT) }
     var returnTo by rememberSaveable { mutableStateOf(Screen.CHAT) }  // where Back leads from Instructions and Setup
     fun go(to: Screen) { returnTo = screen; screen = to }
     var watching by rememberSaveable { mutableStateOf(false) }
+    var wholeChat by rememberSaveable { mutableStateOf(false) }  // the chat turn by turn, rather than its latest turn's screen
+    var footer by remember { mutableStateOf(false) }  // the answer's page ends with its next step, which the talk bar makes way for
+    var typing by rememberSaveable { mutableStateOf(false) }  // the message box is open to type in
     var handoff by rememberSaveable { mutableStateOf(false) }  // watching because the answer handed over its screen
     var draft by rememberSaveable { mutableStateOf("") }
     var files by remember { mutableStateOf(listOf<Attachment>()) }
@@ -175,7 +176,6 @@ private fun Root(request: Request?, modifier: Modifier) {
     val pickers = rememberPickers { files = files + it }
 
     val conv = convs.firstOrNull { it.id == convId }
-    val engine = conv?.engine ?: prefEngine  // a chat keeps the agent it started with
     val running = conv != null && conv.id in runningMap  // working on a request
     val info = conv?.let { screens[it.id] }  // its run, working or holding its screen after answering
     val watchable = info?.port != null && info.token != null
@@ -261,8 +261,8 @@ private fun Root(request: Request?, modifier: Modifier) {
     LaunchedEffect(watching) { if (!watching) handoff = false }
 
     fun open(id: String?) {
-        if (id != convId) { draft = ""; files.forEach(::discard); files = emptyList() }
-        convId = id; voice.cancel(); shooting = false; screen = Screen.CHAT
+        if (id != convId) { draft = ""; files.forEach(::discard); files = emptyList(); footer = false }
+        convId = id; voice.cancel(); shooting = false; screen = Screen.CHAT; wholeChat = false; typing = false
         focus.clearFocus()  // the drawer's search
         scope.launch { drawer.close() }
     }
@@ -293,6 +293,18 @@ private fun Root(request: Request?, modifier: Modifier) {
         if ((r.watch || r.handoff) && app.runner.screens.value[r.conv]?.port != null) { watching = true; handoff = r.handoff }
     }
 
+    // Dash's page for the day: asked for as the owner comes to the home screen, once a day (see HomeDay), in its own chat.
+    val onHome = screen == Screen.CHAT && (conv == null || conv.messages.isEmpty())
+    LaunchedEffect(onHome, homeOn, setup.ready) {
+        if (!onHome || !setup.ready) return@LaunchedEffect
+        val p = app.prefs
+        if (!HomeDay.due(homeOn, homePageOf(app.store.convs.value)?.second?.ts, p.homeAsked)) return@LaunchedEffect
+        val chat = p.homeChat?.takeIf { app.store.get(it) != null }
+        if (chat != null && chat in app.runner.running.value) return@LaunchedEffect
+        p.homeAsked = System.currentTimeMillis()
+        startTask(ctx, chat, HomeDay.REQUEST, via = HomeDay.VIA)?.let { p.homeChat = it }
+    }
+
     // Dialogs and sheets
     toDelete?.let { c ->
         ConfirmDialog("Delete chat?", "“${c.title}” and what Droid remembers of it will be deleted.", "Delete",
@@ -301,6 +313,8 @@ private fun Root(request: Request?, modifier: Modifier) {
     toRename?.let { c -> TextDialog("Rename chat", c.title, "Save", { app.store.rename(c.id, it) }) { toRename = null } }
     chatMenu?.let { c ->
         ActionSheet({ chatMenu = null }, title = c.title) { close ->
+            if (!wholeChat && c.id == convId && c.messages.isNotEmpty())
+                SheetRow(R.drawable.ic_notes, "See the whole chat", { close(); wholeChat = true }, tag = "sheet_whole")
             SheetRow(R.drawable.ic_edit, "Rename", { close(); toRename = c }, tag = "sheet_rename")
             SheetRow(if (c.pinned) R.drawable.ic_unpin else R.drawable.ic_pin, if (c.pinned) "Unpin" else "Pin",
                 { app.store.setPinned(c.id, !c.pinned); close() }, tag = "sheet_pin")
@@ -312,6 +326,8 @@ private fun Root(request: Request?, modifier: Modifier) {
     if (needVoice) ConfirmDialog("Set up voice", "Talking to Droid needs the speech models (860 MB), which run on the phone.",
         "Set up", { go(Screen.SETUP) }, { needVoice = false })
 
+    // Back from a chat: from the whole chat to its screen, and from there home
+    BackHandler(conv != null && screen == Screen.CHAT) { if (wholeChat) wholeChat = false else open(null) }
     BackHandler(voice.listening) { voice.cancel(); draft = typed }
     BackHandler(shooting && !voice.listening) { shooting = false }
     BackHandler(drawer.isOpen) { scope.launch { drawer.close() } }
@@ -354,7 +370,7 @@ private fun Root(request: Request?, modifier: Modifier) {
               // Droid's screen in the chat: small frames, twice a second. The drawer's tile for this chat shares it, so
               // it opens already showing what the chat shows.
               val feed = if (conv != null && conv.messages.isNotEmpty())
-                  rememberScreenFeed(info?.port, info?.token, width = 300, fps = 2, isUp = { conv.id in app.runner.screens.value }) else null
+                  rememberScreenFeed(info?.port, info?.token, width = 540, fps = 2, isUp = { conv.id in app.runner.screens.value }) else null
               ModalNavigationDrawer(
                 drawerState = drawer,
                 drawerContent = {
@@ -367,23 +383,32 @@ private fun Root(request: Request?, modifier: Modifier) {
                 },
             ) {
                 Column(Modifier.fillMaxSize().background(P.bg).imePadding()) {
-                    TopBar(
-                        engine, models[engine].orEmpty(), onModel = { app.prefs.setModel(engine, it) }, conv = conv,
-                        onMenu = { scope.launch { drawer.open() } }, onNew = { open(null) },
-                        onMore = { chatMenu = conv },
-                    )
+                    // the page's next step at the bottom takes the talk bar's place; a microphone up here instead
+                    val pinned = footer && !running && !wholeChat
+                    if (conv == null || conv.messages.isEmpty()) HomeBar(onMenu = { scope.launch { drawer.open() } }, onSettings = { go(Screen.SETTINGS) })
+                    else TurnBar(conv.title, onBack = { if (wholeChat) wholeChat = false else open(null) }, onMore = { chatMenu = conv },
+                        onTalk = if (pinned) ({ talk(Listen.VOICE) }) else null)
                     Box(Modifier.weight(1f).fillMaxWidth()) {
                         if (conv == null || conv.messages.isEmpty()) {
                             // A starter goes at a tap: nothing to type (the agent asks before it sends anything anywhere).
+                            // Dash's page for the day, if he made one: his greeting over it, and when he made it.
+                            val greeting = homePage?.let { (c, m) -> convs.firstOrNull { it.id == c }?.messages?.let { ms -> moodAt(ms, ms.indexOf(m)) }?.words?.takeIf { it.isNotBlank() } }
+                            val preparing = app.prefs.homeChat?.let { it in runningMap } == true
                             EmptyState({ sendNow(it) }, Modifier.fillMaxSize(), listening = voice.listening, level = { voice.level }, typing = draft.isNotBlank(),
-                                home = homePage?.let { (c, m) -> { HomePage(c, m) { id -> open(id) } } })
+                                home = homePage?.let { (c, m) -> { HomePage(c, m) { id -> open(id) } } }, greeting = greeting,
+                                made = homePage?.second?.ts?.let { HomeDay.madeWhen(it) }, preparing = preparing)
                         } else {
                             val taps = remember(conv.id) { app.runner.taps.filter { it.first == conv.id }.map { it.second to it.third } }
-                            key(conv.id) { Transcript(conv, running, feed, speaker.speakingKey, speaker::toggle, held = watchable && !running, closesAt = info?.closesAt, taps = taps,
+                            if (wholeChat) key(conv.id) { Transcript(conv, running, feed, speaker.speakingKey, speaker::toggle, held = watchable && !running, closesAt = info?.closesAt, taps = taps,
                                 doing = doingMap[conv.id], typing = draft.isNotBlank(), listening = voice.listening, level = { voice.level },
                                 onRetry = { haptic(); retryTask(ctx, conv.id) }, onSetup = { go(Screen.SETUP) },
                                 onWatch = { watching = true }, modifier = Modifier.fillMaxSize(),
                                 onTakeOver = { handoff = true; watching = true }) }
+                            else key(conv.id) { TurnScreen(conv, running, feed, Modifier.fillMaxSize(), held = watchable && !running, closesAt = info?.closesAt,
+                                taps = taps, doing = doingMap[conv.id], typing = draft.isNotBlank(), listening = voice.listening, level = { voice.level },
+                                onWatch = { watching = true }, onTakeOver = { handoff = true; watching = true },
+                                onRetry = { haptic(); retryTask(ctx, conv.id) }, onSetup = { go(Screen.SETUP) }, onHistory = { wholeChat = true },
+                                onSpeak = { speaker.toggle("dash:${conv.id}:${conv.messages.size}", it) }, onFooter = { footer = it }) }
                         }
                         // Droid's camera, in Dash's frame over the chat: a tap puts its picture in the message box.
                         // (Spelled out: inside the Column, the short name means ColumnScope's, which can't be used here.)
@@ -410,7 +435,8 @@ private fun Root(request: Request?, modifier: Modifier) {
                         onStop = { haptic(); convId?.let(app.runner::stop) },
                         onDictate = { talk(Listen.DICTATE) }, onVoice = { talk(Listen.VOICE) },
                         onFinishListening = voice::finish, onCancelListening = { voice.cancel(); draft = typed },
-                        modifier = Modifier.navigationBarsPadding(),
+                        modifier = Modifier.navigationBarsPadding(), typing = typing, onTyping = { typing = it },
+                        hidden = pinned,
                     )
                 }
               }
@@ -443,52 +469,9 @@ private fun Root(request: Request?, modifier: Modifier) {
                 doing = doingMap[conv.id], asks = !running && lastOutcome(conv.messages, false) == Outcome.ASKS,
                 mood = lastMood(conv.messages), waiting = waitingPage(conv.messages, running) != null) }
         }
-    }
-}
-
-@Composable
-private fun TopBar(
-    engine: Engine, model: String, onModel: (String) -> Unit, conv: Conv?,
-    onMenu: () -> Unit, onNew: () -> Unit, onMore: () -> Unit,
-) {
-    Row(Modifier.fillMaxWidth().statusBarsPadding().height(56.dp).padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-        IconBtn(R.drawable.ic_menu, "Menu", onMenu, Modifier.testTag("menu"), size = 44.dp)
-        // Takes what the buttons leave; a long model name is cut short.
-        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
-            var open by remember { mutableStateOf(false) }
-            Row(
-                Modifier.clip(RoundedCornerShape(12.dp)).clickable { open = true }.padding(start = 8.dp, end = 6.dp, top = 6.dp, bottom = 6.dp)
-                    .testTag("model"),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("Droid", style = MaterialTheme.typography.titleMedium)
-                if (engine != Engine.CLAUDE) Text(" " + engine.label, style = MaterialTheme.typography.titleMedium, color = P.muted, maxLines = 1)
-                if (model.isNotEmpty()) Text(" " + engine.model(model).label.substringAfterLast('/'), Modifier.weight(1f, fill = false),
-                    style = MaterialTheme.typography.titleMedium, color = P.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Icon(painterResource(R.drawable.ic_expand), null, Modifier.padding(start = 2.dp).size(20.dp), tint = P.muted)
-            }
-            DropdownMenu(open, { open = false }, shape = RoundedCornerShape(18.dp), containerColor = P.sheet) {
-                // Claude's choices say what they're like; another agent's list is its own, so it says whose
-                if (engine != Engine.CLAUDE) Text(engine.label, Modifier.padding(horizontal = 16.dp, vertical = 6.dp), style = MaterialTheme.typography.labelMedium, color = P.muted)
-                engine.models.forEach { m ->
-                    Row(
-                        Modifier.width(280.dp).clickable { onModel(m.alias); open = false }.padding(horizontal = 16.dp, vertical = 10.dp)
-                            .testTag("model_" + m.label.lowercase()),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(m.label, style = MaterialTheme.typography.titleSmall)
-                            Text(m.detail, style = MaterialTheme.typography.bodySmall, color = P.muted)
-                        }
-                        if (m.alias == model) Icon(painterResource(R.drawable.ic_check), "Selected", Modifier.size(20.dp), tint = P.text)
-                    }
-                }
-            }
-        }
-        if (conv != null) {
-            IconBtn(R.drawable.ic_new_chat, "New chat", onNew, Modifier.testTag("new_chat"), size = 44.dp)
-            IconBtn(R.drawable.ic_more, "Chat options", onMore, Modifier.testTag("overflow"), size = 44.dp)
-        }
+        // Talking to Dash: full screen, his ears up and your words big as he hears them.
+        if (voice.listening && listenMode == Listen.VOICE && screen == Screen.CHAT) ListeningScreen(draft, { voice.level },
+            onCancel = { voice.cancel(); draft = typed }, onDone = voice::finish, onType = { voice.cancel(); draft = typed; typing = true })
     }
 }
 

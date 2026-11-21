@@ -24,13 +24,15 @@ class StreamTest {
     private fun run(lines: List<String>, start: Conv = Conv("c", "t", createdAt = 0).add(Kind.USER, "hi", 0)) =
         lines.fold(start) { c, l -> parseLine(l).fold(c) { acc, ev -> acc.apply(ev, 1) } }
 
-    @Test fun fileStepsNameTheFile() {
+    @Test fun fileStepsSayWhatTheyAreForInPlainWords() {
         fun step(tool: String, path: String) = run(listOf(
             """{"type":"assistant","message":{"content":[{"type":"tool_use","name":"$tool","input":{"file_path":"$path"}}]}}""",
         )).messages.last().text
-        assertEquals("Reading MEMORY.md", step("Read", "/root/.claude/projects/-root/memory/MEMORY.md"))
+        assertEquals("Checking my notes", step("Read", "/root/.claude/projects/-root/memory/MEMORY.md"))
         assertEquals("Looking at the screen", step("Read", "/tmp/shot-26.png"))
-        assertEquals("Writing notes.md", step("Write", "/root/notes.md"))
+        assertEquals("Taking notes", step("Write", "/root/notes.md"))
+        assertEquals("Making your page", step("Write", "/root/week.html"))
+        assertEquals("Looking at a picture", step("Read", "/sdcard/DCIM/IMG_1.JPG"))
     }
 
     @Test fun tapsComeFromCommands() {

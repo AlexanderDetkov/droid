@@ -21,6 +21,15 @@ class Prefs(private val ctx: Context) {
     /** Read the answer aloud when the request was spoken. */
     val speakReplies = MutableStateFlow(sp.getBoolean("speak", true))
     val haptics = MutableStateFlow(sp.getBoolean("haptics", true))
+    /** Dash makes the home page each day: the owner's day at a glance (see [HomeDay]). */
+    val homePage = MutableStateFlow(sp.getBoolean("home_page", true))
+    /** The chat Dash makes it in, and when he was last asked to. */
+    var homeChat: String?
+        get() = sp.getString("home_chat", null)
+        set(v) = sp.edit { putString("home_chat", v) }
+    var homeAsked: Long
+        get() = sp.getLong("home_asked", 0)
+        set(v) = sp.edit { putLong("home_asked", v) }
 
     fun setTheme(v: ThemeMode) { theme.value = v; sp.edit { putString("theme", v.name) }; applyTheme() }
     /** Tells Android too, so its splash and window behind Droid match from the first frame. */
@@ -36,4 +45,5 @@ class Prefs(private val ctx: Context) {
     private fun modelKey(e: Engine) = if (e == Engine.CLAUDE) "model" else "model_${e.id}"
     fun setSpeakReplies(v: Boolean) { speakReplies.value = v; sp.edit { putBoolean("speak", v) } }
     fun setHaptics(v: Boolean) { haptics.value = v; sp.edit { putBoolean("haptics", v) } }
+    fun setHomePage(v: Boolean) { homePage.value = v; sp.edit { putBoolean("home_page", v) } }
 }

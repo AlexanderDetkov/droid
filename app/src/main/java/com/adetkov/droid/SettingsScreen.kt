@@ -71,6 +71,7 @@ fun SettingsScreen(onBack: () -> Unit, onInstructions: () -> Unit, onSetup: () -
     val theme by prefs.theme.collectAsState()
     val engine by prefs.engine.collectAsState()
     val speak by prefs.speakReplies.collectAsState()
+    val home by prefs.homePage.collectAsState()
     val haptics by prefs.haptics.collectAsState()
     val update by Updates.newer.collectAsState()
 
@@ -106,6 +107,9 @@ fun SettingsScreen(onBack: () -> Unit, onInstructions: () -> Unit, onSetup: () -
 
             Group(null) {
                 ToggleItem(R.drawable.ic_speaker, "Read answers aloud", "When you asked by voice", speak, prefs::setSpeakReplies, "settings_speak")
+                Divider()
+                ToggleItem(R.drawable.ic_sparkle, "Your day from Dash", "Each day he puts what's next and what needs you on Droid's home screen",
+                    home, prefs::setHomePage, "settings_home_page")
             }
 
             Group(null) {

@@ -67,7 +67,21 @@
   const report = () => {
     const h = Math.ceil(document.documentElement.getBoundingClientRect().height);
     if (h !== last) { last = h; post({ op: "height", h }); }
+    footer();
+  };
+  // The next step, a <footer> of buttons at the end: on the owner's screen it stays at the bottom (droid.css), with room
+  // kept for it so nothing hides under it; Droid is told whether there is one, and makes way for it.
+  const onScreen = document.documentElement.classList.contains("screen");
+  let had = null, room = "";
+  const footer = () => {
+    if (!document.body) return;
+    const f = document.querySelector(":is(body, #droid) > footer:last-child");
+    const has = !!(f && f.querySelector("button, .button, a, input, select, textarea, label"));
+    const pad = onScreen && f ? (f.offsetHeight + 16) + "px" : "";
+    if (pad !== room) { room = pad; document.body.style.paddingBottom = pad; }
+    if (has !== had) { had = has; post({ op: "footer", on: has }); }
   };
   new ResizeObserver(report).observe(document.documentElement);
   addEventListener("load", report);
+  addEventListener("DOMContentLoaded", () => new MutationObserver(footer).observe(document.body, { childList: true, subtree: true }));
 })();

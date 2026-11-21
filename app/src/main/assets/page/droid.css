@@ -17,6 +17,8 @@ body {
   overflow-wrap: anywhere; -webkit-text-size-adjust: 100%;
 }
 html.full body { padding: 8px 20px 24px; background: var(--bg); }
+/* An answer on the owner's screen, under Dash's words: it fills the rest and scrolls itself. */
+html.screen body { padding: 2px 20px 24px; background: var(--bg); }
 html.float body { padding: 4px 20px 20px; }
 html.inline, html.inline body { overflow: hidden; }
 /* In the chat the page is 2px wider each side than the text column (PageView), so outlines and focus rings at its
@@ -81,6 +83,17 @@ button.quiet, .button.quiet { border-color: transparent; color: var(--muted); fo
 .card .tiles > :is(button, .button, a):not(.primary) { background: var(--raised); }
 /* A big number in a tile half the width still fits on one line ($206.62) */
 .tiles .big { font-size: 32px; line-height: 38px; }
+/* The next step: the buttons in a <footer> at the end of the page. On the owner's screen it stays at the bottom, always
+   in reach, while the rest scrolls above it (droid.js keeps room for it); in the chat's history it is the page's last row. */
+footer { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0 0; }
+footer > :is(button, .button, a) { flex: 1 1 0; min-width: min(100%, 140px); min-height: 60px; }
+html.screen :is(body, #droid) > footer:last-child {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; margin: 0; padding: 12px 20px 16px; background: var(--bg);
+}
+html.screen :is(body, #droid) > footer:last-child::before {
+  content: ""; position: absolute; left: 0; right: 0; top: -24px; height: 24px; pointer-events: none;
+  background: linear-gradient(to bottom, transparent, var(--bg));
+}
 button.danger { color: var(--danger); }
 button:disabled { opacity: .38; cursor: default; }
 /* A page that was answered, or is from an earlier turn, stays to read; its controls no longer act (see PageView). A
@@ -94,7 +107,7 @@ input, textarea, select {
 .card input, .card textarea, .card select { background: var(--raised); }
 textarea { line-height: 24px; resize: vertical; }
 /* In the chat, whose drags scroll the chat, a draft is as tall as its text: it never needs a scroll or a resize. */
-html.inline textarea { field-sizing: content; resize: none; }
+html.inline textarea, html.screen textarea { field-sizing: content; resize: none; }
 input:focus, textarea:focus, select:focus { border-color: var(--call); }
 ::placeholder { color: var(--muted); opacity: 1; }
 input[type=checkbox], input[type=radio] { width: 24px; height: 24px; padding: 0; margin: 0; accent-color: var(--call); flex: none; }

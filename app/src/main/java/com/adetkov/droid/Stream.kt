@@ -104,12 +104,23 @@ private fun stepText(tool: JSONObject): String {
     val desc = input?.optString("description").orEmpty()
     if (desc.isNotBlank()) return desc
     val name = tool.optString("name")
-    // File tools by the file: `shot` names its screenshots shot*.png.
-    val file = input?.optString("file_path").orEmpty().substringAfterLast('/')
+    // The owner reads these as what Dash is doing: in plain words, not file names. `shot` names its screenshots shot*.png;
+    // a page the agent writes for them is .html.
+    val file = input?.optString("file_path").orEmpty().substringAfterLast('/').lowercase()
     if (file.isNotEmpty()) when (name) {
-        "Read" -> return if (file.startsWith("shot")) "Looking at the screen" else "Reading $file"
-        "Write" -> return "Writing $file"
-        "Edit" -> return "Editing $file"
+        "Read" -> return when {
+            file.startsWith("shot") -> "Looking at the screen"
+            file.substringAfterLast('.') in setOf("png", "jpg", "jpeg", "webp", "gif", "heic") -> "Looking at a picture"
+            else -> "Checking my notes"
+        }
+        "Write", "Edit", "MultiEdit" -> return if (file.endsWith(".html") || file.endsWith(".htm")) "Making your page" else "Taking notes"
+    }
+    when (name) {
+        "Grep", "Glob" -> return "Searching my notes"
+        "TodoWrite" -> return "Making a plan"
+        "WebSearch" -> return "Searching the web"
+        "WebFetch" -> return "Reading a web page"
+        "Task", "Agent" -> return "Getting help with it"
     }
     val cmd = input?.optString("command").orEmpty().replace(Regex("\\s+"), " ").trim().take(60)
     return if (cmd.isEmpty()) name else "$name $cmd"

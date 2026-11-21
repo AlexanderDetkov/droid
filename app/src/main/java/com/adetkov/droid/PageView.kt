@@ -100,8 +100,11 @@ interface PageActions {
     val live: Boolean get() = true
 }
 
-/** How a page is shown: in the chat (as tall as its content, never scrolling itself), full screen, or floating. */
-enum class PageMode(val css: String) { INLINE("inline"), FULL("full"), FLOAT("float") }
+/**
+ * How a page is shown: in the chat's history (as tall as its content, never scrolling itself), as the answer on the
+ * owner's screen (under Dash's words, filling the rest, its footer pinned at the bottom), full screen, or floating.
+ */
+enum class PageMode(val css: String) { INLINE("inline"), SCREEN("screen"), FULL("full"), FLOAT("float") }
 
 /** The page's stylesheet and script, read once. */
 private object PageAssets {
@@ -184,6 +187,9 @@ class PageWebView(ctx: Context, val origin: String) : WebView(ctx) {
     /** Its content height in px, as it changes. */
     var onHeight: (Int) -> Unit = {}
     var pageHeight = 0; private set
+    /** Whether it ends with a footer of buttons, its next step (see droid.js), as that changes. */
+    var onFooter: (Boolean) -> Unit = {}
+    var hasFooter = false; private set
     /** Its renderer died: it can't be shown again, only replaced. */
     var dead = false; private set
     /** When the owner last tapped or typed in it. Typing comes on the keyboard's thread. */
@@ -251,6 +257,7 @@ class PageWebView(ctx: Context, val origin: String) : WebView(ctx) {
         val a = actions
         when (val op = o.optString("op")) {
             "height" -> { pageHeight = (o.optDouble("h") * resources.displayMetrics.density).toInt(); onHeight(pageHeight) }
+            "footer" -> { hasFooter = o.optBoolean("on"); onFooter(hasFooter) }
             "dash" -> { a?.dash(o.optString("feel"), o.optString("words")); answer() }
             "close" -> { a?.close(); answer() }
             "send", "run", "screen", "open" -> when {
@@ -485,18 +492,21 @@ private fun Modifier.bleed(by: androidx.compose.ui.unit.Dp) = layout { m, c ->
     layout(c.maxWidth, p.height) { p.place(-extra / 2, 0) }
 }
 
-/** A page filling its place, scrolling itself: full screen, or floating over another app. */
+/**
+ * A page filling its place, scrolling itself: the answer on the owner's screen, full screen, or floating over another
+ * app. [onFooter]: whether it ends with a footer of buttons (see droid.js), as that changes.
+ */
 @Composable
 fun FillPage(
     key: String, name: String, document: (Context) -> String, named: Set<String>, actions: PageActions, modifier: Modifier = Modifier,
-    live: Boolean = actions.live,
+    live: Boolean = actions.live, onFooter: (Boolean) -> Unit = {},
 ) {
     val cache = remember { PageCache() }
     DisposableEffect(cache) { onDispose { cache.clear() } }
     AndroidView(
         factory = { ctx -> cache.obtain(ctx, key, pageOrigin(name)) { it.isVerticalScrollBarEnabled = true; it.show(document(ctx), named) } },
         modifier = modifier,
-        update = { v -> v.actions = actions; v.live = live },
+        update = { v -> v.actions = actions; v.live = live; v.onFooter = onFooter; onFooter(v.hasFooter) },
     )
 }
 
