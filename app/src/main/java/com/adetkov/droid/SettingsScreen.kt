@@ -59,43 +59,36 @@ fun SubScreen(
     }
 }
 
+/**
+ * Settings, for everyone: who's signed in, what Droid should know about you, voice and looks. What only technical
+ * people need (the agent and its model, memory, voice match, Setup's details) is one tap further, under Advanced.
+ */
 @Composable
-fun SettingsScreen(
-    onBack: () -> Unit, onInstructions: () -> Unit, onMemory: () -> Unit, onSetup: () -> Unit, onVoiceMatch: () -> Unit,
-    onAbout: () -> Unit, onDeleteAll: () -> Unit,
-) {
+fun SettingsScreen(onBack: () -> Unit, onInstructions: () -> Unit, onSetup: () -> Unit, onAbout: () -> Unit, onAdvanced: () -> Unit) {
     val app = LocalContext.current.applicationContext as DroidApp
     val prefs = app.prefs
     val setup by app.setup.state.collectAsState()
     val theme by prefs.theme.collectAsState()
     val engine by prefs.engine.collectAsState()
-    val models by prefs.models.collectAsState()
     val speak by prefs.speakReplies.collectAsState()
     val haptics by prefs.haptics.collectAsState()
-    val voiceMatch by app.voiceMatch.enabled.collectAsState()
-    val voiceprint by app.voiceMatch.print.collectAsState()
-    val convs by app.store.convs.collectAsState()
     val update by Updates.newer.collectAsState()
-    var confirmDeleteAll by remember { mutableStateOf(false) }
-
-    if (confirmDeleteAll) ConfirmDialog(
-        "Delete all chats?", "All ${convs.size} chats, their attachments and what Droid remembers of them will be deleted.",
-        "Delete all", onDeleteAll, { confirmDeleteAll = false }, danger = true,
-    )
 
     SubScreen("Settings", onBack) {
         Column(
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).navigationBarsPadding().padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            // Who Droid works as; a tap goes to Setup, where signing in happens
+            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).clickable(onClick = onSetup).padding(horizontal = 4.dp, vertical = 12.dp)
+                .testTag("settings_account"), verticalAlignment = Alignment.CenterVertically) {
                 Avatar(setup.email, 48.dp)
                 Column(Modifier.padding(start = 14.dp)) {
                     val other = setup.others[engine]
                     Text(if (engine == Engine.CLAUDE) setup.email ?: "Not signed in" else engine.label,
                         style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(if (engine == Engine.CLAUDE) planLabel(setup.plan) ?: if (setup.signedIn) "Claude account" else "Sign in from Setup"
-                        else other?.detail ?: "Not installed: see Setup",
+                    Text(if (engine == Engine.CLAUDE) planLabel(setup.plan) ?: if (setup.signedIn) "Claude account" else "Tap to sign in"
+                        else other?.detail ?: "Tap to set it up",
                         style = MaterialTheme.typography.bodyMedium, color = P.muted)
                 }
             }
@@ -107,19 +100,66 @@ fun SettingsScreen(
                 }
             }
 
-            Group("Droid") {
-                NavItem(R.drawable.ic_notes, "Instructions", "How you want Droid to work for you", onInstructions, "settings_instructions")
+            Group(null) {
+                NavItem(R.drawable.ic_notes, "Instructions", "What Droid should know about you, and how you like things done", onInstructions, "settings_instructions")
+            }
+
+            Group(null) {
+                ToggleItem(R.drawable.ic_speaker, "Read answers aloud", "When you asked by voice", speak, prefs::setSpeakReplies, "settings_speak")
+            }
+
+            Group(null) {
+                Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(painterResource(R.drawable.ic_theme), null, Modifier.size(22.dp), tint = P.text)
+                    Text("Theme", Modifier.weight(1f).padding(start = 16.dp), style = MaterialTheme.typography.bodyLarge)
+                    Segmented(ThemeMode.entries.map { it.label }, theme.ordinal) { prefs.setTheme(ThemeMode.entries[it]) }
+                }
                 Divider()
-                NavItem(R.drawable.ic_memory, "Memory", "What Claude has learned about you", onMemory, "settings_memory")
+                ToggleItem(R.drawable.ic_haptics, "Haptic feedback", null, haptics, prefs::setHaptics, "settings_haptics")
+            }
+
+            Group(null) {
+                NavItem(R.drawable.ic_info, "About", "Droid ${remember { Updates.version(app) }}, source and licenses", onAbout, "settings_about")
                 Divider()
+                NavItem(R.drawable.ic_settings, "Advanced", "Agent and model, memory, voice match, setup", onAdvanced, "settings_advanced")
+            }
+            Spacer(Modifier.height(16.dp))
+        }
+    }
+}
+
+/** What technical people may want to change: the agent and its model, Claude's memory, voice match, Setup's details. */
+@Composable
+fun AdvancedScreen(onBack: () -> Unit, onMemory: () -> Unit, onSetup: () -> Unit, onVoiceMatch: () -> Unit, onDeleteAll: () -> Unit) {
+    val app = LocalContext.current.applicationContext as DroidApp
+    val prefs = app.prefs
+    val setup by app.setup.state.collectAsState()
+    val engine by prefs.engine.collectAsState()
+    val models by prefs.models.collectAsState()
+    val voiceMatch by app.voiceMatch.enabled.collectAsState()
+    val voiceprint by app.voiceMatch.print.collectAsState()
+    val convs by app.store.convs.collectAsState()
+    var confirmDeleteAll by remember { mutableStateOf(false) }
+
+    if (confirmDeleteAll) ConfirmDialog(
+        "Delete all chats?", "All ${convs.size} chats, their attachments and what Droid remembers of them will be deleted.",
+        "Delete all", onDeleteAll, { confirmDeleteAll = false }, danger = true,
+    )
+
+    SubScreen("Advanced", onBack, backTag = "advanced_close") {
+        Column(
+            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).navigationBarsPadding().padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Group("Agent") {
                 EngineItem(engine, setup.others, prefs::setEngine)
                 Divider()
                 ModelItem(engine, models[engine].orEmpty()) { prefs.setModel(engine, it) }
+                Divider()
+                NavItem(R.drawable.ic_memory, "Memory", "What Claude has learned about you", onMemory, "settings_memory")
             }
 
             Group("Voice") {
-                ToggleItem(R.drawable.ic_speaker, "Read answers aloud", "When you asked by voice", speak, prefs::setSpeakReplies, "settings_speak")
-                Divider()
                 NavItem(R.drawable.ic_shield, "Voice match", when {
                     voiceprint == null -> "Skip the fingerprint on the lock screen"
                     voiceMatch -> "On: your voice skips the fingerprint"
@@ -132,23 +172,9 @@ fun SettingsScreen(
                 }
             }
 
-            Group("Appearance") {
-                Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(painterResource(R.drawable.ic_theme), null, Modifier.size(22.dp), tint = P.text)
-                    Text("Theme", Modifier.weight(1f).padding(start = 16.dp), style = MaterialTheme.typography.bodyLarge)
-                    Segmented(ThemeMode.entries.map { it.label }, theme.ordinal) { prefs.setTheme(ThemeMode.entries[it]) }
-                }
-                Divider()
-                ToggleItem(R.drawable.ic_haptics, "Haptic feedback", null, haptics, prefs::setHaptics, "settings_haptics")
-            }
-
             Group("Phone") {
                 NavItem(R.drawable.ic_setup, "Setup and updates",
                     (if (setup.access == Access.ROOT) "Root" else "Wireless debugging") + ", Linux, agents, sign-in", onSetup, "settings_setup")
-            }
-
-            Group(null) {
-                NavItem(R.drawable.ic_info, "About", "Droid ${remember { Updates.version(app) }}, source and licenses", onAbout, "settings_about")
             }
 
             Group(null) {

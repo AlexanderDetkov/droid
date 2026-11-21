@@ -11,10 +11,11 @@ class Model(val alias: String, val label: String, val detail: String)
  */
 enum class Engine(val id: String, val label: String, val models: List<Model>, val sessionId: Regex, val custom: Boolean = false) {
     CLAUDE("claude", "Claude Code", listOf(
-        Model("", "Default", "Your plan's default model"),
-        Model("opus", "Opus", "Most capable, for complex tasks"),
-        Model("sonnet", "Sonnet", "Fast and capable"),
-        Model("haiku", "Haiku", "Fastest, for quick tasks"),
+        // Named for what they're like; the model's own name follows, for those who know it
+        Model("", "Default", "Your plan picks"),
+        Model("opus", "Smartest", "Opus, for hard tasks"),
+        Model("sonnet", "Balanced", "Sonnet, quick and capable"),
+        Model("haiku", "Fastest", "Haiku, for simple tasks"),
     ), Regex("[0-9a-fA-F-]{36}")),
     CODEX("codex", "Codex", listOf(Model("", "Default", "The model Codex picks for your account")),
         Regex("[0-9a-fA-F-]{36}"), custom = true),

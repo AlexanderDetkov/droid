@@ -134,7 +134,7 @@ class MainActivity : ComponentActivity() {
     )
 }
 
-private enum class Screen { CHAT, SETTINGS, VOICE_MATCH, INSTRUCTIONS, MEMORY, SETUP, ABOUT }
+private enum class Screen { CHAT, SETTINGS, ADVANCED, VOICE_MATCH, INSTRUCTIONS, MEMORY, SETUP, ABOUT }
 
 @Composable
 private fun Root(request: Request?, modifier: Modifier) {
@@ -310,7 +310,10 @@ private fun Root(request: Request?, modifier: Modifier) {
     BackHandler(shooting && !voice.listening) { shooting = false }
     BackHandler(drawer.isOpen) { scope.launch { drawer.close() } }
     BackHandler(screen != Screen.CHAT) {
-        screen = when (screen) { Screen.SETTINGS -> Screen.CHAT; Screen.VOICE_MATCH, Screen.MEMORY, Screen.ABOUT -> Screen.SETTINGS; else -> returnTo }
+        screen = when (screen) {
+            Screen.SETTINGS -> Screen.CHAT; Screen.ADVANCED, Screen.ABOUT -> Screen.SETTINGS; Screen.VOICE_MATCH, Screen.MEMORY -> Screen.ADVANCED
+            else -> returnTo
+        }
     }
 
     // Each screen keeps its state (e.g. Settings' scroll position) while another is on top.
@@ -326,16 +329,19 @@ private fun Root(request: Request?, modifier: Modifier) {
     ) { s -> saved.SaveableStateProvider(s) {
         when (s) {
             Screen.SETTINGS -> SettingsScreen(
-                onBack = { screen = Screen.CHAT }, onInstructions = { go(Screen.INSTRUCTIONS) }, onMemory = { screen = Screen.MEMORY },
-                onSetup = { go(Screen.SETUP) },
-                onVoiceMatch = { screen = Screen.VOICE_MATCH }, onAbout = { screen = Screen.ABOUT },
+                onBack = { screen = Screen.CHAT }, onInstructions = { go(Screen.INSTRUCTIONS) }, onSetup = { go(Screen.SETUP) },
+                onAbout = { screen = Screen.ABOUT }, onAdvanced = { screen = Screen.ADVANCED },
+            )
+            Screen.ADVANCED -> AdvancedScreen(
+                onBack = { screen = Screen.SETTINGS }, onMemory = { screen = Screen.MEMORY }, onSetup = { go(Screen.SETUP) },
+                onVoiceMatch = { screen = Screen.VOICE_MATCH },
                 onDeleteAll = { app.store.convs.value.forEach { deleteChat(ctx, it.id) }; Stills.deleteAll(ctx); Shown.deleteAll(ctx); open(null) },
             )
-            Screen.VOICE_MATCH -> VoiceMatchScreen(onBack = { screen = Screen.SETTINGS }, onSetup = { go(Screen.SETUP) })
+            Screen.VOICE_MATCH -> VoiceMatchScreen(onBack = { screen = Screen.ADVANCED }, onSetup = { go(Screen.SETUP) })
             Screen.INSTRUCTIONS -> DocScreen(app.backend, Doc.INSTRUCTIONS, "Instructions",
                 "Droid reads this at the start of every task. Tell it about yourself, the people and apps you use, and how you like things done.",
                 "instructions", onClose = { screen = returnTo })
-            Screen.MEMORY -> MemoryScreen(app.backend) { screen = Screen.SETTINGS }
+            Screen.MEMORY -> MemoryScreen(app.backend) { screen = Screen.ADVANCED }
             Screen.ABOUT -> AboutScreen { screen = Screen.SETTINGS }
             Screen.SETUP -> SetupScreen(app.setup, firstRun = false) { screen = returnTo }
             Screen.CHAT -> {
@@ -451,7 +457,8 @@ private fun TopBar(
                 Icon(painterResource(R.drawable.ic_expand), null, Modifier.padding(start = 2.dp).size(20.dp), tint = P.muted)
             }
             DropdownMenu(open, { open = false }, shape = RoundedCornerShape(18.dp), containerColor = P.sheet) {
-                Text("Model · ${engine.label}", Modifier.padding(horizontal = 16.dp, vertical = 6.dp), style = MaterialTheme.typography.labelMedium, color = P.muted)
+                // Claude's choices say what they're like; another agent's list is its own, so it says whose
+                if (engine != Engine.CLAUDE) Text(engine.label, Modifier.padding(horizontal = 16.dp, vertical = 6.dp), style = MaterialTheme.typography.labelMedium, color = P.muted)
                 engine.models.forEach { m ->
                     Row(
                         Modifier.width(280.dp).clickable { onModel(m.alias); open = false }.padding(horizontal = 16.dp, vertical = 10.dp)
