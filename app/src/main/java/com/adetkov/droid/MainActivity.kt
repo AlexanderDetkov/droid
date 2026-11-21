@@ -374,8 +374,8 @@ private fun Root(request: Request?, modifier: Modifier) {
                     )
                     Box(Modifier.weight(1f).fillMaxWidth()) {
                         if (conv == null || conv.messages.isEmpty()) {
-                            // A suggestion fills the box rather than sending: these act on the phone, so the user confirms.
-                            EmptyState({ draft = it }, Modifier.fillMaxSize(), listening = voice.listening, level = { voice.level }, typing = draft.isNotBlank(),
+                            // A starter goes at a tap: nothing to type (the agent asks before it sends anything anywhere).
+                            EmptyState({ sendNow(it) }, Modifier.fillMaxSize(), listening = voice.listening, level = { voice.level }, typing = draft.isNotBlank(),
                                 home = homePage?.let { (c, m) -> { HomePage(c, m) { id -> open(id) } } })
                         } else {
                             val taps = remember(conv.id) { app.runner.taps.filter { it.first == conv.id }.map { it.second to it.third } }

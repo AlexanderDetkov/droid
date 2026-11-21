@@ -73,7 +73,14 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -93,11 +100,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.TextFieldValue
@@ -163,6 +166,27 @@ fun Transcript(
     // A request just sent always brings the end into view, even when scrolled up.
     LaunchedEffect(messages.count { it.kind.opensTurn }) {
         if (items.isNotEmpty()) { follow = true; state.animateScrollToItem(items.lastIndex, BOTTOM) }
+    }
+    // An answer taller than the screen opens at its top, like an app: Dash's words and the start of what the agent made,
+    // rather than its end. Once, as the turn ends.
+    val latest by rememberUpdatedState(items)
+    var wasRunning by remember(conv.id) { mutableStateOf(running) }
+    LaunchedEffect(running) {
+        val ended = wasRunning && !running
+        wasRunning = running
+        if (!ended) return@LaunchedEffect
+        delay(700)  // its page lays out
+        val all = latest
+        val turn = all.indexOfLast { it is Item.Message && it.msg.kind.opensTurn }
+        val answer = all.indexOfLast { it is Item.Message && (it.msg.kind == Kind.AGENT || it.msg.kind == Kind.PAGE) }
+        if (answer <= turn) return@LaunchedEffect
+        val info = state.layoutInfo
+        val size = info.visibleItemsInfo.firstOrNull { it.index == answer }?.size ?: return@LaunchedEffect
+        if (size > info.viewportSize.height * .7f) {
+            follow = false
+            val steps = all.subList(turn, answer).indexOfLast { it is Item.Steps }.takeIf { it >= 0 }?.plus(turn)
+            state.animateScrollToItem(steps ?: answer)
+        }
     }
     val lastIndex = items.lastIndex
     // The run's screen belongs to the last turn: its work row shows it.
@@ -328,7 +352,8 @@ private fun Answer(
                 namedPaths(text), actions, Modifier.testTag("answer"), live = live)
         } else Markdown(shown, Modifier.fillMaxWidth().combinedClickable(remember { MutableInteractionSource() }, null,
             onLongClick = onLongPress, onClick = {}).testTag("answer"))
-        Row(Modifier.offset(x = (-10).dp).padding(top = 4.dp)) {
+        // A page is an app to use, not text to copy: the copy, read aloud and share row is for answers in words.
+        if (!html) Row(Modifier.offset(x = (-10).dp).padding(top = 4.dp)) {
             IconBtn(if (copied) R.drawable.ic_check else R.drawable.ic_copy, "Copy", { copy(shown); copied = true; haptic() },
                 Modifier.testTag("copy"), tint = P.muted, size = 36.dp, iconSize = 18.dp)
             IconBtn(if (speaking) R.drawable.ic_stop_circle else R.drawable.ic_speaker, if (speaking) "Stop reading" else "Read aloud", onSpeak,
@@ -620,30 +645,44 @@ private fun WorkLog(s: Item.Steps, convId: String, screen: ScreenFeed?, onWatch:
                     val rest = (if (asks) (if (app != null) "$app stays open" else "Screen stays open")
                         else if (app != null) "$app stays open for your reply" else "Stays open for your reply") +
                         (if (left != null && left > 0) " · $left min" else "")
-                    val call = P.call
-                    val text = P.text
                     // first what the turn left you (your turn, the agent's words), then the screen's time
-                    val said = if (failed) null else turnLabel(outcome, mood)
-                    Text(if (said != null) buildAnnotatedString {
-                            withStyle(SpanStyle(color = if (asks) call else text, fontWeight = FontWeight.Medium)) { append(said) }; append(" · $rest")
-                        } else AnnotatedString(rest),
-                        style = small, color = if (said != null) P.muted else P.faint, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Column {
+                        if (!failed) DashSays(mood, asks)
+                        Text(rest, Modifier.padding(top = 6.dp), style = small, color = P.faint, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    }
                 }
                 // a page waits on you mid-task
                 AnimatedVisibility(s.live && asking != null, enter = fadeIn(tween(240, 160)) + expandVertically(clip = false), exit = fadeOut(tween(160)) + shrinkVertically(clip = false)) {
-                    Text(listOf("Your turn", asking.orEmpty()).filter { it.isNotEmpty() }.joinToString(" · "), Modifier.padding(top = 4.dp),
-                        style = small, color = P.call, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    DashSays(Mood(Feel.NEEDS_YOU, asking.orEmpty()), true)
                 }
                 // after the turn: your turn, or what the agent had him say (a failure says so below the answer)
                 val label = if (failed) null else turnLabel(outcome, mood)
                 // (also beside the still a closed screen left: still their turn)
                 AnimatedVisibility((waits || (!s.live && !held && hadScreen)) && label != null, enter = fadeIn(tween(240, 160)) + expandVertically(clip = false), exit = fadeOut(tween(160)) + shrinkVertically(clip = false)) {
-                    Text(label.orEmpty(), style = small, color = if (asks) P.call else P.muted, fontWeight = if (asks) FontWeight.Medium else null,
-                        maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    DashSays(mood, asks)
                 }
             }
         }
         Box(Modifier.fillMaxWidth().animateContentSize(spring(stiffness = 500f))) { if (open) Timeline(s.lines) }
+    }
+}
+
+/**
+ * What Dash says after a turn, in a speech bubble beside him: the agent's words (`droid dash`), the headline the owner
+ * reads first; "Your turn" over them when it's the owner's move ([asks], or he calls).
+ */
+@Composable
+private fun DashSays(mood: Mood?, asks: Boolean) {
+    val calls = asks || mood?.calls == true
+    val words = mood?.words.orEmpty()
+    if (!calls && words.isEmpty()) return
+    Column(Modifier.padding(top = 4.dp)) {
+        if (calls && words.isNotEmpty()) Text("Your turn", style = MaterialTheme.typography.labelLarge, color = P.call, fontWeight = FontWeight.SemiBold)
+        Text(words.ifEmpty { "Your turn" }, Modifier.padding(top = 4.dp)
+            .clip(RoundedCornerShape(topStart = 6.dp, topEnd = 20.dp, bottomEnd = 20.dp, bottomStart = 20.dp))
+            .background(P.call.copy(alpha = if (P.dark) .22f else .12f)).padding(horizontal = 14.dp, vertical = 10.dp).testTag("dash_says"),
+            style = MaterialTheme.typography.titleMedium.copy(fontSize = 18.sp, lineHeight = 24.sp, fontWeight = FontWeight.SemiBold),
+            color = P.text, maxLines = 3, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -675,17 +714,13 @@ private fun Timeline(lines: List<Line>) {
 }
 
 /**
- * Starting points shown on a new chat; tapping one puts it in the message box. The quick ones come first, so a first
- * try answers within a minute (Claude on the demo phone, 2026-11-20: calendar 46 s, timer 27 s, quiet 31 s; the three
- * after them take 3 to 4 minutes, going through several apps).
+ * Starting points on a new chat: a tap sends the request (shown shorter on it). The quick ones, so a first try answers
+ * within a minute (Claude on the demo phone, 2026-11-20: calendar 46 s, timer 27 s, quiet 31 s).
  */
 private val SUGGESTIONS = listOf(
-    Triple(R.drawable.ic_s_calendar, "Check my calendar", "today and tomorrow"),
-    Triple(R.drawable.ic_s_alarm, "Set a timer", "for 10 minutes"),
-    Triple(R.drawable.ic_s_dnd, "Quiet my phone", "until tomorrow morning"),
-    Triple(R.drawable.ic_s_messages, "Catch me up", "on unread messages"),
-    Triple(R.drawable.ic_s_mail, "Triage my inbox", "and flag anything urgent"),
-    Triple(R.drawable.ic_s_music, "Play something", "I'd like but haven't heard"),
+    Triple(R.drawable.ic_s_calendar, "What's on my calendar?", "What's on my calendar today and tomorrow?"),
+    Triple(R.drawable.ic_s_alarm, "Set a 10-minute timer", "Set a timer for 10 minutes"),
+    Triple(R.drawable.ic_s_dnd, "Quiet my phone till morning", "Quiet my phone until tomorrow morning"),
 )
 
 @Composable
@@ -710,46 +745,57 @@ fun EmptyState(onSuggestion: (String) -> Unit, modifier: Modifier, listening: Bo
         }
         return
     }
-    // The suggestions step aside when there's no room for them below Dash and his words (the keyboard up with a long
-    // draft, say), rather than run into them: Dash stays, reading along.
+    // Dash asks, and three big starters wait under him; they step aside when there's no room for them (the keyboard up
+    // with a long draft, say), rather than run into him: Dash stays, reading along.
     BoxWithConstraints(modifier) {
         var words by remember { mutableIntStateOf(0) }
         var chips by remember { mutableIntStateOf(0) }
-        val fits = with(LocalDensity.current) {
-            val h = maxHeight.toPx()
-            // The words' column is centered with 72 dp of room below it; the chips sit 8 dp off the bottom
-            (h + words - 72.dp.toPx()) / 2 + 12.dp.toPx() <= h - 8.dp.toPx() - chips
-        }
-        Column(Modifier.align(Alignment.Center).padding(horizontal = 32.dp).padding(bottom = 72.dp).onSizeChanged { words = it.height },
-            horizontalAlignment = Alignment.CenterHorizontally) {
-            Dash(rig, Modifier.size(width = 112.dp, height = 124.dp).testTag("dash"), label = null)
-            Text("What can I do for you?", Modifier.padding(top = 10.dp), style = MaterialTheme.typography.headlineSmall, textAlign = TextAlign.Center)
-            Text("I use your apps on a hidden screen while you keep using the phone.", Modifier.padding(top = 8.dp),
-                style = MaterialTheme.typography.bodyMedium, color = P.muted, textAlign = TextAlign.Center)
-        }
-        AnimatedVisibility(fits, Modifier.align(Alignment.BottomCenter), enter = fadeIn(tween(160)), exit = fadeOut(tween(160))) { LazyRow(
-            Modifier.fillMaxWidth().padding(bottom = 8.dp).onSizeChanged { chips = it.height }.testTag("suggestions"),
-            contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            items(SUGGESTIONS) { (icon, title, rest) ->
-                Column(
-                    Modifier.width(168.dp).clip(RoundedCornerShape(18.dp)).border(1.dp, P.hairline, RoundedCornerShape(18.dp))
-                        .clickable { onSuggestion("$title $rest") }.padding(horizontal = 14.dp, vertical = 12.dp).testTag("suggestion"),
-                ) {
-                    Icon(painterResource(icon), null, Modifier.size(18.dp), tint = P.muted)
-                    Text(title, Modifier.padding(top = 8.dp), style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(rest, style = MaterialTheme.typography.bodySmall, color = P.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        val fits = with(LocalDensity.current) { maxHeight.toPx() >= words + chips + 24.dp.toPx() }
+        Column(Modifier.fillMaxSize()) {
+            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Column(Modifier.padding(horizontal = 28.dp).onSizeChanged { words = it.height }, horizontalAlignment = Alignment.CenterHorizontally) {
+                    Bubble("Hi! What should I do?")
+                    Dash(rig, Modifier.padding(top = 4.dp).size(width = 150.dp, height = 166.dp).testTag("dash"), label = null)
+                    Text("I use your apps for you, on my own little screen. You can keep using your phone.", Modifier.padding(top = 4.dp),
+                        style = MaterialTheme.typography.bodyLarge, color = P.muted, textAlign = TextAlign.Center)
                 }
             }
-        } }
+            AnimatedVisibility(fits, enter = fadeIn(tween(160)) + expandVertically(), exit = fadeOut(tween(160)) + shrinkVertically()) {
+                Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 8.dp).onSizeChanged { chips = it.height }.testTag("suggestions"),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    SUGGESTIONS.forEach { (icon, label, request) ->
+                        Row(Modifier.fillMaxWidth().height(60.dp).clip(RoundedCornerShape(20.dp)).background(P.surface)
+                            .clickable { onSuggestion(request) }.padding(horizontal = 18.dp).testTag("suggestion"),
+                            verticalAlignment = Alignment.CenterVertically) {
+                            Icon(painterResource(icon), null, Modifier.size(24.dp), tint = P.call)
+                            Text(label, Modifier.padding(start = 14.dp), style = MaterialTheme.typography.titleMedium.copy(fontSize = 18.sp),
+                                maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Dash's words over him, in a speech bubble that points down at him. */
+@Composable
+private fun Bubble(text: String) {
+    val bg = P.call.copy(alpha = if (P.dark) .22f else .12f)
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(text, Modifier.clip(RoundedCornerShape(24.dp)).background(bg).padding(horizontal = 22.dp, vertical = 14.dp).testTag("dash_says"),
+            style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold), textAlign = TextAlign.Center)
+        Box(Modifier.offset(y = (-9).dp).size(18.dp).rotate(45f).clip(RoundedCornerShape(3.dp)).background(bg))
     }
 }
 
 enum class Listen { DICTATE, VOICE }
 
 /**
- * The message box: attach on the left, the text, dictation, and one round button on the right that is voice
- * mode when empty, send with text, stop while the chat runs, and done while listening.
+ * How the owner talks to Droid. At rest it is one big button, Tap to talk (voice mode: it sends when they stop
+ * talking), with typing a tap away beside it, and Stop while the chat runs. Typing, a draft or an attachment, and
+ * listening, open the message box: attach on the left, the text, dictation, and one round button on the right that is
+ * voice mode when empty, send with text, stop while the chat runs, and done while listening.
  */
 @Composable
 fun Composer(
@@ -760,6 +806,15 @@ fun Composer(
 ) {
     val canSend = text.isNotBlank() || files.isNotEmpty()
     var field by remember { mutableStateOf(TextFieldValue(text, TextRange(text.length))) }
+    var typing by rememberSaveable { mutableStateOf(false) }
+    if (!typing && text.isEmpty() && files.isEmpty() && listening == null) {
+        TalkBar(running, onVoice, onStop, onType = { typing = true }, modifier)
+        return
+    }
+    // Opened to type: the keyboard comes up at once; left empty, it closes back into the talk bar.
+    val focus = remember { FocusRequester() }
+    var focused by remember { mutableStateOf(false) }
+    LaunchedEffect(typing) { if (typing) runCatching { focus.requestFocus() } }
     Column(modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 10.dp)) {
         Column(
             Modifier.fillMaxWidth().clip(RoundedCornerShape(28.dp)).background(P.surface)
@@ -792,7 +847,8 @@ fun Composer(
                     // Text put in from outside (a suggestion, dictation) gets the cursor at its end.
                     val value = if (field.text == text) field else TextFieldValue(text, TextRange(text.length))
                     BasicTextField(
-                        value, { field = it; onText(it.text) }, Modifier.fillMaxWidth().testTag("input"),
+                        value, { field = it; onText(it.text) }, Modifier.fillMaxWidth().testTag("input").focusRequester(focus)
+                            .onFocusChanged { f -> if (focused && !f.isFocused && text.isEmpty() && files.isEmpty()) typing = false; focused = f.isFocused },
                         textStyle = MaterialTheme.typography.bodyLarge.copy(color = P.text), cursorBrush = SolidColor(P.text), maxLines = 6,
                         keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
                     )
@@ -827,6 +883,28 @@ fun Composer(
                     }
                 }
             }
+        }
+    }
+}
+
+/** The talk bar: Tap to talk, the way in for anyone; typing beside it; Stop while the chat runs. */
+@Composable
+private fun TalkBar(running: Boolean, onVoice: () -> Unit, onStop: () -> Unit, onType: () -> Unit, modifier: Modifier) {
+    val onCall = if (P.dark) Color(0xFF0D0D0D) else Color.White
+    Row(modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.weight(1f).height(60.dp).clip(RoundedCornerShape(30.dp)).background(P.call).clickable(onClick = onVoice).testTag("voice"),
+            horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+            Icon(painterResource(R.drawable.ic_mic), null, Modifier.size(24.dp), tint = onCall)
+            Text("Tap to talk", Modifier.padding(start = 10.dp), style = MaterialTheme.typography.titleMedium.copy(fontSize = 19.sp, fontWeight = FontWeight.Bold), color = onCall)
+        }
+        Box(Modifier.size(60.dp).clip(CircleShape).background(P.call.copy(alpha = .14f)).clickable(onClick = onType).testTag("type")
+            .semantics { contentDescription = "Type instead" }, contentAlignment = Alignment.Center) {
+            Icon(painterResource(R.drawable.ic_keyboard), null, Modifier.size(24.dp), tint = P.text)
+        }
+        if (running) Box(Modifier.size(60.dp).clip(CircleShape).background(P.ink).clickable(onClick = onStop).testTag("stop")
+            .semantics { contentDescription = "Stop" }, contentAlignment = Alignment.Center) {
+            Icon(painterResource(R.drawable.ic_stop), null, Modifier.size(20.dp), tint = P.onInk)
         }
     }
 }

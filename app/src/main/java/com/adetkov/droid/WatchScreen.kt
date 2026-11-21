@@ -84,7 +84,7 @@ import android.view.inputmethod.InputMethodManager
 /**
  * Droid's screen, full size ([ScreenFeed] on 127.0.0.1:[port] with the run's [token]), framed by Dash, the controls in a
  * bar below it so nothing covers it: it grows out of the chat's frame and shrinks back into it, and closes when the
- * stream ends. "Take over" sends the user's touches back, for a signature, a login
+ * stream ends. "Let me do it" (take over) sends the user's touches back, for a signature, a login
  * or anything else the agent leaves to the user; Dash goes pale and closes his eyes while the touches are theirs. [working]: the
  * agent is working on a request (else it answered and the run is holding its screen). [onTouched]: the user touched
  * the screen, so the agent should be told.
@@ -251,7 +251,7 @@ fun WatchScreen(
                     }
                     if (control) Pill("Done", Modifier.testTag("done_control")) { if (control) { control = false; onHandBack?.invoke() } }  // once
                     else {
-                        if (f != null) Pill("Take over", Modifier.testTag("take_over")) { control = true }
+                        if (f != null) Pill("Let me do it", Modifier.testTag("take_over")) { control = true }
                         if (working) Box(Modifier.padding(start = 8.dp).size(40.dp).clip(CircleShape).background(Color.White)
                             .clickable { leave(onStop) }.testTag("stop"), contentAlignment = Alignment.Center) {
                             Icon(painterResource(R.drawable.ic_stop), "Stop", Modifier.size(16.dp), tint = Color.Black)
