@@ -66,7 +66,7 @@ class PairingService : Service() {
         discovery = Discovery(this, Discovery.PAIRING) { p ->
             if (p == port || working) return@Discovery
             port = p
-            nm.notify(ID, note("Enter the pairing code", "The six digits Settings shows under Wi-Fi pairing code.", ask = true))
+            nm.notify(ID, note("Type the code here", "The six digits under Wi-Fi pairing code.", ask = true))
             app.setup.pairingStatus("Enter the code in Droid's notification", CODE_STEP)
         }.also { it.start() }
         main.postDelayed(giveUp, 10 * 60_000L)
@@ -138,7 +138,9 @@ class PairingService : Service() {
     private fun note(title: String, text: String?, ask: Boolean): Notification {
         val open = if (!ask && !working && port == 0) PendingIntent.getActivity(this, 1, pairingSettings(this),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE) else openApp()
+        val d = resources.displayMetrics.density
         val b = Notification.Builder(this, CHANNEL).setSmallIcon(R.drawable.ic_notify).setContentTitle(title)
+            .setLargeIcon(dashPortrait(Feel.NEEDS_YOU, (64 * d).toInt(), d, lightShade(this)))  // Dash, waiting on you, as in setup
             .setOngoing(true).setOnlyAlertOnce(!ask).setContentIntent(open)
             .addAction(Notification.Action.Builder(null, "Cancel", service(CANCEL, mutable = false)).build())
         if (text != null) b.setContentText(text)

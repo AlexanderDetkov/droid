@@ -24,15 +24,17 @@ Claude Code on your Android phone, rooted or not. Tell it what to do, by voice o
 - Either root (Magisk, KernelSU or APatch), or none: Developer options with Wireless debugging, which Droid pairs with
   once. Without root, Droid needs Wi-Fi when it starts its helper (once after each restart); after that, mobile data is
   fine. Droid turns USB debugging on and needs it, and Developer options, left on (see Security).
-- An account for one agent: Claude (a Pro or Max subscription, or an Anthropic Console account billed per use), ChatGPT for Codex, or a provider key for OpenCode, whose free models need none but stop at a usage limit. Setup installs Claude Code in any case, from claude.ai.
+- Nothing to pay for: OpenCode's free models need no account (they're for simple jobs and stop at a usage limit). Or
+  ChatGPT for Codex (a free account works), or Claude (a Pro or Max subscription, or an Anthropic Console account billed
+  per use). Setup installs Claude Code in any case, from claude.ai.
 - On Xiaomi, Redmi and POCO phones, also turn on Developer options → "USB debugging (Security settings)"; on OPPO, OnePlus and realme, "Disable permission monitoring". Without it Droid can't tap on its screen, or switch Wireless debugging on after a restart (Setup says so).
 - About 350 MB of storage, plus 820 MB if you want voice, and 38 MB more for voice match.
 
 ## Install
 
 1. Install the APK for your phone (`arm64`) from [Releases](https://github.com/AlexanderDetkov/droid/releases).
-2. Open Droid. Setup is three steps, each started by the one before:
-   - **Connect**: with root, allow Droid when your root manager asks. Without root, tap Start: Droid opens Settings
+2. Open Droid. Setup shows one thing at a time, with Dash, a few words and a button:
+   - **Connect**: with root, allow Droid when your root manager asks. Without root, tap **Open Settings**: Droid opens Settings
      where the next step is, and its notification says what to do there, ticking each step off as you do it (turn on
      Developer options, turn on Wireless debugging and allow it on your Wi-Fi, open Pair device with pairing code), then
      takes the code. Tapping the notification opens Settings at the right place. Once paired, Droid comes back to the
@@ -42,20 +44,23 @@ Claude Code on your Android phone, rooted or not. Tell it what to do, by voice o
      session.
    - **Install** starts by itself once Droid is connected: Alpine Linux (checked against Alpine's SHA-256), a few
      packages and Claude Code (from `claude.ai/install.sh`) into `/data/local/droid` (without root,
-     `/data/local/tmp/droid`). Takes about a minute.
-   - **Sign in** opens the Claude page in your browser (Claude Code's own sign-in, through `droid-browser`). Sign in
-     there and Droid comes back by itself; nothing to paste. To sign in on another device instead, tap **Paste a code
-     instead**. Below it: a Console account, or **ChatGPT or free models** (Codex, or OpenCode's free models with no
-     account).
+     `/data/local/tmp/droid`). Takes about a minute. Meanwhile, **Which brain should I use?**
+     - **Free**: OpenCode's free models, no account. For simple jobs.
+     - **ChatGPT**: Codex, with your ChatGPT account (a free one works). Droid shows a code, already copied: tap **Open
+       ChatGPT**, enter it there, and Droid comes back by itself.
+     - **Claude**: Claude Code, with a Pro or Max subscription. Tap **Open Claude** (Claude Code's own sign-in, through
+       `droid-browser`), sign in, and Droid comes back by itself. To sign in on another device, tap **Paste a code**.
 
-   Then two switches, both on unless you turn them off (voice only on Wi-Fi), and **Start**: **Long-press power for
-   Droid** makes it the assistant (with Android's "Use screenshot" on), and **Talk to Droid** downloads the speech
-   models (820 MB) in the background. Either can be done later in Settings → **Setup and updates**.
+     Droid then installs what that needs (OpenCode or Codex). A Console account, API keys and the other agents are in
+     Settings → **Setup and updates**.
+
+   Then **Let's go**: Droid becomes the long-press-power assistant (with Android's "Use screenshot" on) and, on Wi-Fi,
+   downloads the speech models (820 MB) in the background. Either can be changed in Settings → **Setup and updates**.
 
 Voice match is set up later, from Settings → **Voice match**: download its model, then read six sentences aloud.
 
-**Something not working?** Open Setup (the first screen, or Settings → **Setup and updates**), tap **Copy diagnostics
-for a bug report** at the bottom and paste it into an [issue](https://github.com/AlexanderDetkov/droid/issues/new/choose).
+**Something not working?** In Settings → **Setup and updates** (or on setup's "Something went wrong"), tap **Copy
+diagnostics for a bug report** and paste it into an [issue](https://github.com/AlexanderDetkov/droid/issues/new/choose).
 It holds the phone's model, Android version and how far setup got, nothing private: no account, chats or files. On some
 phones (Xiaomi's, OPPO's, OnePlus', realme's, vivo's) Android won't let Wireless debugging tap or type until a switch in
 Developer options is on; Setup checks with one harmless key press and says which switch.

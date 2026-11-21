@@ -284,6 +284,7 @@ class Setup(private val app: DroidApp) {
         }
         if (code != 0 && !signInCancelled) throw IOException(out.lines().lastOrNull { it.isNotBlank() } ?: "Sign-in failed")
         check()
+        if (code == 0 && state.value.others[Engine.CODEX]?.signedIn == true) comeBack()  // from the browser, where the code went in
     }
 
     /** Signs Codex in with an OpenAI API key (billed per use), which `codex login --with-api-key` reads from stdin. */
