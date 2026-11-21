@@ -1,7 +1,12 @@
-<!-- Status bar icon and Droid's mark: Dash as one color, his eyes cut out. -->
+<!-- Status bar icon: Dash peeking up from the bottom edge, as on the launcher icon, as one color, his eyes cut out with a sparkle in each. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
-    <path android:pathData="M12,6.99 Q12.07,6.56 12.12,6.34 Q12.16,6.12 12.22,5.9 Q12.28,5.69 12.35,5.48 Q12.42,5.27 12.51,5.06 Q12.6,4.86 12.7,4.66 Q12.8,4.46 12.92,4.28 Q13.05,4.09 13.18,3.91 Q13.32,3.74 13.48,3.58 Q13.63,3.42 13.8,3.28 Q13.97,3.13 14.16,3.01 Q14.34,2.88 14.54,2.78 L14.74,2.68" android:strokeColor="#FFFFFF" android:strokeWidth="1.57" android:strokeLineCap="round" android:strokeLineJoin="round" />
-    <path android:pathData="M13.06,2.68 a1.68,1.68 0 1,0 3.36,0 a1.68,1.68 0 1,0 -3.36,0 Z" android:fillColor="#FFFFFF" />
-    <path android:pathData="M12,6.17C16.56,6.17 20.25,10.16 20.25,15.09L20.25,16.1C20.25,19.91 16.93,23 12.82,23L11.18,23C7.07,23 3.75,19.91 3.75,16.1L3.75,15.09C3.75,10.16 7.44,6.17 12,6.17 Z M6.96,15.76 a1.82,2.4 0 1,0 3.64,0 a1.82,2.4 0 1,0 -3.64,0 Z M13.4,15.76 a1.82,2.4 0 1,0 3.64,0 a1.82,2.4 0 1,0 -3.64,0 Z" android:fillColor="#FFFFFF" android:fillType="evenOdd" />
+    <group>
+    <clip-path android:pathData="M0,0 H24 V22 H0 Z" />
+    <path android:pathData="M12,7.4 Q12.09,6.87 12.14,6.6 Q12.2,6.34 12.27,6.08 Q12.34,5.82 12.42,5.56 Q12.51,5.3 12.62,5.06 Q12.72,4.81 12.85,4.57 Q12.97,4.33 13.12,4.1 Q13.27,3.88 13.43,3.66 Q13.6,3.45 13.79,3.26 Q13.98,3.06 14.18,2.89 Q14.39,2.72 14.61,2.57 Q14.84,2.41 15.08,2.29 L15.32,2.17" android:strokeColor="#FFFFFF" android:strokeWidth="1.57" android:strokeLineCap="round" android:strokeLineJoin="round" />
+    <path android:pathData="M13.64,2.17 a1.68,1.68 0 1,0 3.36,0 a1.68,1.68 0 1,0 -3.36,0 Z" android:fillColor="#FFFFFF" />
+    <path android:pathData="M12,6.4C17.52,6.4 22,11.24 22,17.21L22,18.43C22,23.05 17.97,26.8 13,26.8L11,26.8C6.03,26.8 2,23.05 2,18.43L2,17.21C2,11.24 6.48,6.4 12,6.4 Z M5.35,17.36 a2.75,3.64 0 1,0 5.51,0 a2.75,3.64 0 1,0 -5.51,0 Z M13.14,17.36 a2.75,3.64 0 1,0 5.51,0 a2.75,3.64 0 1,0 -5.51,0 Z" android:fillColor="#FFFFFF" android:fillType="evenOdd" />
+    <path android:pathData="M7.93,15.98 a0.99,0.99 0 1,0 1.98,0 a0.99,0.99 0 1,0 -1.98,0 Z" android:fillColor="#FFFFFF" />
+    <path android:pathData="M15.73,15.98 a0.99,0.99 0 1,0 1.98,0 a0.99,0.99 0 1,0 -1.98,0 Z" android:fillColor="#FFFFFF" />
+    </group>
 </vector>

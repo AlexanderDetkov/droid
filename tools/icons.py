@@ -37,9 +37,10 @@ def antenna(bx, by, length, a0=.15, curl=.5, n=12):
     return d, pts[-1]
 C = dict(top='#BAC0FF', bot='#A3ABFF', stalk='#8A91EC', tip='#D2C4FF', ink='#16151B', shade='#2A1E6E')
 def dash(cx, ground, w, small=.8, col=C, a0=.15, curl=.5, look=(0, 0), eyes=1.0, mono=False, tipglow=False, sw_min=0, tr_min=0, light=True,
-         mark=False):
+         mark=False, sparkle=0):
     """Elements for Dash standing on [ground], body [w] wide. small: the app's small-size feature boost (0..1).
-    mark: symmetric, as Droid's mark (the site's favicon): his light and catchlights centred (pass a0=0, curl=0 too)."""
+    mark: symmetric, as Droid's mark (the site's favicon): his light and catchlights centred (pass a0=0, curl=0 too).
+    sparkle: one color only: a catchlight this big (a share of the eye's width) left in each eye hole."""
     h = w*1.02; y0 = ground - h; E = []
     # antenna (behind the body)
     by = y0 + max(.05*w, 0)
@@ -56,7 +57,10 @@ def dash(cx, ground, w, small=.8, col=C, a0=.15, curl=.5, look=(0, 0), eyes=1.0,
     lx, ly = look; ox = lx*w*.085; oy = ly*h*.065
     eyesd = ell(cx - sep + ox, ey + oy, rx, ry) + ' ' + ell(cx + sep + ox, ey + oy, rx, ry)
     if mono:
-        E.append(dict(d=bd + ' ' + eyesd, fill=('solid', '#FFFFFF'), evenodd=True)); return E
+        E.append(dict(d=bd + ' ' + eyesd, fill=('solid', '#FFFFFF'), evenodd=True))
+        for s in (-1, 1):
+            if sparkle: E.append(dict(d=ell(cx + s*sep + ox + rx*.3, ey + oy - ry*.38, rx*sparkle, rx*sparkle), fill=('solid', '#FFFFFF')))
+        return E
     E.append(dict(d=bd, fill=('linear', cx, y0, cx, ground, [(0, col['top'], 1), (1, col['bot'], 1)])))
     if light: E.append(dict(d=bd, fill=('radial', cx - (0 if mark else w*.18), ground - h*.76, w*.62, [(0, '#FFFFFF', .42), (.5, '#FFFFFF', .12), (1, '#FFFFFF', 0)])))
     E.append(dict(d=eyesd, fill=('solid', col['ink'])))
@@ -68,7 +72,7 @@ def hexa(c, a=1.0):
     c = c.lstrip('#')
     if len(c) == 8: a *= int(c[:2], 16)/255; c = c[2:]
     return c, a
-def to_svg(els, vb=108, bg=None):
+def to_svg(els, vb=108, bg=None, clip=None):
     defs, out = [], []
     for i, e in enumerate(els):
         at = []
@@ -91,14 +95,16 @@ def to_svg(els, vb=108, bg=None):
         if e.get('evenodd'): at.append('fill-rule="evenodd"')
         out.append(f'<path d="{e["d"]}" {" ".join(at)}/>')
     b = f'<rect width="{vb}" height="{vb}" fill="{bg}"/>' if bg else ''
+    if clip: defs.append(f'<clipPath id="c"><path d="{clip}"/></clipPath>'); out = ['<g clip-path="url(#c)">'] + out + ['</g>']
     return f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {vb} {vb}"><defs>{"".join(defs)}</defs>{b}{"".join(out)}</svg>'
 def argb(c, a):
     return '#' + f'{round(a*255):02X}' + c.upper()
-def to_vd(els, comment, vb=108, size=108):
+def to_vd(els, comment, vb=108, size=108, clip=None):
     L = [f'<!-- {comment} -->', '<vector xmlns:android="http://schemas.android.com/apk/res/android"']
     needs_aapt = any(e.get('fill') and e['fill'][0] != 'solid' for e in els)
     if needs_aapt: L.append('    xmlns:aapt="http://schemas.android.com/aapt"')
     L.append(f'    android:width="{size}dp" android:height="{size}dp" android:viewportWidth="{vb}" android:viewportHeight="{vb}">')
+    if clip: L.append(f'    <group>\n    <clip-path android:pathData="{clip}" />')
     for e in els:
         at = [f'android:pathData="{e["d"]}"']
         fl = e.get('fill'); inner = ''
@@ -119,6 +125,7 @@ def to_vd(els, comment, vb=108, size=108):
         if e.get('evenodd'): at.append('android:fillType="evenOdd"')
         if inner: L.append(f'    <path {" ".join(at)}>{inner}</path>')
         else: L.append(f'    <path {" ".join(at)} />')
+    if clip: L.append('    </group>')
     L.append('</vector>')
     return '\n'.join(L) + '\n'
 
@@ -138,10 +145,16 @@ def main():
     open(R + 'ic_launcher_background.xml', 'w').write(to_vd(bg, "Launcher icon, back layer: Droid's periwinkle field."))
     open(R + 'ic_launcher_foreground.xml', 'w').write(to_vd(fg, "Launcher icon, front layer: Dash peeking up from the bottom edge. Generated from his own proportions in the app (Dash.kt), features a little larger, as the app draws him small."))
     open(R + 'ic_launcher_monochrome.xml', 'w').write(to_vd(mono, "Themed icon layer: the same peeking Dash as one color, his eyes cut out."))
-    # status bar / logo: all of him as a silhouette, eyes cut out, his antenna hooked as in the app; as big as the 24 dp box
+    # logo (Droid's mark in the app): all of him as a silhouette, eyes cut out, his antenna hooked as in the app; as big as the 24 dp box
     # takes with 1 dp to spare top and bottom; hook and tip thick enough to read at status bar size
     small = dash(12, 23, 16.5, small=1, mono=True, sw_min=1.57, tr_min=1.68)
-    open(R + 'ic_notify.xml', 'w').write(to_vd(small, "Status bar icon and Droid's mark: Dash as one color, his eyes cut out.", vb=24, size=24))
+    # status bar: Peek, as the launcher icon: Dash rising from the bottom edge, cut off at Material's 2 dp keyline (y=22),
+    # 20 wide so his hook's tip just fits at the top; big eyes looking up a little, a sparkle left in each, 1 below them
+    w, eyes, ly = 20, 1.25, -.5
+    h = w*1.02; ry = w*.076*1.45*eyes*1.32
+    peek = dash(12, 22 - 1 + .43*h - ly*h*.065 - ry, w, small=1, mono=True, sw_min=1.57, tr_min=1.68, look=(0, ly), eyes=eyes,
+                sparkle=.36)
+    open(R + 'ic_notify.xml', 'w').write(to_vd(peek, "Status bar icon: Dash peeking up from the bottom edge, as on the launcher icon, as one color, his eyes cut out with a sparkle in each.", vb=24, size=24, clip='M0,0 H24 V22 H0 Z'))
     open(R + 'ic_logo.xml', 'w').write(to_vd(small, "Droid's mark: Dash as one color, his eyes cut out. Tinted where it's used.", vb=24, size=24))
     # splash (Android draws it in a 160 dp circle of a 240 dp box, on the window's background): all of Dash, as in the app
     splash = dash(54, 74, 34, small=.3)
