@@ -321,6 +321,11 @@ public class VdHelper {
         attr(x, "enabled", String.valueOf(n.isEnabled()));
         attr(x, "focused", String.valueOf(n.isFocused()));
         attr(x, "scrollable", String.valueOf(n.isScrollable()));
+        if (n.isScrollable()) {  // which way: a list offers to scroll only where it has more
+            java.util.List<android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction> acts = n.getActionList();
+            attr(x, "more-before", String.valueOf(acts.contains(android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_BACKWARD)));
+            attr(x, "more-after", String.valueOf(acts.contains(android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD)));
+        }
         attr(x, "bounds", "[" + r.left + "," + r.top + "][" + r.right + "," + r.bottom + "]");
         x.append(">");
         for (int i = 0; depth < 100 && i < n.getChildCount(); i++) {

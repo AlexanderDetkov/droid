@@ -76,6 +76,21 @@ class Text(unittest.TestCase):
         self.assertEqual(out.splitlines(), ['Search contacts  @50,25  [field, focused]', 'Mama  @50,85  [field]'])
 
 
+    def test_a_list_says_which_way_it_has_more(self):
+        with tempfile.NamedTemporaryFile('w', suffix='.xml', delete=False) as f:
+            f.write('<?xml version="1.0"?><displays><display id="3"><window>'
+                    '<node class="androidx.recyclerview.widget.RecyclerView" scrollable="true" more-before="true" more-after="false" bounds="[0,200][1080,2000]"/>'
+                    '<node class="android.widget.HorizontalScrollView" scrollable="true" more-before="false" more-after="true" bounds="[0,100][1080,180]"/>'
+                    '<node class="android.widget.ScrollView" scrollable="true" more-before="false" more-after="false" bounds="[0,0][1080,90]"/>'
+                    '</window></display></displays>')
+        try:
+            code, out = self.read(f.name, '3')
+        finally:
+            os.unlink(f.name)
+        self.assertEqual(out.splitlines(), ['RecyclerView  @540,1100  [scrolls: more above]',
+                                            'HorizontalScrollView  @540,140  [scrolls: more right]'])
+
+
 class Helper(unittest.TestCase):
     """`shot` against a stand-in for the display's helper, which answers each request as VdHelper does."""
 
