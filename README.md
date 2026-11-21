@@ -31,17 +31,26 @@ Claude Code on your Android phone, rooted or not. Tell it what to do, by voice o
 ## Install
 
 1. Install the APK for your phone (`arm64`) from [Releases](https://github.com/AlexanderDetkov/droid/releases).
-2. Open Droid. Setup walks you through the rest, all from the app:
-   - **Root access**: allow Droid in your root manager. Or, without root, **Wireless debugging**: tap Pair, turn on
-     Developer options and Wireless debugging (allow it on your network, with Always allow ticked), tap Pair device with
-     pairing code, and type the code into Droid's notification. Droid asks for Nearby devices first (Android 17 needs it
-     to find Wireless debugging on the network) and for notifications. Droid uses root if it has it when it first
-     checks; Setup can switch either way later. Root and Wireless debugging each have their own Linux, sign-in and
-     history, and a chat from the other one goes on in a new session.
-   - **Linux and Claude Code**: downloads Alpine Linux (checked against Alpine's SHA-256), installs a few packages and Claude Code (from `claude.ai/install.sh`) into `/data/local/droid` (without root, `/data/local/tmp/droid`). Takes about a minute.
-   - **Claude account**: opens the Claude sign-in page in your browser; paste the code it shows back into Droid.
-   - **Voice** (optional): downloads the speech models.
-   - **Assistant** (optional): makes Droid the long-press-power assistant, with Android's "Use screenshot" on.
+2. Open Droid. Setup is three steps, each started by the one before:
+   - **Connect**: with root, allow Droid when your root manager asks. Without root, tap Start: Droid opens Settings
+     where the next step is, and its notification says what to do there, ticking each step off as you do it (turn on
+     Developer options, turn on Wireless debugging and allow it on your Wi-Fi, open Pair device with pairing code), then
+     takes the code. Tapping the notification opens Settings at the right place. Once paired, Droid comes back to the
+     front by itself. It asks for notifications first, and on Android 17 for Nearby devices (to find Wireless debugging
+     on the network). Droid uses root if it has it when it first checks; Setup can switch either way later. Root and
+     Wireless debugging each have their own Linux, sign-in and history, and a chat from the other one goes on in a new
+     session.
+   - **Install** starts by itself once Droid is connected: Alpine Linux (checked against Alpine's SHA-256), a few
+     packages and Claude Code (from `claude.ai/install.sh`) into `/data/local/droid` (without root,
+     `/data/local/tmp/droid`). Takes about a minute.
+   - **Sign in** opens the Claude page in your browser (Claude Code's own sign-in, through `droid-browser`). Sign in
+     there and Droid comes back by itself; nothing to paste. To sign in on another device instead, tap **Paste a code
+     instead**. Below it: a Console account, or **ChatGPT or free models** (Codex, or OpenCode's free models with no
+     account).
+
+   Then two switches, both on unless you turn them off (voice only on Wi-Fi), and **Start**: **Long-press power for
+   Droid** makes it the assistant (with Android's "Use screenshot" on), and **Talk to Droid** downloads the speech
+   models (820 MB) in the background. Either can be done later in Settings → **Setup and updates**.
 
 Voice match is set up later, from Settings → **Voice match**: download its model, then read six sentences aloud.
 

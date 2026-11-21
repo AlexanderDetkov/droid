@@ -1,0 +1,6 @@
+#!/bin/sh
+# Claude Code's $BROWSER while Droid's Setup signs in (`claude auth login`): opens the sign-in page in the phone's own
+# browser. Signing in there sends the browser back to Claude Code on localhost, which finishes the sign-in by itself,
+# with no code to paste. Through `android`, as root or Droid's helper: they may open an app from the background.
+# The page's address has no quotes in it (it is URL-encoded), so it goes in single quotes as it is.
+exec android "am start -a android.intent.action.VIEW -d '$1'" > /dev/null 2>&1

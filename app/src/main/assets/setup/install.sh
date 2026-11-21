@@ -61,7 +61,7 @@ if [ ! -x $R/bin/busybox ]; then
 fi
 put "$SRC/enter.sh" $BASE/enter.sh 755
 for f in vd-start.sh vd-stop.sh; do put "$SRC/$f" $BASE/$f 755; done
-for f in phone-agent android shot droid droid-bridge droid-engine droid-install-engine; do put "$SRC/bin/$f" $R/usr/local/bin/$f 755; done
+for f in phone-agent android shot droid droid-bridge droid-browser droid-engine droid-install-engine; do put "$SRC/bin/$f" $R/usr/local/bin/$f 755; done
 put "$SRC/resolv.conf" $R/etc/resolv.conf 644
 mkdir -p $R/root/.claude
 put "$SRC/settings.json" $R/root/.claude/settings.json 644

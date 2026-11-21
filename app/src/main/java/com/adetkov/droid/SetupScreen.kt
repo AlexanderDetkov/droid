@@ -10,6 +10,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
@@ -44,6 +45,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
@@ -57,10 +59,14 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** First-run setup and later maintenance: one row per step, each with its state and action. */
+/**
+ * First-run setup ([FirstRun]: connect, install, sign in, each started by the one before) and later maintenance (Settings
+ * → Setup: one row per step, each with its state and action).
+ */
 @Composable
 fun SetupScreen(setup: Setup, firstRun: Boolean, onClose: () -> Unit) {
     val s by setup.state.collectAsState()
+    val ctx = LocalContext.current
     val idle = s.busy == null && s.signInUrl == null && s.pairing == null
     var confirmRemove by remember { mutableStateOf(false) }
     // Also on coming back: from the root manager, say, where Droid was just allowed root.
@@ -91,16 +97,7 @@ fun SetupScreen(setup: Setup, firstRun: Boolean, onClose: () -> Unit) {
         Column(
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).navigationBarsPadding().padding(horizontal = 16.dp),
         ) {
-            if (firstRun) {
-                // Dash thinks while a step runs and cheers when Droid is ready
-                DashMini(when { s.ready -> Feel.HAPPY; s.busy != null -> Feel.THINKING; else -> Feel.IDLE }, 84.dp,
-                    Modifier.padding(top = 4.dp), label = "Dash, Droid's character")
-                Text("Set up Droid", Modifier.padding(start = 4.dp, top = 8.dp), style = MaterialTheme.typography.headlineSmall)
-                Text("An AI agent running on this phone, using your apps on a hidden screen. Claude Code comes first; Codex and OpenCode can be added.", Modifier.padding(start = 4.dp, top = 6.dp, bottom = 20.dp),
-                    style = MaterialTheme.typography.bodyMedium, color = P.muted)
-            }
-
-            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(P.surface)) {
+            if (firstRun) FirstRun(setup, s, idle, ::withPermissions) else Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(P.surface)) {
                 if (s.access == Access.ROOT) {
                     Step(1, "Root access", if (s.root) "Granted" else "Needs Magisk, KernelSU or APatch. Allow Droid when asked.", s.root) {
                         if (!s.root) Action("Check", idle, primary = true) { setup.refresh() }
@@ -112,29 +109,16 @@ fun SetupScreen(setup: Setup, firstRun: Boolean, onClose: () -> Unit) {
                         else -> "No root needed: pair Droid with Android's Wireless debugging, once."
                     }
                     Step(1, "Wireless debugging", detail, s.helper) {
-                        if (!s.paired && s.pairing == null) Action("Pair", idle, primary = true) { withPermissions(setup::pair) }
+                        if (!s.paired && s.pairing == null) Action("Pair", idle, primary = true) { withPermissions { pair(setup, ctx) } }
                         else if (s.paired && !s.helper) Action("Start", idle, primary = true) { withPermissions(setup::startHelper) }
                     }
-                    // Checked again on coming back here, so it goes once the setting is on.
-                    if (s.helper && !s.secureSettings) Text(
-                        "Android didn't let Droid switch Wireless debugging on by itself, which it needs to start again after a " +
-                            "restart. In Developer options, turn on \"USB debugging (Security settings)\" on Xiaomi, Redmi or POCO, " +
-                            "or \"Disable permission monitoring\" on OPPO, OnePlus or realme, then come back here.",
-                        Modifier.padding(start = 54.dp, end = 16.dp, bottom = 14.dp).testTag("setup_secure_settings"),
-                        style = MaterialTheme.typography.bodySmall, color = P.danger,
-                    )
-                    AnimatedVisibility(s.pairing != null) { Pairing(s.pairing.orEmpty(), setup) }
-                    if (s.paired && s.pairing == null && !s.helper) TextButton({ withPermissions(setup::pair) }, Modifier.padding(start = 54.dp), enabled = idle) {
+                    SecureSettings(s)
+                    AnimatedVisibility(s.pairing != null) { Pairing(s, setup) }
+                    if (s.paired && s.pairing == null && !s.helper) TextButton({ withPermissions { pair(setup, ctx) } }, Modifier.padding(start = 54.dp), enabled = idle) {
                         Text("Pair again", color = P.muted, style = MaterialTheme.typography.bodySmall)
                     }
                 }
-                // Root or not, Wireless debugging works too (the agent then has the shell user's rights, not root's). Root
-                // is offered wherever there is an su, even one that refuses Droid for now.
-                if (s.pairing == null && (s.access == Access.ROOT || s.su)) TextButton({ setup.setAccess(if (s.access == Access.ROOT) Access.ADB else Access.ROOT) },
-                    Modifier.padding(start = 54.dp).testTag("setup_access"), enabled = idle) {
-                    Text(if (s.access == Access.ROOT) "Use Wireless debugging instead of root" else "Use root instead",
-                        color = P.muted, style = MaterialTheme.typography.bodySmall)
-                }
+                AccessSwitch(setup, s, idle)
                 Line()
                 Step(2, "Linux and Claude Code", if (s.installed) "Installed" else "Alpine Linux with Claude Code, about 350 MB", s.installed) {
                     if (s.connected) Action(if (s.installed) "Update" else "Install", idle, primary = !s.installed) { setup.install() }
@@ -161,37 +145,10 @@ fun SetupScreen(setup: Setup, firstRun: Boolean, onClose: () -> Unit) {
             }
 
             if (s.inputBlocked) InputBlocked()
+            if (!firstRun && s.installed) OtherAgents(setup, s, idle)
 
-            if (s.installed) {
-                Text("Other agents", Modifier.padding(start = 4.dp, top = 24.dp, bottom = 8.dp), style = MaterialTheme.typography.labelLarge, color = P.muted)
-                Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(P.surface)) {
-                    val codex = s.others[Engine.CODEX]
-                    Step(1, "Codex", codex?.detail ?: "OpenAI's coding agent, about 120 MB. Sign in with ChatGPT or an API key.", codex?.signedIn == true, optional = true) {
-                        if (codex == null) Action("Install", idle) { setup.installEngine(Engine.CODEX) }
-                        else if (s.signInUrl == null) {
-                            Action(if (codex.signedIn) "Switch" else "Sign in", idle, primary = !codex.signedIn) { setup.signInCodex() }
-                        }
-                    }
-                    if (codex != null && s.signInUrl == null) {
-                        KeyEntry("Use an OpenAI API key instead", idle, null) { _, key -> setup.codexApiKey(key) }
-                    }
-                    AnimatedVisibility(s.signInUrl != null && s.deviceCode != null) {
-                        DeviceSignIn(s.signInUrl.orEmpty(), s.deviceCode.orEmpty(), setup)
-                    }
-                    Line()
-                    val oc = s.others[Engine.OPENCODE]
-                    Step(2, "OpenCode", oc?.detail ?: "Open-source agent for Anthropic, OpenAI, Google, OpenRouter or a local model, about 80 MB.", oc != null, optional = true) {
-                        if (oc == null) Action("Install", idle) { setup.installEngine(Engine.OPENCODE) }
-                    }
-                    if (oc != null) KeyEntry("Add a provider API key", idle, "Provider (anthropic, openai, google, openrouter)") { provider, key ->
-                        setup.openCodeKey(provider.orEmpty(), key)
-                    }
-                }
-                Text("Pick the agent for new chats in Settings. A chat keeps the agent it started with.", Modifier.padding(start = 4.dp, top = 8.dp),
-                    style = MaterialTheme.typography.bodySmall, color = P.muted)
-            }
-
-            s.busy?.let {
+            // On first run the install's progress shows in its step
+            s.busy?.takeUnless { firstRun && installing(s) }?.let {
                 Column(Modifier.padding(top = 16.dp, start = 4.dp, end = 4.dp)) {
                     Text(it, style = MaterialTheme.typography.bodyMedium, color = P.muted)
                     LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 8.dp).clip(RoundedCornerShape(2.dp)), color = P.ink, trackColor = P.raised)
@@ -219,11 +176,7 @@ fun SetupScreen(setup: Setup, firstRun: Boolean, onClose: () -> Unit) {
                 )
             }
 
-            if (s.ready && firstRun) Box(
-                Modifier.padding(top = 20.dp).fillMaxWidth().height(52.dp).clip(RoundedCornerShape(26.dp)).background(P.ink)
-                    .clickable { s.readyEngine?.let(setup::useEngine); onClose() }.testTag("setup_done"),
-                contentAlignment = Alignment.Center,
-            ) { Text("Start", style = MaterialTheme.typography.labelLarge, color = P.onInk) }
+            if (s.ready && firstRun) Ready(setup, s, onClose)
             // Whatever is there, even half installed, but only while Droid can reach it
             if (s.linux && s.connected && !firstRun) TextButton({ confirmRemove = true }, Modifier.align(Alignment.CenterHorizontally).padding(top = 8.dp), enabled = idle) {
                 Text("Remove Droid's Linux", color = P.danger)
@@ -234,11 +187,163 @@ fun SetupScreen(setup: Setup, firstRun: Boolean, onClose: () -> Unit) {
     }
 }
 
+/**
+ * First run: three steps, each started by the one before. Connect (root, or Wireless debugging, guided by
+ * [PairingService]), Install (by itself once connected) and Sign in (in the browser, which hands back by itself). Then
+ * [Ready]. Other agents wait behind a link: Claude Code is the one to start with.
+ */
+@Composable
+private fun ColumnScope.FirstRun(setup: Setup, s: SetupState, idle: Boolean, withPermissions: (() -> Unit) -> Unit) {
+    val ctx = LocalContext.current
+    var others by rememberSaveable { mutableStateOf(false) }
+    // The install starts by itself once Droid is connected, once per visit (a failed one waits for its button).
+    var autoInstalled by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(s.connected, s.installed, idle) {
+        if (!autoInstalled && s.connected && !s.installed && idle && s.error == null && setup.autoInstall) { autoInstalled = true; setup.install() }
+    }
+    // Dash thinks while a step runs and cheers when Droid is ready
+    DashMini(when { s.ready -> Feel.HAPPY; !idle || s.busy != null -> Feel.THINKING; else -> Feel.IDLE }, 84.dp,
+        Modifier.padding(top = 4.dp), label = "Dash, Droid's character")
+    Text("Set up Droid", Modifier.padding(start = 4.dp, top = 8.dp), style = MaterialTheme.typography.headlineSmall)
+    Text("An AI agent that uses your apps on a hidden screen. Three steps, a few minutes.", Modifier.padding(start = 4.dp, top = 6.dp, bottom = 20.dp),
+        style = MaterialTheme.typography.bodyMedium, color = P.muted)
+
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(P.surface)) {
+        // Until the first check, nothing says whether this phone has root (a root manager may be asking right now)
+        if (!s.checked) Step(1, "Connect", "Checking this phone…", false, progress = true) {}
+        else if (s.access == Access.ROOT) {
+            Step(1, "Connect", if (s.root) "Root access granted" else "Allow Droid in Magisk, KernelSU or APatch when it asks.", s.root) {
+                if (!s.root) Action("Check", idle, primary = true) { setup.refresh() }
+            }
+        } else {
+            Step(1, "Connect", when {
+                s.helper -> "Connected through Wireless debugging"
+                s.paired -> s.helperError ?: "Paired. Droid starts its helper on Wi-Fi."
+                else -> "Through Android's Wireless debugging, once. No root needed."
+            }, s.helper) {
+                if (!s.paired && s.pairing == null) Action("Start", idle, primary = true) { withPermissions { pair(setup, ctx) } }
+                else if (s.paired && !s.helper) Action("Start", idle, primary = true) { withPermissions(setup::startHelper) }
+            }
+            SecureSettings(s)
+            AnimatedVisibility(s.pairing != null) { Pairing(s, setup) }
+        }
+        AccessSwitch(setup, s, idle)
+        Line()
+        val installing = installing(s)
+        Step(2, "Install", when {
+            s.installed -> "Claude Code is ready"
+            installing -> s.busy.orEmpty()
+            else -> "Claude Code and the Linux it runs in, about 350 MB." + if (setup.autoInstall) " Starts by itself." else ""
+        }, s.installed, upcoming = !s.connected, progress = installing) {
+            if (s.connected && !s.installed && !installing) Action("Install", idle, primary = true) { setup.install() }
+        }
+        Line()
+        Step(3, "Sign in", s.email ?: if (s.signedIn) "Signed in" else "With your Claude subscription", s.signedIn, upcoming = !s.installed) {
+            if (s.installed && !s.signedIn && s.signInUrl == null) Action("Sign in", idle, primary = true) { setup.signIn(console = false) }
+        }
+        AnimatedVisibility(s.signInUrl != null && s.deviceCode == null) { s.signInUrl?.let { SignIn(it, setup) } }
+        if (s.installed && !s.signedIn && s.signInUrl == null) Column(Modifier.padding(start = 54.dp, bottom = 6.dp)) {
+            TextButton({ setup.signIn(console = true) }, Modifier.testTag("setup_console"), enabled = idle) {
+                Text("Use a Console account", color = P.muted, style = MaterialTheme.typography.bodySmall)
+            }
+            TextButton({ others = !others }, Modifier.testTag("setup_others")) {
+                Text(if (others) "Hide other agents" else "Use ChatGPT or free models", color = P.muted, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+    if (s.installed && (others || s.signInUrl != null && s.deviceCode != null || s.others.values.any { it.signedIn } && !s.signedIn)) OtherAgents(setup, s, idle)
+}
+
+/** Without root, once connected: Android wouldn't let Droid switch Wireless debugging on by itself, which it needs after a restart. Checked again on coming back here, so it goes once the setting is on. */
+@Composable
+private fun SecureSettings(s: SetupState) {
+    if (s.access == Access.ADB && s.helper && !s.secureSettings) Text(
+        "Android didn't let Droid switch Wireless debugging on by itself, which it needs to start again after a " +
+            "restart. In Developer options, turn on \"USB debugging (Security settings)\" on Xiaomi, Redmi or POCO, " +
+            "or \"Disable permission monitoring\" on OPPO, OnePlus or realme, then come back here.",
+        Modifier.padding(start = 54.dp, end = 16.dp, bottom = 14.dp).testTag("setup_secure_settings"),
+        style = MaterialTheme.typography.bodySmall, color = P.danger,
+    )
+}
+
+/** The install is running: Droid is connected, there is no Linux yet, and a step is under way. */
+private fun installing(s: SetupState) = s.busy != null && s.connected && !s.installed
+
+/** Starts pairing and opens Settings where its first step is, once the notification that guides it (and takes the code) can show. */
+private fun pair(setup: Setup, ctx: android.content.Context) {
+    setup.pair()
+    if (ctx.getSystemService(android.app.NotificationManager::class.java).areNotificationsEnabled()) openDeveloperOptions(ctx, "toggle_adb_wireless")
+}
+
+/** Root or not, Wireless debugging works too (the agent then has the shell user's rights, not root's). Root is offered wherever there is an su, even one that refuses Droid for now. */
+@Composable
+private fun AccessSwitch(setup: Setup, s: SetupState, idle: Boolean) {
+    if (s.pairing == null && (s.access == Access.ROOT || s.su)) TextButton({ setup.setAccess(if (s.access == Access.ROOT) Access.ADB else Access.ROOT) },
+        Modifier.padding(start = 54.dp).testTag("setup_access"), enabled = idle) {
+        Text(if (s.access == Access.ROOT) "Use Wireless debugging instead of root" else "Use root instead",
+            color = P.muted, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+/** Codex and OpenCode: Settings → Setup always; on first run behind a link, Claude Code being the one to start with. */
+@Composable
+private fun OtherAgents(setup: Setup, s: SetupState, idle: Boolean) {
+    Text("Other agents", Modifier.padding(start = 4.dp, top = 24.dp, bottom = 8.dp), style = MaterialTheme.typography.labelLarge, color = P.muted)
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(P.surface)) {
+        val codex = s.others[Engine.CODEX]
+        Step(1, "Codex", codex?.detail ?: "OpenAI's coding agent, about 120 MB. Sign in with ChatGPT or an API key.", codex?.signedIn == true, optional = true) {
+            if (codex == null) Action("Install", idle) { setup.installEngine(Engine.CODEX) }
+            else if (s.signInUrl == null) {
+                Action(if (codex.signedIn) "Switch" else "Sign in", idle, primary = !codex.signedIn) { setup.signInCodex() }
+            }
+        }
+        if (codex != null && s.signInUrl == null) {
+            KeyEntry("Use an OpenAI API key instead", idle, null) { _, key -> setup.codexApiKey(key) }
+        }
+        AnimatedVisibility(s.signInUrl != null && s.deviceCode != null) {
+            DeviceSignIn(s.signInUrl.orEmpty(), s.deviceCode.orEmpty(), setup)
+        }
+        Line()
+        val oc = s.others[Engine.OPENCODE]
+        Step(2, "OpenCode", oc?.detail ?: "Open-source agent, about 80 MB. Free models with no account, or a key for Anthropic, OpenAI, Google, OpenRouter or a local model.", oc != null, optional = true) {
+            if (oc == null) Action("Install", idle) { setup.installEngine(Engine.OPENCODE) }
+        }
+        if (oc != null) KeyEntry("Add a provider API key", idle, "Provider (anthropic, openai, google, openrouter)") { provider, key ->
+            setup.openCodeKey(provider.orEmpty(), key)
+        }
+    }
+    Text("Pick the agent for new chats in Settings. A chat keeps the agent it started with.", Modifier.padding(start = 4.dp, top = 8.dp),
+        style = MaterialTheme.typography.bodySmall, color = P.muted)
+}
+
+/**
+ * First run, once Droid can take a task: what's worth having that needs nothing more from the owner (each on unless
+ * they turn it off: voice only on Wi-Fi), done in the background after Start (see [Setup.finish]).
+ */
+@Composable
+private fun Ready(setup: Setup, s: SetupState, onClose: () -> Unit) {
+    val ctx = LocalContext.current
+    var assistant by rememberSaveable { mutableStateOf(true) }
+    var voice by rememberSaveable { mutableStateOf(!ctx.getSystemService(android.net.ConnectivityManager::class.java).isActiveNetworkMetered) }
+    if (!s.assistant || !s.voice) Column(Modifier.padding(top = 16.dp).fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(P.surface).padding(vertical = 4.dp)) {
+        if (!s.assistant) ToggleItem(R.drawable.ic_sparkle, "Long-press power for Droid", "Ask it from any app or the lock screen", assistant, { assistant = it }, "setup_assistant")
+        if (!s.voice) ToggleItem(R.drawable.ic_mic, "Talk to Droid", "Speak and hear answers, all on this phone. Downloads 820 MB after you start.", voice, { voice = it }, "setup_voice")
+    }
+    Box(
+        Modifier.padding(top = 20.dp).fillMaxWidth().height(52.dp).clip(RoundedCornerShape(26.dp)).background(P.ink)
+            .clickable { s.readyEngine?.let(setup::useEngine); setup.finish(assistant && !s.assistant, voice && !s.voice); onClose() }.testTag("setup_done"),
+        contentAlignment = Alignment.Center,
+    ) { Text("Start", style = MaterialTheme.typography.labelLarge, color = P.onInk) }
+}
+
 @Composable
 private fun Line() = HorizontalDivider(Modifier.padding(start = 54.dp), color = P.hairline.copy(alpha = .7f))
 
 @Composable
-private fun Step(n: Int, title: String, detail: String, done: Boolean, optional: Boolean = false, actions: @Composable RowScope.() -> Unit) {
+private fun Step(
+    n: Int, title: String, detail: String, done: Boolean, optional: Boolean = false, upcoming: Boolean = false, progress: Boolean = false,
+    actions: @Composable RowScope.() -> Unit,
+) {
     Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 12.dp, top = 14.dp, bottom = 14.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(24.dp), contentAlignment = Alignment.Center) {
             if (done) Icon(painterResource(R.drawable.ic_done_circle), "Done", Modifier.size(24.dp), tint = P.success)
@@ -248,10 +353,11 @@ private fun Step(n: Int, title: String, detail: String, done: Boolean, optional:
         }
         Column(Modifier.weight(1f).padding(start = 14.dp, end = 8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(title, style = MaterialTheme.typography.titleSmall)
+                Text(title, style = MaterialTheme.typography.titleSmall, color = if (upcoming) P.muted else P.text)
                 if (optional && !done) Text("  Optional", style = MaterialTheme.typography.labelSmall, color = P.faint)
             }
-            Text(detail, style = MaterialTheme.typography.bodySmall, color = P.muted, maxLines = 3, overflow = TextOverflow.Ellipsis)
+            Text(detail, style = MaterialTheme.typography.bodySmall, color = if (upcoming) P.faint else P.muted, maxLines = 3, overflow = TextOverflow.Ellipsis)
+            if (progress) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 8.dp).clip(RoundedCornerShape(2.dp)), color = P.ink, trackColor = P.raised)
         }
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp), content = actions)
     }
@@ -270,20 +376,11 @@ private fun Action(label: String, enabled: Boolean, primary: Boolean = false, on
     )
 }
 
-/**
- * Opens Developer options, scrolled to the setting [key] where the phone supports that. While they're off, About phone
- * instead, at Build number (tapped seven times to turn them on): Developer options' own page would only say they're off.
- */
-private fun openDeveloperOptions(ctx: android.content.Context, key: String? = null) {
-    fun open(action: String, key: String?) = ctx.startActivity(android.content.Intent(action)
-        .apply { key?.let { putExtra(":settings:fragment_args_key", it) } }.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
-    val on = android.provider.Settings.Global.getInt(ctx.contentResolver, android.provider.Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 0) == 1
-    try {
-        if (on) open(android.provider.Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS, key)
-        else open(android.provider.Settings.ACTION_DEVICE_INFO_SETTINGS, "build_number")
-    } catch (_: Exception) {
-        open(android.provider.Settings.ACTION_SETTINGS, null)
-    }
+/** Opens Developer options (About phone while they're off), scrolled to [key] where the phone supports that. */
+private fun openDeveloperOptions(ctx: android.content.Context, key: String? = null) = try {
+    ctx.startActivity(pairingSettings(ctx, key))
+} catch (_: Exception) {
+    ctx.startActivity(android.content.Intent(android.provider.Settings.ACTION_SETTINGS).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
 }
 
 /**
@@ -328,44 +425,63 @@ private fun CopyDiagnostics(setup: Setup, modifier: Modifier) {
 }
 
 /**
- * While Droid pairs with Wireless debugging ([status] is what it's doing): where to find the pairing code, which goes
- * into Droid's notification, since Settings closes the code's dialog when you leave it.
+ * While Droid pairs with Wireless debugging: the steps in Settings, ticked off as [PairingService] sees them done (its
+ * notification says the same while Settings is in front), then the code, which goes into Droid's notification since
+ * Settings closes the code's dialog when you leave it.
  */
 @Composable
-private fun Pairing(status: String, setup: Setup) {
-    val ctx = androidx.compose.ui.platform.LocalContext.current
-    fun openSettings() = openDeveloperOptions(ctx, "toggle_adb_wireless")
-    Column(Modifier.fillMaxWidth().padding(start = 54.dp, end = 16.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        listOf(
-            "Turn on Developer options: Settings → About phone → tap Build number seven times.",
-            "In Developer options, turn on Wireless debugging. Allow it on this network, with Always allow ticked.",
-            "Tap Pair device with pairing code, then type the code into Droid's notification.",
-        ).forEachIndexed { i, line ->
-            Row { Text("${i + 1}.", Modifier.padding(end = 8.dp), style = MaterialTheme.typography.bodyMedium, color = P.muted)
-                Text(line, style = MaterialTheme.typography.bodyMedium) }
+private fun Pairing(s: SetupState, setup: Setup) {
+    val ctx = LocalContext.current
+    val steps = PairingService.STEPS + ("Enter the pairing code" to "Type the six digits Settings shows into Droid's notification.")
+    Column(Modifier.fillMaxWidth().padding(start = 54.dp, end = 16.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        steps.forEachIndexed { i, (title, how) ->
+            val done = i < s.pairStep
+            val now = i == s.pairStep
+            Row(Modifier.testTag("pair_step_$i")) {
+                Box(Modifier.padding(top = 1.dp).size(18.dp), contentAlignment = Alignment.Center) {
+                    if (done) Icon(painterResource(R.drawable.ic_done_circle), "Done", Modifier.size(18.dp), tint = P.success)
+                    else Text("${i + 1}", style = MaterialTheme.typography.labelMedium, color = if (now) P.text else P.faint)
+                }
+                Column(Modifier.padding(start = 10.dp)) {
+                    Text(title, style = MaterialTheme.typography.bodyMedium, color = if (now) P.text else P.muted)
+                    if (now) Text(how, style = MaterialTheme.typography.bodySmall, color = P.muted)
+                }
+            }
         }
-        Text(status, Modifier.testTag("setup_pairing"), style = MaterialTheme.typography.bodySmall, color = P.muted)
+        // what comes after the code, or why the last try failed
+        s.pairing?.takeIf { status -> steps.none { it.first == status } }?.let {
+            Text(it, Modifier.testTag("setup_pairing"), style = MaterialTheme.typography.bodySmall, color = P.muted)
+        }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
             TextButton(setup::cancelPairing) { Text("Cancel", color = P.muted) }
-            Action("Open settings", true, primary = true) { openSettings() }
+            if (s.pairStep < PairingService.CODE_STEP) Action("Open settings", true, primary = true) { openDeveloperOptions(ctx, "toggle_adb_wireless") }
         }
     }
 }
 
 /**
- * While `claude auth login` waits: sign in on its page, then paste the code it shows. The page opens in the browser
- * when there is one; the link can always be copied, for phones without a browser or to sign in elsewhere.
+ * While `claude auth login` waits. Its page opened in the browser by itself (see [Setup.signIn]), and signing in there
+ * finishes on its own and brings Droid back. Signing in elsewhere (another device, a browser that didn't open) goes by
+ * the printed [url] instead, whose page shows a code to paste here.
  */
 @Composable
 private fun SignIn(url: String, setup: Setup) {
     val uri = LocalUriHandler.current
     val copy = rememberCopy()
     var code by rememberSaveable { mutableStateOf("") }
-    var opened by rememberSaveable(url) { mutableStateOf(false) }
+    var paste by rememberSaveable(url) { mutableStateOf(false) }
     fun open() = try { uri.openUri(url) } catch (_: Exception) {}  // no app handles web links
-    LaunchedEffect(url) { if (!opened) { opened = true; open() } }
     Column(Modifier.fillMaxWidth().padding(start = 54.dp, end = 16.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text("Sign in on the Claude page, then paste the code it shows.", style = MaterialTheme.typography.bodyMedium)
+        if (!paste) {
+            Text("Sign in on the Claude page in your browser. Droid comes back by itself when you're done.",
+                Modifier.testTag("setup_signin_wait"), style = MaterialTheme.typography.bodyMedium)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                TextButton({ paste = true }, Modifier.testTag("setup_paste")) { Text("Paste a code instead", color = P.muted) }
+                TextButton(setup::cancelSignIn) { Text("Cancel", color = P.muted) }
+            }
+            return@Column
+        }
+        Text("Open this page, sign in, then paste the code it shows.", style = MaterialTheme.typography.bodyMedium)
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(url, Modifier.weight(1f).testTag("setup_url"), style = MaterialTheme.typography.bodySmall, color = P.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
             TextButton({ copy(url) }) { Text("Copy", color = P.text) }

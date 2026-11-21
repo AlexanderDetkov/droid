@@ -70,6 +70,8 @@ data class SetupState(
     val secureSettings: Boolean = true,
     /** Without root: what pairing is doing now (see PairingService), or null when it isn't under way. */
     val pairing: String? = null,
+    /** Without root, while pairing: how far the owner got in Settings (see [PairingService.STEPS]). */
+    val pairStep: Int = 0,
     /** The Linux environment with Claude Code. */
     val installed: Boolean = false,
     /** Some of the Linux environment is there, maybe half installed: something for Remove to delete. */
@@ -156,17 +158,29 @@ class Setup(private val app: DroidApp) {
      * asks for its code in a notification, then starts Droid's helper. See [PairingService].
      */
     fun pair() {
-        state.update { it.copy(error = null, pairing = "Waiting for the pairing code") }
+        state.update { it.copy(error = null, pairing = "Waiting for the pairing code", pairStep = 0) }
         PairingService.start(app)
     }
 
     fun cancelPairing() = PairingService.cancel(app)
 
-    /** Called by [PairingService] with what it's doing, or null when it's over (then [error], if it failed). */
-    fun pairingStatus(status: String?, error: String? = null) {
-        state.update { it.copy(pairing = status, error = error ?: it.error) }
+    /** Called by [PairingService] with what it's doing and how far the owner got, or null when it's over (then [error], if it failed). */
+    fun pairingStatus(status: String?, step: Int? = null, error: String? = null) {
+        state.update { it.copy(pairing = status, pairStep = step ?: it.pairStep, error = error ?: it.error) }
         if (status == null) refresh()
     }
+
+    /**
+     * Brings Droid back in front of Settings or the browser once what the owner went there for has worked (paired,
+     * signed in). Through root or the helper: they may start an activity from the background, the app may not.
+     */
+    fun comeBack() {
+        if (app.resumed) return
+        run("am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -n ${app.packageName}/.MainActivity")
+    }
+
+    /** First run: the install starts by itself once Droid is connected, but not after Remove (the step before uninstalling). */
+    val autoInstall get() = !prefs.getBoolean("removed", false)
 
     /** Starts Droid's helper now (phones without root), e.g. after the phone restarted while away from Wi-Fi. */
     fun startHelper() = step("Starting Droid's helper") { check(ask = true) }
@@ -209,12 +223,18 @@ class Setup(private val app: DroidApp) {
         } finally {
             tarball?.delete()
         }
+        prefs.edit { remove("removed") }
         check()
     }
 
-    /** Starts `claude auth login`; its sign-in page goes to [SetupState.signInUrl], then [submitCode] finishes it. */
+    /**
+     * Starts `claude auth login`. It opens its sign-in page in the phone's browser through droid-browser (its
+     * `$BROWSER`), and signing in there comes back to it on localhost by itself. It also prints a page for signing in
+     * elsewhere, which goes to [SetupState.signInUrl]; that one shows a code, which [submitCode] passes on.
+     */
     fun signIn(console: Boolean) = step("Starting sign-in") {
-        val p = host.exec("${host.base}/enter.sh claude auth login${if (console) " --console" else ""}")
+        putBin(unpackAssets(), "droid-browser")  // an install from before it had one gets it now
+        val p = host.exec("${host.base}/enter.sh BROWSER=/usr/local/bin/droid-browser claude auth login${if (console) " --console" else ""}")
         signIn = p
         signInCancelled = false
         val out = StringBuilder()
@@ -234,6 +254,7 @@ class Setup(private val app: DroidApp) {
         }
         if (code != 0 && !signInCancelled) throw IOException(out.lines().lastOrNull { it.isNotBlank() }?.substringAfter("> ") ?: "Sign-in failed")
         check()
+        if (code == 0 && state.value.signedIn) comeBack()  // from the browser, where signing in finished
     }
 
     /**
@@ -287,12 +308,17 @@ class Setup(private val app: DroidApp) {
      * installer goes in first, as this app has it, by rename as install.sh puts it.
      */
     fun installEngine(e: Engine) = step("Installing ${e.label}") {
-        val src = unpackAssets()
-        val bin = "${host.rootfs}/usr/local/bin/droid-install-engine"
-        val r = run("cp ${src.path}/bin/droid-install-engine $bin.new && chmod 755 $bin.new && mv $bin.new $bin && " +
-            "${host.base}/enter.sh droid-install-engine ${e.id}")
+        putBin(unpackAssets(), "droid-install-engine")
+        val r = run("${host.base}/enter.sh droid-install-engine ${e.id}")
         if (r.code != 0) throw IOException("Could not install ${e.label} (exit ${r.code}).\n\n${r.out.takeLast(1500)}")
         check()
+    }
+
+    /** Puts this app's bin/[name] from [src] into the Linux, by rename as install.sh does, for a step that needs it before the next Update. */
+    private fun putBin(src: File, name: String) {
+        val bin = "${host.rootfs}/usr/local/bin/$name"
+        val r = run("cp ${src.path}/bin/$name $bin.new && chmod 755 $bin.new && mv $bin.new $bin")
+        if (r.code != 0) throw IOException("Could not update $name (exit ${r.code}).\n\n${r.out.takeLast(1500)}")
     }
 
     fun submitCode(code: String) {
@@ -303,13 +329,34 @@ class Setup(private val app: DroidApp) {
 
     fun cancelSignIn() {
         signInCancelled = true
-        signIn?.destroy()
-        // Destroying the local `su` client (or the helper's shell) leaves the login running: Codex keeps polling for its code.
-        scope.launch { run("pkill -f '[c]odex login --device-auth'") }
+        val p = signIn
+        // Off the main thread: without root, ending it is a message to Droid's helper.
+        scope.launch {
+            p?.destroy()
+            // Destroying the local `su` client (or the helper's shell) leaves the login running: Codex keeps polling for
+            // its code, and Claude Code keeps waiting for the browser on localhost.
+            run("pkill -f '[c]odex login --device-auth'; pkill -f '[c]laude auth login'")
+        }
+    }
+
+    /**
+     * First run's Start: makes Droid the assistant and downloads voice, each if the owner left it on, in the background
+     * while Droid opens. A failure shows in Settings → Setup, where either can be done again.
+     */
+    fun finish(assistant: Boolean, voice: Boolean) {
+        if (!assistant && !voice) return
+        step(if (assistant) "Setting the assistant" else "Downloading voice") {
+            val failed = if (assistant) runCatching { setAssistant() }.exceptionOrNull() else null
+            if (voice) { busy("Downloading voice"); fetchVoice() }
+            failed?.let { throw it }
+            check()
+        }
     }
 
     /** On-device speech: Silero VAD, Parakeet TDT 0.6B v2 (speech-to-text), Pocket TTS (voice). About 820 MB. */
-    fun downloadVoice() = step("Downloading voice") {
+    fun downloadVoice() = step("Downloading voice") { fetchVoice(); check() }
+
+    private fun fetchVoice() {
         val dir = app.speech.dir
         val tmp = File(dir.path + ".new").apply { deleteRecursively(); mkdirs() }
         try {
@@ -324,7 +371,6 @@ class Setup(private val app: DroidApp) {
         } finally {
             tmp.deleteRecursively()  // what a failed download left, up to 820 MB (once moved into place, nothing)
         }
-        check()
     }
 
     /** The voice match model (NVIDIA TitaNet small), checked against its SHA-256. */
@@ -348,7 +394,9 @@ class Setup(private val app: DroidApp) {
      * Makes Droid the digital assistant (long-press power), as root or the shell user: Android has no prompt for this role. Also
      * turns on Android's "Use screenshot" for it, so the panel gets the app it was opened over.
      */
-    fun makeAssistant() = step("Setting the assistant") {
+    fun makeAssistant() = step("Setting the assistant") { setAssistant(); check() }
+
+    private suspend fun setAssistant() {
         val role = RoleManager.ROLE_ASSISTANT
         val pkg = app.packageName
         // Holding the role from before Droid had its assistant service: adding it again changes nothing, so drop it first.
@@ -356,7 +404,6 @@ class Setup(private val app: DroidApp) {
         val r = run("${reset}cmd role add-role-holder $role $pkg && ${screenshotsCmd(true)}")
         if (r.code != 0) throw IOException(r.out.ifBlank { "Could not set the assistant" })
         for (i in 1..20) if (serviceActive()) break else delay(100)  // Android switches to it in the background
-        check()
     }
 
     /** Whether the assistant gets a screenshot of the app it opens over. */
@@ -397,7 +444,7 @@ class Setup(private val app: DroidApp) {
             run("chmod -R u+w ${h.base} 2>/dev/null; rm -rf ${h.base}/*")
         }
         when (r.code) {
-            0 -> {}
+            0 -> prefs.edit { putBoolean("removed", true) }  // no install by itself on the setup screen that follows
             MOUNTED -> throw IOException("Something is mounted under ${h.base}; restart the phone and try again")
             else -> throw IOException("Could not remove Droid's Linux (exit ${r.code}).\n\n${r.out.takeLast(1500)}")
         }
