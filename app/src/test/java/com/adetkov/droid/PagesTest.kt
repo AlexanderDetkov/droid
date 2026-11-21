@@ -173,6 +173,12 @@ class PagesTest {
         until("waits on the page again") { pageWaits() }
         droid(""""op":"notify","id":"r","title":"Sure?","wait":true""")
         until("waits on another") { "$id/r" in runner.noteWaits }
+        // an update under its id (progress) leaves the wait; --cancel ends it
+        droid(""""op":"notify","id":"r","title":"Sure? 50%"""")
+        droid(""""op":"notify","id":"s","title":"Other","wait":true""")
+        until("an update leaves the wait") { "$id/s" in runner.noteWaits && "$id/r" in runner.noteWaits }
+        droid(""""op":"notify","id":"s","cancel":true""")
+        until("cancelled") { "$id/s" !in runner.noteWaits }
         proc.lines.put(LinesProc.END)  // the run ends: nothing waits any more
         until("the run ended") { runner.running.value.isEmpty() && !pageWaits() && runner.noteWaits.isEmpty() }
     }
@@ -180,12 +186,49 @@ class PagesTest {
     @Test fun aPageAnswersOnce() {
         val shown = Conv("c", "t", createdAt = 0).add(Kind.USER, "plan it", 0)
             .add(Kind.PAGE, "<p>Pick</p>", 0, data = PageInfo("p", wait = true).json())
-        assertTrue(shown.pageLive("p"))
-        // answered while the agent waited on it
-        val answered = shown.copy(messages = shown.messages.map { if (it.kind == Kind.PAGE) it.copy(data = PageInfo("p", wait = true, reply = "Fri").json()) else it })
-        assertFalse(answered.pageLive("p"))
-        // or the owner wrote again: the page is from an earlier turn now
-        assertFalse(shown.add(Kind.USER, "actually Monday", 0).pageLive("p"))
-        assertFalse(shown.pageLive("other"))
+        fun Conv.live(working: Boolean = true, id: String = "p") = messages.pageLive(pageIndex(id), working) { false }
+        assertTrue(shown.live())
+        assertTrue(shown.live(working = false))  // in the latest turn, it may still send (a message, then)
+        // answered: the agent's command got it, or it went as a message
+        assertFalse(shown.answered("p", "Fri").live())
+        assertFalse(shown.answered("p", "").live())
+        assertEquals("Fri", PageInfo.of(shown.answered("p", "Fri").page("p")!!).reply)
+        // a later turn: it may while the agent's command still waits on it, and only then
+        val later = shown.add(Kind.USER, "actually Monday", 0)
+        assertTrue(later.live())
+        assertFalse(later.live(working = false))
+        assertFalse(later.waitingOn("p", false).live())
+        assertFalse(later.add(Kind.STATUS, "Interrupted", 0).live())
+        assertFalse(shown.live(id = "other"))
+        // an answer with HTML: while it's in the latest turn
+        val answer = shown.add(Kind.AGENT, "<b>Done</b>", 0)
+        assertTrue(answer.messages.pageLive(answer.messages.lastIndex, true) { false })
+        assertFalse(answer.add(Kind.USER, "thanks", 0).messages.pageLive(answer.messages.lastIndex, true) { false })
+    }
+
+    @Test fun aNotificationsPageMayActWhileTheCommandWaitsOnTheNotification() {
+        val c = Conv("c", "t", createdAt = 0).add(Kind.USER, "remind me", 0)
+            .add(Kind.PAGE, "<p>Ok?</p>", 0, data = PageInfo("n-q-1", where = "full", note = "q").json())
+            .add(Kind.WAKE, "check", 0)
+        val i = c.pageIndex("n-q-1")
+        assertTrue(c.messages.awaits(i, true) { it == "q" })
+        assertTrue(c.messages.pageLive(i, true) { it == "q" })
+        assertFalse(c.messages.pageLive(i, true) { false })
+        assertFalse(c.messages.pageLive(i, false) { it == "q" })
+    }
+
+    @Test fun aPageShownAgainInALaterTurnMovesThere() {
+        val first = Conv("c", "t", createdAt = 0).add(Kind.USER, "plan it", 0)
+            .withPage(PageInfo("p", wait = true), "<p>1</p>", 1).add(Kind.AGENT, "Picked.", 2)
+        // in the turn that showed it: in place
+        val updated = first.withPage(PageInfo("p", wait = true), "<p>2</p>", 3)
+        assertEquals(listOf(Kind.USER, Kind.PAGE, Kind.AGENT), updated.messages.map { it.kind })
+        assertEquals("<p>2</p>", updated.page("p")!!.text)
+        // answered, then shown again in a later turn: there, at the end, unanswered and live
+        val again = first.answered("p", "Fri").add(Kind.USER, "and Monday?", 4).withPage(PageInfo("p", wait = true), "<p>3</p>", 5)
+        assertEquals(listOf(Kind.USER, Kind.AGENT, Kind.USER, Kind.PAGE), again.messages.map { it.kind })
+        assertEquals(5L, again.page("p")!!.ts)
+        assertNull(PageInfo.of(again.page("p")!!).reply)
+        assertTrue(again.messages.pageLive(again.pageIndex("p"), false) { false })
     }
 }

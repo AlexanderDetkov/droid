@@ -24,26 +24,38 @@ internal const val EXTRA_PAGE = "page"
 internal fun pageNote(pageId: String) = "page-$pageId"
 
 /**
- * Whether the agent's command waits on page [info] of chat [conv] now (`droid show --wait`, or the notification whose
- * button opened it), so what the owner sends from it is the answer.
+ * Whether the agent's command waits on the page at [index] of chat [c] now (`droid show --wait`, or the notification
+ * whose button opened it), so what the owner sends from it is the answer (see [awaits]).
  */
-fun awaited(app: DroidApp, conv: String, info: PageInfo): Boolean = app.runner.working(conv) &&
-    if (info.note.isNotEmpty()) "$conv/${info.note}" in app.runner.noteWaits else info.wait && info.reply == null
+fun awaited(app: DroidApp, c: Conv, index: Int): Boolean =
+    c.messages.awaits(index, app.runner.working(c.id)) { "${c.id}/$it" in app.runner.noteWaits }
+
+/** Whether the page at [index] of chat [c] may act now: [pageLive], the one test every surface uses. */
+fun pageLive(app: DroidApp, c: Conv, index: Int): Boolean =
+    c.messages.pageLive(index, app.runner.working(c.id)) { "${c.id}/$it" in app.runner.noteWaits }
+
+/** The same as the store has chat [conv] this moment: for page [pageId], or (null) the answer at [index]. */
+fun pageLiveNow(app: DroidApp, conv: String, pageId: String?, index: Int = -1): Boolean {
+    val c = app.store.get(conv) ?: return false
+    return pageLive(app, c, if (pageId != null) c.pageIndex(pageId) else index)
+}
 
 /**
- * What droid.send does, and what the owner types under a page: the answer to the page the agent's command still
- * waits on, or else a message to the chat (the run that showed the page may have moved on, or ended).
+ * What droid.send does, and what the owner types under a page: from a page that may still act ([pageLive]), the answer
+ * to it if the agent's command waits on it, or else a message to the chat; either way the page has answered, which its
+ * PAGE message keeps (the store is where every surface learns it). From one that may not, a message.
  */
 fun pageSend(ctx: Context, conv: String, pageId: String?, text: String, data: String?) {
     val app = ctx.applicationContext as DroidApp
-    val page = pageId?.let { app.store.get(conv)?.page(it) }?.let(PageInfo::of)
+    val c = app.store.get(conv)
+    val i = if (c == null || pageId == null) -1 else c.pageIndex(pageId)
     if (pageId != null) Notify.cancel(ctx, conv, pageNote(pageId))
-    val answered = page != null && when {
-        page.note.isNotEmpty() -> Notify.answer(ctx, conv, page.note, pageReply(text, data).put("button", "page"))
-        awaited(app, conv, page) -> { app.runner.answerPage(conv, page.id, text, data); true }
-        else -> false
-    }
+    if (c == null || i < 0 || !pageLive(app, c, i)) { startTask(ctx, conv, text, data = data); return }
+    val page = PageInfo.of(c.messages[i])
+    val answered = awaited(app, c, i) && if (page.note.isNotEmpty()) Notify.answer(ctx, conv, page.note, pageReply(text, data).put("button", "page"))
+        else { app.runner.answerPage(conv, page.id, text, data); true }
     if (!answered) startTask(ctx, conv, text, data = data)
+    app.store.update(conv) { it.answered(page.id, if (answered) text else "") }
 }
 
 /**
@@ -61,17 +73,22 @@ fun ownerSend(ctx: Context, conv: String?, text: String, files: List<Attachment>
 
 /**
  * A page's calls in chat [conv]: [pageId] for a page the agent showed (null: one in an answer); [isLive]: whether it may
- * still act (see [PageActions.live]; by default, from the chat, for a page the agent showed); [onScreen]: hand over the
- * hidden screen; [onClose]: for a page full screen or floating.
+ * still act, as the store has it this moment (see [PageActions.live]; by default [pageLiveNow], for a page the agent
+ * showed); [onScreen]: hand over the hidden screen; [onClose]: for a page full screen or floating; [onSent]: it sent.
  */
 class ChatPageActions(
     private val ctx: Context, private val conv: String, private val pageId: String?,
-    private val isLive: () -> Boolean = { pageId == null || (ctx.applicationContext as DroidApp).store.get(conv)?.pageLive(pageId) == true },
-    private val onScreen: () -> Unit = {}, private val onClose: () -> Unit = {},
+    private val isLive: () -> Boolean = { pageId == null || pageLiveNow(ctx.applicationContext as DroidApp, conv, pageId) },
+    private val onScreen: () -> Unit = {}, private val onClose: () -> Unit = {}, private val onSent: () -> Unit = {},
 ) : PageActions {
     private val app = ctx.applicationContext as DroidApp
     private val main = Handler(Looper.getMainLooper())
-    override fun send(text: String, data: String?) = pageSend(ctx, conv, pageId, text, data)
+    override fun send(text: String, data: String?) {
+        // answered meanwhile (a send that waited for the unlock, say): a page answers once
+        if (!live) return
+        pageSend(ctx, conv, pageId, text, data)
+        onSent()
+    }
     override fun run(command: String) = app.backend.run(command)
     override val live get() = isLive()
     override fun dash(feel: String, words: String) { if (live) app.runner.dash(conv, feel, words) }

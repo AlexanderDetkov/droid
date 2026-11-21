@@ -193,6 +193,10 @@ class ItemsTest {
         assertEquals(null, waitingPage(listOf(ask, page), running = false))
         val answered = page.copy(data = PageInfo("p1", wait = true, reply = "Dec 20").json())
         assertEquals(null, waitingPage(listOf(ask, answered), running = true))
+        // a message, a wake-up or an attachment meanwhile starts a turn, but the agent's command still waits on it
+        assertEquals(page, waitingPage(listOf(ask, page, Msg(Kind.USER, "and a hotel?", 3)), running = true))
+        // unless its run ended (the app died mid-run, say), and the wait was left behind
+        assertEquals(null, waitingPage(listOf(ask, page, Msg(Kind.STATUS, "Interrupted", 3), Msg(Kind.USER, "again", 4)), running = true))
     }
 
     @Test fun aWakeUpStartsATurnAndDashMessagesDontShow() {

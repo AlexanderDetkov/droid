@@ -340,7 +340,8 @@ class Runner(
             "notify" -> {
                 val note = o.optString("id")
                 if (note == Notify.CHAT) ownNote += id
-                if (o.optBoolean("wait")) noteWaits += "$id/$note" else noteWaits -= "$id/$note"
+                // A wait ends with its answer, --cancel or the command giving up: not with an update (progress) under its id.
+                if (o.optBoolean("wait")) noteWaits += "$id/$note" else if (o.optBoolean("cancel")) noteWaits -= "$id/$note"
                 notes.tryEmit(id to o)
             }
             // its command waits on a page or notification (n-ID) again (`droid wait`), or gave up waiting
@@ -372,12 +373,8 @@ class Runner(
         pages.tryEmit(id to pid)
     }
 
-    /** Page [info] with [html] in chat [id]: a new PAGE message, or the one with its id updated in place. */
-    fun putPage(id: String, info: PageInfo, html: String) = store.update(id) { c ->
-        val i = c.messages.indexOfLast { it.kind == Kind.PAGE && PageInfo.of(it).id == info.id }
-        if (i < 0) c.add(Kind.PAGE, html, data = info.json())
-        else c.copy(messages = c.messages.toMutableList().also { it[i] = it[i].copy(text = html, data = info.json()) })
-    }
+    /** Page [info] with [html] in chat [id]: a new PAGE message, or the one with its id shown again (see [withPage]). */
+    fun putPage(id: String, info: PageInfo, html: String) = store.update(id) { it.withPage(info, html) }
 
     /**
      * Marks the chat as working on a request, if it wasn't: a message came after its answer, or its agent went on after
