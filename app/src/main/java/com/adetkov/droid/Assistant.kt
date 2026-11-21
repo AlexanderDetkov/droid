@@ -356,7 +356,7 @@ private fun AssistActivity.Panel(invocation: Int, testWav: String?, modifier: Mo
 
     LaunchedEffect(invocation) { if (invocation > 0) talk(testWav) }
     LaunchedEffect(Unit) {
-        app.runner.results.collect { (id, text) -> if (id == convId && shown.targetState && !typed) speaker.speak("assist:$id", text) }
+        app.runner.results.collect { (id, text) -> if (id == convId && shown.targetState && !typed) speaker.speak("assist:$id", spokenAnswer(app.store.get(id), text)) }
     }
     BackHandler(shown.targetState) { close() }
 

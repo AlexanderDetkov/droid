@@ -33,6 +33,18 @@ class ItemsTest {
         assertEquals(null, lastMood(listOf(Msg(Kind.USER, "plan it", 1), calls, Msg(Kind.STATUS, "Stopped", 3))))
     }
 
+    @Test fun aPageAnswerIsReadAloudAsDashsWords() {
+        val ask = Msg(Kind.USER, "alarm for 7", 1)
+        val dash = Msg(Kind.DASH, """{"feel":"content","words":"Alarm set for 7"}""", 2)
+        val page = "<div class=\"big\">7:00 AM</div>"
+        fun c(vararg m: Msg) = Conv("c", "t", createdAt = 0, messages = m.toList())
+        assertEquals("Alarm set for 7", spokenAnswer(c(ask, dash, Msg(Kind.AGENT, page, 3)), page))
+        // words are read as they are, and a page without Dash's words is read as its text
+        assertEquals("Done, it's set.", spokenAnswer(c(ask, dash, Msg(Kind.AGENT, "Done, it's set.", 3)), "Done, it's set."))
+        assertEquals(page, spokenAnswer(c(ask, Msg(Kind.AGENT, page, 3)), page))
+        assertEquals(page, spokenAnswer(null, page))
+    }
+
     @Test fun aPageReportedBeforeItsStepStillComesAfterTheWorkRow() {
         // Codex and OpenCode report a step once it's done; its `droid show` page arrives first
         val msgs = listOf(Msg(Kind.USER, "7 or 8?", 1), Msg(Kind.PAGE, "<p>Pick</p>", 2), Msg(Kind.STEP, "Showing a page", 3),

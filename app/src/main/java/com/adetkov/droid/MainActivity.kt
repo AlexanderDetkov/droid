@@ -254,7 +254,7 @@ private fun Root(request: Request?, modifier: Modifier) {
     val notifPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
     var askedNotif by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(Unit) {
-        app.runner.results.collect { (id, text) -> if (speakAfter.remove(id)) speaker.speak("auto:$id", text) }
+        app.runner.results.collect { (id, text) -> if (speakAfter.remove(id)) speaker.speak("auto:$id", spokenAnswer(app.store.get(id), text)) }
     }
     // no screen (any more) to watch: none, or one closing (its run gone, its port with it)
     LaunchedEffect(info?.port == null, watching) { if (info?.port == null) watching = false }

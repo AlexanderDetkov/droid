@@ -143,6 +143,10 @@ fun turnLabel(outcome: Outcome?, mood: Mood?): String? = when {
     else -> mood.words.ifEmpty { null }
 }
 
+/** What's read aloud of an answer: an app (a page) is to look at, so Dash's few words; an answer in words, itself. */
+fun spokenAnswer(conv: Conv?, answer: String): String =
+    if (hasHtml(answer)) conv?.let { lastMood(it.messages) }?.words?.takeIf { it.isNotBlank() } ?: answer else answer
+
 /** Current status of the last turn: its latest step or narration note, or what the agent had Dash say. */
 fun latestStatus(messages: List<Msg>): String =
     lastTurn(messages).lastOrNull { it.kind == Kind.STEP || it.kind == Kind.NOTE || (it.kind == Kind.DASH && moodOf(it.text)?.words?.isNotEmpty() == true) }
