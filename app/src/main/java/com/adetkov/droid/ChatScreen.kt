@@ -369,6 +369,32 @@ private fun PageMessage(m: Msg, conv: String, live: Boolean, onTakeOver: () -> U
     }
 }
 
+/** The newest page the agent put on the home screen (`droid show --home`): its chat and its PAGE message. */
+internal fun homePageOf(convs: List<Conv>): Pair<String, Msg>? = convs.flatMap { c ->
+    c.messages.filter { it.kind == Kind.PAGE && PageInfo.of(it).where == "home" }.map { c.id to it }
+}.maxByOrNull { it.second.ts }
+
+/**
+ * The agent's page on the home screen: a place to start from, not a question asked once, so it stays live; what it
+ * sends starts a new chat (the agent is told where it came from), which [onStarted] opens.
+ */
+@Composable
+fun HomePage(conv: String, m: Msg, onStarted: (String) -> Unit) {
+    val ctx = LocalContext.current
+    val info = remember(m.data) { PageInfo.of(m) }
+    val scope = rememberCoroutineScope()
+    val actions = remember(conv, info.id) {
+        object : PageActions by ChatPageActions(ctx, conv, info.id, isLive = { true }) {
+            override fun send(text: String, data: String?) {
+                scope.launch { startTask(ctx, null, text, data = data, via = "I tapped this on the page you put on my home screen")?.let(onStarted) }
+            }
+        }
+    }
+    val dark = P.dark
+    InlinePage("home:$conv:${info.id}:${m.text.hashCode()}", "page:$conv:${info.id}", dark,
+        { cx -> pageDocument(cx, m.text, dark, PageMode.INLINE) }, namedPaths(m.text), actions, live = true)
+}
+
 /** The agent waking itself up (`droid later`): a quiet line where a request would start the turn. */
 @Composable
 private fun WakeLine(text: String) {
@@ -663,7 +689,8 @@ private val SUGGESTIONS = listOf(
 )
 
 @Composable
-fun EmptyState(onSuggestion: (String) -> Unit, modifier: Modifier, listening: Boolean = false, level: () -> Float = { 0f }, typing: Boolean = false) {
+fun EmptyState(onSuggestion: (String) -> Unit, modifier: Modifier, listening: Boolean = false, level: () -> Float = { 0f }, typing: Boolean = false,
+               home: (@Composable () -> Unit)? = null) {
     // Dash says hi, then rests: he listens while you talk and reads along while you type.
     val rig = rememberDash()  // at rest, so the greeting below is a change: he hops
     var greeted by remember { mutableStateOf(false) }
@@ -671,6 +698,18 @@ fun EmptyState(onSuggestion: (String) -> Unit, modifier: Modifier, listening: Bo
     val feel = when { listening -> Feel.LISTENING; typing -> Feel.READING; !greeted -> Feel.HAPPY; else -> Feel.IDLE }
     LaunchedEffect(feel) { rig.feel(feel) }
     rig.level = level
+    // The agent's own page for the home screen (droid show --home): under Dash, in place of the starting points.
+    if (home != null) {
+        val scroll = rememberScrollState()
+        val drag = rememberListDrag(scroll)
+        Column(modifier.verticalScroll(scroll).padding(horizontal = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Dash(rig, Modifier.padding(top = 8.dp).size(width = 96.dp, height = 106.dp).testTag("dash"), label = null)
+            CompositionLocalProvider(LocalListDrag provides drag) {
+                Box(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 16.dp).testTag("home_page")) { home() }
+            }
+        }
+        return
+    }
     // The suggestions step aside when there's no room for them below Dash and his words (the keyboard up with a long
     // draft, say), rather than run into them: Dash stays, reading along.
     BoxWithConstraints(modifier) {

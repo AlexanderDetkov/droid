@@ -62,11 +62,11 @@ fun pageSend(ctx: Context, conv: String, pageId: String?, text: String, data: St
  * What the owner sends from a chat's message box: the answer to the page the chat waits on (where it says Your turn),
  * or else a message with [files] (a new chat if [conv] is null). Returns the chat's id (null: it was deleted).
  */
-fun ownerSend(ctx: Context, conv: String?, text: String, files: List<Attachment> = emptyList()): String? {
+fun ownerSend(ctx: Context, conv: String?, text: String, files: List<Attachment> = emptyList(), via: String? = null): String? {
     val app = ctx.applicationContext as DroidApp
     val c = conv?.let { app.store.get(it) }
     val page = c?.takeIf { files.isEmpty() }?.let { waitingPage(it.messages, app.runner.working(it.id)) }
-    if (c == null || page == null) return startTask(ctx, conv, text, files)
+    if (c == null || page == null) return startTask(ctx, conv, text, files, via = via)
     pageSend(ctx, c.id, PageInfo.of(page).id, text, null)
     return c.id
 }

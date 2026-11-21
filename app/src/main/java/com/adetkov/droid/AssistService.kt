@@ -50,6 +50,7 @@ private class AssistSession(ctx: Context) : VoiceInteractionSession(ctx) {
         // Over Droid itself (the panel already up, or the app open) the screenshot would only show Droid, and over the
         // home screen there's no app to see.
         wantShot = showFlags and SHOW_WITH_SCREENSHOT != 0 && !app.resumed && !overHome(args)
+        app.assistOver = if (app.resumed) null else appOver(args)
         startAssistantActivity(Intent(context, AssistActivity::class.java))
         val shot = early.also { early = null }
         val came = earlyAt.also { earlyAt = 0L }
@@ -67,6 +68,15 @@ private class AssistSession(ctx: Context) : VoiceInteractionSession(ctx) {
         val home = context.packageManager.resolveActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME), 0)
             ?.activityInfo?.packageName ?: return false
         return onScreen.all { it.packageName == home }
+    }
+
+    /** The name of the app on screen under the panel, from what Android lists as on screen (Android 15 and later); none over the home screen. */
+    @android.annotation.SuppressLint("InlinedApi")
+    private fun appOver(args: Bundle?): String? {
+        val home = context.packageManager.resolveActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME), 0)?.activityInfo?.packageName
+        val pkg = args?.getParcelableArrayList(KEY_FOREGROUND_ACTIVITIES, ComponentName::class.java)
+            ?.firstOrNull { it.packageName != home && it.packageName != context.packageName }?.packageName ?: return null
+        return try { context.packageManager.let { it.getApplicationLabel(it.getApplicationInfo(pkg, 0)).toString() } } catch (_: Exception) { pkg }
     }
 
     override fun onHide() {

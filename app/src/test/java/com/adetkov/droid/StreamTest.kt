@@ -152,4 +152,12 @@ class StreamTest {
             agentText("Fly home Sun, Dec 20", emptyList(), """{"day":"Sun, Dec 20"}"""))
         assertEquals("hi", agentText("hi", emptyList(), null))
     }
+
+    @Test fun howTheOwnerAskedComesLast() {
+        assertEquals("Set a timer\n\n[I said this aloud, and your answer is read aloud to me]",
+            agentText("Set a timer", emptyList(), via = "I said this aloud, and your answer is read aloud to me"))
+        assertEquals("ok\n\n[Sent from your page: {}]\n\n[I replied in your notification]",
+            agentText("ok", emptyList(), "{}", "I replied in your notification"))
+        assertEquals("[I typed this on the lock screen]", agentText("", emptyList(), via = "I typed this on the lock screen"))
+    }
 }

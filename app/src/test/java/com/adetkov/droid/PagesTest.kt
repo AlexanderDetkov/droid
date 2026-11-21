@@ -11,6 +11,14 @@ import java.io.File
 import java.util.concurrent.LinkedBlockingQueue
 
 class PagesTest {
+    @Test fun theHomeScreenShowsTheNewestHomePage() {
+        fun page(id: String, where: String, ts: Long) = Msg(Kind.PAGE, "<p>$id</p>", ts, data = PageInfo(id, where = where).json())
+        val a = Conv("a", "a", createdAt = 0, messages = listOf(page("h1", "home", 10), page("c1", "chat", 30)))
+        val b = Conv("b", "b", createdAt = 0, messages = listOf(page("h2", "home", 20), page("f1", "full", 40)))
+        assertEquals("b" to "h2", homePageOf(listOf(a, b))?.let { (c, m) -> c to PageInfo.of(m).id })
+        assertEquals(null, homePageOf(listOf(Conv("c", "c", createdAt = 0, messages = listOf(page("c2", "chat", 5))))))
+    }
+
     @Test fun anAnswerWithHtmlIsAPage() {
         assertTrue(hasHtml("Pick one:\n\n<label class=\"option\"><input type=\"radio\"> Dec 20</label>"))
         assertTrue(hasHtml("Done <b>now</b>."))

@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.Handler
 import android.os.Looper
+import android.speech.tts.TextToSpeech
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -33,6 +34,8 @@ class DroidApp : Application() {
     @Volatile var openChat: String? = null
     /** The assistant's screenshot of the app it opened over, on its way from [AssistSession] to the panel. */
     val assistShot = MutableStateFlow<Attachment?>(null)
+    /** The app the assistant was opened over (its name), or null: the home screen, Droid, or not known (Android 14). */
+    @Volatile var assistOver: String? = null
     fun isVisible(id: String) = resumed && openChat == id
 
     override fun onCreate() {
@@ -58,9 +61,22 @@ class DroidApp : Application() {
         bg.launch { runner.pages.collect { (conv, page) -> presentPage(this@DroidApp, conv, page) } }
         bg.launch { runner.wakes.collect { Later.schedule(this@DroidApp, it) } }
         bg.launch { runner.notes.collect { (conv, spec) -> Notify.prepare(this@DroidApp, conv, spec) } }
+        bg.launch { runner.says.collect { (_, text) -> main.post { say(text) } } }
         bg.launch { Later.restore(this@DroidApp) }  // this process may be the phone starting again
         bg.launch { Updates.check(this@DroidApp) }
     }
+
+    /**
+     * Says [text] out loud for the agent (`droid say`), with Droid's own voice when it's set up, else the phone's
+     * text-to-speech, so it can talk to anyone. Main thread.
+     */
+    private fun say(text: String) {
+        if (speech.installed) return voice.speak("say", text)
+        tts?.let { it.speak(text, TextToSpeech.QUEUE_ADD, null, "say"); return }
+        tts = TextToSpeech(this) { ok -> if (ok == TextToSpeech.SUCCESS) tts?.speak(text, TextToSpeech.QUEUE_ADD, null, "say") }
+    }
+    private val voice by lazy { Speaker(this, speech) }
+    private var tts: TextToSpeech? = null
 
     // The speech models take ~1 GB. Keep them for a while after the app leaves the screen, so asking again soon
     // doesn't wait ~3 s for them to load; then give the memory back.

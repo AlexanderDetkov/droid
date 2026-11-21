@@ -63,6 +63,19 @@ class Command(unittest.TestCase):
         return code, out.getvalue(), err.getvalue(), events
 
 
+
+class Say(Command):
+    def test_says_it_out_loud(self):
+        code, _, _, events = self.run_droid('say', "I'm", 'opening', 'your', 'calendar')
+        self.assertEqual(code, 0)
+        self.assertEqual(events, [{'type': 'droid', 'op': 'say', 'text': "I'm opening your calendar"}])
+
+    def test_needs_words(self):
+        code, _, err, events = self.run_droid('say')
+        self.assertNotEqual(code, 0)
+        self.assertIn('usage: droid say TEXT', err)
+        self.assertEqual(events, [])
+
 class Times(unittest.TestCase):
     def test_clock(self):
         self.assertEqual(d.clock('9am'), (9, 0))
@@ -209,6 +222,14 @@ class Show(Command):
     def test_an_empty_page_is_refused_here(self):
         code, _, err, events = self.run_droid('show', self.page(''))
         self.assertEqual((code, events), (1, []))
+
+    def test_on_the_home_screen(self):
+        code, _, _, events = self.run_droid('show', self.page(), '--home')
+        self.assertEqual(code, 0)
+        self.assertEqual([(e['op'], e['where']) for e in events], [('show', 'home')])
+        code, _, err, events = self.run_droid('show', self.page(), '--home', '--full')
+        self.assertEqual((code, events), (1, []))
+        self.assertIn('one place', err)
 
     def test_shown(self):
         code, out, _, events = self.run_droid('show', self.page(), '--float', '--id', 'p1')

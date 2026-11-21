@@ -4,9 +4,11 @@
   droid dash FEELING [WORDS]     How Dash looks, and what he says beside your answer. needs_you makes it the
                                  owner's turn. FEELING is a name (droid feelings) or a face as JSON: '{"smile": .6}'.
   droid feelings                 The feelings Dash has.
-  droid show FILE [--full | --float] [--wait] [--id ID] [--timeout SECS]
-                                 Shows an HTML page now: in the chat (default), full screen, or floating over the app
-                                 the owner is in. --wait prints what the page sends (droid.send) as JSON {"text",
+  droid say TEXT                 Says TEXT out loud on the phone now, even mid-task.
+  droid show FILE [--full | --float | --home] [--wait] [--id ID] [--timeout SECS]
+                                 Shows an HTML page now: in the chat (default), full screen, floating over the app
+                                 the owner is in, or on Droid's home screen under Dash (until you put another there;
+                                 what it sends starts a new chat). --wait prints what the page sends (droid.send) as JSON {"text",
                                  "data"}. --id ID: showing the same ID again updates that page in place.
   droid notify TITLE [TEXT] [options]
                                  Posts a notification, or updates the one with the same --id. Options:
@@ -192,16 +194,16 @@ def wait(rid, timeout):
 def show(args):
     pid = option(args, "--id")
     timeout = seconds(option(args, "--timeout", "540"))
-    places = [w for w in ("full", "float") if f"--{w}" in args]
+    places = [w for w in ("full", "float", "home") if f"--{w}" in args]
     if len(places) > 1:
-        die("a page shows full screen or floating, not both")
+        die("a page shows in one place: --full, --float or --home")
     where = places[0] if places else "chat"
     waits = "--wait" in args
     for flag in [f"--{where}", "--wait"]:
         if flag in args:
             args.remove(flag)
     if len(args) != 1:
-        die("usage: droid show FILE [--full | --float] [--wait] [--id ID] [--timeout SECS]")
+        die("usage: droid show FILE [--full | --float | --home] [--wait] [--id ID] [--timeout SECS]")
     path = os.path.realpath(args[0])
     if not os.path.isfile(path) or not os.access(path, os.R_OK):
         die(f"no file {args[0]}")
@@ -488,6 +490,11 @@ def main():
     elif cmd == "feelings":
         for k, v in ((k, v + (" (a notification's picture only)" if k in WORK else "")) for k, v in FEELINGS.items()):
             print(f"{k:11} {v}")
+    elif cmd == "say":
+        text = " ".join(rest).strip()
+        if not text:
+            die("usage: droid say TEXT")
+        emit(dict(op="say", text=text[:4000]))
     elif cmd == "show":
         show(rest)
     elif cmd == "notify":

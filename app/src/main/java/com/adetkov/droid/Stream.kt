@@ -150,7 +150,9 @@ private const val ANDROID_STORAGE = "/storage/emulated/0/"
  * then what a page sent with it ([data], droid.send's second argument).
  */
 @android.annotation.SuppressLint("SdCardPath")  // the path inside the chroot, not Android's
-fun agentText(text: String, files: List<Attachment>, data: String? = null): String {
+fun agentText(text: String, files: List<Attachment>, data: String? = null, via: String? = null): String {
+    // How the owner reached the agent (said aloud and read back, over another app, from the lock screen…), last
+    if (via != null) return agentText(text, files, data).let { if (it.isBlank()) "[$via]" else "$it\n\n[$via]" }
     if (data != null) return agentText(text, files) + "\n\n[Sent from your page: $data]"
     if (files.isEmpty()) return text
     val lines = files.joinToString("\n") {

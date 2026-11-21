@@ -220,7 +220,8 @@ object Notify {
         if (what.startsWith("page:")) return
         val reply = JSONObject().put("button", if (typed != null) "reply" else label).put("text", typed ?: what)
         val message = typed ?: what.takeUnless { ACTIONS.any { what.startsWith(it) } }
-        if (!answer(ctx, conv, id, reply) && !message.isNullOrBlank()) startTask(ctx, conv, message)
+        if (!answer(ctx, conv, id, reply) && !message.isNullOrBlank())
+            startTask(ctx, conv, message, via = if (typed != null) "I replied in your notification" else "I tapped a button in your notification")
     }
 
     /** The postings acted on (chat/id@posted), so each answers once. */

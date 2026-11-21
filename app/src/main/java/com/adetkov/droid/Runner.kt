@@ -108,6 +108,8 @@ class Runner(
     val wakes = requests<Wake>()
     /** Notifications the agent posts, updates or takes away (`droid notify`): (chat, its spec), for the app. */
     val notes = requests<Pair<String, JSONObject>>()
+    /** What the agent says out loud (`droid say`): (chat, text), for the app to speak. */
+    val says = requests<Pair<String, String>>()
     /** Chats whose agent took over (or silenced) their answer's notification this turn (`droid notify --id chat`). */
     val ownNote: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
     /** Notifications the agent's command waits on ("chat/id": `droid notify --wait`), until it's answered (see Notify). */
@@ -207,14 +209,16 @@ class Runner(
 
     /**
      * Sends [text] and [files] to a chat (a new chat if [convId] is null), starting or feeding its process; [data]:
-     * what a page sent with it (droid.send); [wake]: the agent's own wake-up (`droid later`), not the owner's message.
+     * what a page sent with it (droid.send); [wake]: the agent's own wake-up (`droid later`), not the owner's message;
+     * [via]: how the owner sent it, told to the agent with it (see [agentText]).
      * Returns the chat id, or null for a chat that was deleted (its page or notification can still send).
      */
-    fun send(convId: String?, text: String, files: List<Attachment> = emptyList(), data: String? = null, wake: Boolean = false): String? {
+    fun send(convId: String?, text: String, files: List<Attachment> = emptyList(), data: String? = null, wake: Boolean = false,
+             via: String? = null): String? {
         val id = if (convId == null) store.create(text.ifBlank { files.firstOrNull()?.name.orEmpty() }, engine()).id
             else store.get(convId)?.id ?: return null
         ownNote -= id  // a new turn: its answer gets its own notification again, unless the agent says otherwise
-        val line = if (wake) "[You woke yourself up, as you asked with droid later: $text]" else agentText(text, files, data)
+        val line = if (wake) "[You woke yourself up, as you asked with droid later: $text]" else agentText(text, files, data, via)
         var start: Run? = null
         val fresh = synchronized(lock) {
             // Under the lock, so a run of this chat that just ended can't mark it stopped after this.
@@ -351,6 +355,7 @@ class Runner(
             // On the run's own thread, so pages shown under one id land in the order shown (and never write one file at once).
             "show" -> showPage(id, o)
             "later" -> o.optLong("at").takeIf { it > 0 }?.let { wakes.tryEmit(Wake(id, it, o.optString("text"))) }
+            "say" -> o.optString("text").takeIf { it.isNotBlank() }?.let { says.tryEmit(id to it) }
             "notify" -> {
                 val note = o.optString("id")
                 if (note == Notify.CHAT) ownNote += id

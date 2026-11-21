@@ -243,12 +243,16 @@ private fun AssistActivity.Panel(invocation: Int, testWav: String?, modifier: Mo
         camOn = false
         sentShot = screen
         speaker.prepare()
-        if (photo == null) { convId = ownerSend(app, convId, text, listOfNotNull(screen)); return }
+        // What the agent hears of how it was asked: typed or said (and read back), over which app, or on the lock screen
+        val via = (if (typed) "I typed this" else "I said this") +
+            (if (locked) " on the lock screen" else app.assistOver?.let { " in the assistant, over $it" } ?: " in the assistant") +
+            (if (typed) "" else ", and your answer is read aloud to me")
+        if (photo == null) { convId = ownerSend(app, convId, text, listOfNotNull(screen), via); return }
         // Saved off the main thread; the request goes once it is, even if the panel is closed by then.
         val conv = convId
         thread(name = "photo") {
             val a = savePhoto(app, photo)
-            runOnUiThread { sentShot = a; convId = ownerSend(app, conv, text, listOfNotNull(a)) }
+            runOnUiThread { sentShot = a; convId = ownerSend(app, conv, text, listOfNotNull(a), via) }
         }
     }
     fun unlockAndSend(why: String = "Unlock to send") = unlocked({ pending?.let(::send) }, { notice = why })

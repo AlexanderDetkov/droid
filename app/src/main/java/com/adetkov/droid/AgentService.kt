@@ -25,9 +25,10 @@ import kotlinx.coroutines.launch
  * Sends a message to a chat (new chat if [convId] is null) and keeps the process alive while it runs. Returns the chat
  * id, or null if the chat was deleted (see [Runner.send]).
  */
-fun startTask(ctx: Context, convId: String?, text: String, files: List<Attachment> = emptyList(), data: String? = null, wake: Boolean = false): String? {
+fun startTask(ctx: Context, convId: String?, text: String, files: List<Attachment> = emptyList(), data: String? = null, wake: Boolean = false,
+              via: String? = null): String? {
     convId?.let { clearDone(ctx, it) }  // its last answer is past now
-    val id = (ctx.applicationContext as DroidApp).runner.send(convId, text, files, data, wake) ?: return null
+    val id = (ctx.applicationContext as DroidApp).runner.send(convId, text, files, data, wake, via) ?: return null
     serve(ctx, id)
     return id
 }

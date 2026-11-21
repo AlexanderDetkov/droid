@@ -13,8 +13,8 @@ import org.json.JSONTokener
 
 /**
  * A page the agent showed with `droid show` (a PAGE message, its HTML in the text): [id] names it (and the answer file
- * a waiting command reads), [wait]: the agent's command waits for the page's answer, [where]: chat, full, float or
- * notify, [title]: its <title>, [reply]: what the owner answered (null until then; empty when it went to the chat as a
+ * a waiting command reads), [wait]: the agent's command waits for the page's answer, [where]: chat, full, float, home
+ * (the home screen, under Dash) or notify, [title]: its <title>, [reply]: what the owner answered (null until then; empty when it went to the chat as a
  * message). [note]: for a page a notification's button opens (`page:`), that notification's id: while the agent waits
  * on the notification, the page answers it.
  */

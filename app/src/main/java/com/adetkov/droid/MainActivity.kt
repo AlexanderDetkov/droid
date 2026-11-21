@@ -142,6 +142,7 @@ private fun Root(request: Request?, modifier: Modifier) {
     val app = ctx.applicationContext as DroidApp
     val scope = rememberCoroutineScope()
     val convs by app.store.convs.collectAsState()
+    val homePage = remember(convs) { homePageOf(convs) }  // the agent's page for the home screen, if it made one
     val runningMap by app.runner.running.collectAsState()
     val screens by app.runner.screens.collectAsState()
     val doingMap by app.runner.doing.collectAsState()
@@ -183,11 +184,11 @@ private fun Root(request: Request?, modifier: Modifier) {
     SideEffect { app.openChat = if (watching) null else convId }
 
     fun toast(msg: String) = Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show()
-    fun send(text: String): String? {
+    fun send(text: String, via: String? = null): String? {
         if (text.isBlank() && files.isEmpty()) return null
         speaker.stop()
         haptic()
-        return ownerSend(ctx, convId, text.trim(), files).also {
+        return ownerSend(ctx, convId, text.trim(), files, via).also {
             if (it == null) files.forEach(::discard)  // the chat was deleted: nothing has them
             convId = it; draft = ""; files = emptyList()
         }
@@ -218,8 +219,8 @@ private fun Root(request: Request?, modifier: Modifier) {
         }
     }
     /** Sends [text], with the camera's picture if it's open, and then calls [after] with the chat. */
-    fun sendNow(text: String, after: (String) -> Unit = {}) {
-        if (shooting || saving == false) takePhoto(send = true) { send(text)?.let(after) } else send(text)?.let(after)
+    fun sendNow(text: String, via: String? = null, after: (String) -> Unit = {}) {
+        if (shooting || saving == false) takePhoto(send = true) { send(text, via)?.let(after) } else send(text, via)?.let(after)
     }
 
     // Voice: dictation fills the box; voice mode sends when the user stops talking and reads the answer aloud.
@@ -236,7 +237,12 @@ private fun Root(request: Request?, modifier: Modifier) {
             onPartial = { draft = withTyped(it) },
             onFinal = { text, _ ->
                 if (mode == Listen.DICTATE) draft = withTyped(text)
-                else sendNow(withTyped(text)) { id -> if (app.prefs.speakReplies.value) { speakAfter += id; speaker.prepare() } }
+                else {
+                    val aloud = app.prefs.speakReplies.value
+                    sendNow(withTyped(text), if (aloud) "I said this aloud, and your answer is read aloud to me" else "I said this aloud") { id ->
+                        if (aloud) { speakAfter += id; speaker.prepare() }
+                    }
+                }
             },
             onNothing = { draft = typed; dropWarm(); toast("Didn't catch that") },
             onError = { draft = typed; dropWarm(); toast(it) },
@@ -369,7 +375,8 @@ private fun Root(request: Request?, modifier: Modifier) {
                     Box(Modifier.weight(1f).fillMaxWidth()) {
                         if (conv == null || conv.messages.isEmpty()) {
                             // A suggestion fills the box rather than sending: these act on the phone, so the user confirms.
-                            EmptyState({ draft = it }, Modifier.fillMaxSize(), listening = voice.listening, level = { voice.level }, typing = draft.isNotBlank())
+                            EmptyState({ draft = it }, Modifier.fillMaxSize(), listening = voice.listening, level = { voice.level }, typing = draft.isNotBlank(),
+                                home = homePage?.let { (c, m) -> { HomePage(c, m) { id -> open(id) } } })
                         } else {
                             val taps = remember(conv.id) { app.runner.taps.filter { it.first == conv.id }.map { it.second to it.third } }
                             key(conv.id) { Transcript(conv, running, feed, speaker.speakingKey, speaker::toggle, held = watchable && !running, closesAt = info?.closesAt, taps = taps,
