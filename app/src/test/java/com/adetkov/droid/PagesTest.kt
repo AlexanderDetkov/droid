@@ -191,27 +191,29 @@ class PagesTest {
         until("the run ended") { runner.running.value.isEmpty() && !pageWaits() && runner.noteWaits.isEmpty() }
     }
 
-    @Test fun aPageAnswersOnce() {
+    @Test fun theChatsAppStaysLiveOtherPagesAnswerOnce() {
         val shown = Conv("c", "t", createdAt = 0).add(Kind.USER, "plan it", 0)
             .add(Kind.PAGE, "<p>Pick</p>", 0, data = PageInfo("p", wait = true).json())
         fun Conv.live(working: Boolean = true, id: String = "p") = messages.pageLive(pageIndex(id), working) { false }
+        fun Conv.answerLive(at: Int) = messages.pageLive(at, false) { false }
         assertTrue(shown.live())
-        assertTrue(shown.live(working = false))  // in the latest turn, it may still send (a message, then)
-        // answered: the agent's command got it, or it went as a message
+        assertTrue(shown.live(working = false))
+        // a question the agent's command waited on, answered: done
         assertFalse(shown.answered("p", "Fri").live())
-        assertFalse(shown.answered("p", "").live())
         assertEquals("Fri", PageInfo.of(shown.answered("p", "Fri").page("p")!!).reply)
-        // a later turn: it may while the agent's command still waits on it, and only then
+        // a later turn: the chat's app stays live, the owner's to use
         val later = shown.add(Kind.USER, "actually Monday", 0)
-        assertTrue(later.live())
-        assertFalse(later.live(working = false))
-        assertFalse(later.waitingOn("p", false).live())
-        assertFalse(later.add(Kind.STATUS, "Interrupted", 0).live())
+        assertTrue(later.live(working = false))
         assertFalse(shown.live(id = "other"))
-        // an answer with HTML: while it's in the latest turn
-        val answer = shown.add(Kind.AGENT, "<b>Done</b>", 0)
-        assertTrue(answer.messages.pageLive(answer.messages.lastIndex, true) { false })
-        assertFalse(answer.add(Kind.USER, "thanks", 0).messages.pageLive(answer.messages.lastIndex, true) { false })
+        // the agent makes a newer one: that's the app now, and the old one is done
+        val newer = later.add(Kind.AGENT, "<b>Done</b>", 0)
+        val at = newer.messages.lastIndex
+        assertEquals(at, newer.messages.currentApp())
+        assertFalse(newer.live(working = false))
+        assertTrue(newer.add(Kind.USER, "thanks", 0).answerLive(at))
+        // an answer in words doesn't replace it; a newer page does
+        assertTrue(newer.add(Kind.USER, "thanks", 0).add(Kind.AGENT, "You're welcome", 0).answerLive(at))
+        assertFalse(newer.add(Kind.USER, "thanks", 0).add(Kind.AGENT, "<b>Next</b>", 0).answerLive(at))
     }
 
     @Test fun aNotificationsPageMayActWhileTheCommandWaitsOnTheNotification() {

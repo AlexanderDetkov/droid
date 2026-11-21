@@ -56,14 +56,21 @@ fun List<Msg>.awaits(index: Int, working: Boolean, noteWaited: (String) -> Boole
 }
 
 /**
- * The one test of whether the page at [index] may still act (send, run, screen, Dash): a page answers once. A PAGE
- * the agent showed may while it isn't answered and it is in the chat's latest turn, or the agent's command still waits
- * on it ([awaits]); an answer with HTML, while it is in the latest turn.
+ * The chat's app: the newest page the agent made for the owner in it (an answer with HTML, or a page it showed in the
+ * chat), which is what the owner's screen shows of the chat and stays live across turns; -1 for none.
+ */
+fun List<Msg>.currentApp(): Int = indexOfLast { (it.kind == Kind.AGENT && hasHtml(it.text)) || (it.kind == Kind.PAGE && PageInfo.of(it).where == "chat") }
+
+/**
+ * The one test of whether the page at [index] may still act (send, run, screen, Dash). The chat's app ([currentApp])
+ * may, for as long as it is that: what it sends comes to the agent as a message and it goes on, live. Other pages answer
+ * once: a PAGE the agent showed may while it isn't answered and it is in the chat's latest turn, or the agent's command
+ * still waits on it ([awaits]); an answer with HTML, while it is in the latest turn.
  */
 fun List<Msg>.pageLive(index: Int, working: Boolean, noteWaited: (String) -> Boolean): Boolean {
     val m = getOrNull(index) ?: return false
     if (m.kind == Kind.PAGE && PageInfo.of(m).reply != null) return false
-    return index > indexOfLast { it.kind.opensTurn } || awaits(index, working, noteWaited)
+    return index > indexOfLast { it.kind.opensTurn } || index == currentApp() || awaits(index, working, noteWaited)
 }
 
 /**
@@ -227,6 +234,9 @@ fun htmlToText(text: String): String {
 fun pageTitle(html: String): String =
     Regex("<title[^>]*>(.*?)</title>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)).find(html)
         ?.groupValues?.get(1)?.let(::htmlToText)?.replace(Regex("\\s+"), " ")?.trim().orEmpty()
+
+/** A chat's name on the owner's screen: its app's, as the agent named it (its <title>), or the chat's own. */
+fun appName(c: Conv): String = c.messages.currentApp().takeIf { it >= 0 }?.let { pageTitle(c.messages[it].text) }?.ifBlank { null } ?: c.title
 
 /** The JSON the page script renders an answer from: its segments, each [isHtml, text]. */
 internal fun segmentsJson(text: String): String = JSONArray().apply {

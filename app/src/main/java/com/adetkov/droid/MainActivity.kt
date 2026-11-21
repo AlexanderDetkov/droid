@@ -327,7 +327,7 @@ private fun Root(request: Request?, modifier: Modifier) {
     chatMenu?.let { c ->
         ActionSheet({ chatMenu = null }, title = c.title) { close ->
             if (!wholeChat && c.id == convId && c.messages.isNotEmpty())
-                SheetRow(R.drawable.ic_notes, "See the whole chat", { close(); wholeChat = true }, tag = "sheet_whole")
+                SheetRow(R.drawable.ic_notes, "See what Dash did", { close(); wholeChat = true }, tag = "sheet_whole")
             SheetRow(R.drawable.ic_edit, "Rename", { close(); toRename = c }, tag = "sheet_rename")
             SheetRow(if (c.pinned) R.drawable.ic_unpin else R.drawable.ic_pin, if (c.pinned) "Unpin" else "Pin",
                 { app.store.setPinned(c.id, !c.pinned); close() }, tag = "sheet_pin")
@@ -399,7 +399,7 @@ private fun Root(request: Request?, modifier: Modifier) {
                     // the page's next step at the bottom takes the talk bar's place; a microphone up here instead
                     val pinned = footer && !running && !wholeChat
                     if (conv == null || conv.messages.isEmpty()) HomeBar(onMenu = { scope.launch { drawer.open() } }, onSettings = { go(Screen.SETTINGS) })
-                    else TurnBar(conv.title, onBack = { if (wholeChat) wholeChat = false else open(null) }, onMore = { chatMenu = conv },
+                    else TurnBar(appName(conv), onBack = { if (wholeChat) wholeChat = false else open(null) }, onMore = { chatMenu = conv },
                         onTalk = if (pinned) ({ if (app.speech.installed) talk(Listen.VOICE) else typing = true }) else null,
                         typeOnly = !app.speech.installed)
                     Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -410,7 +410,8 @@ private fun Root(request: Request?, modifier: Modifier) {
                             val preparing = app.prefs.homeChat?.let { it in runningMap } == true
                             EmptyState({ sendNow(it) }, Modifier.fillMaxSize(), listening = voice.listening, level = { voice.level }, typing = draft.isNotBlank(),
                                 home = homePage?.let { (c, m) -> { HomePage(c, m) { id -> open(id) } } }, greeting = greeting,
-                                made = homePage?.second?.ts?.let { HomeDay.madeWhen(it) }, preparing = preparing)
+                                made = homePage?.second?.ts?.let { HomeDay.madeWhen(it) }, preparing = preparing,
+                                apps = remember(convs, runningMap.keys) { appTiles(convs, runningMap.keys, app.prefs.homeChat) }, onOpen = ::open)
                         } else {
                             val taps = remember(conv.id) { app.runner.taps.filter { it.first == conv.id }.map { it.second to it.third } }
                             if (wholeChat) key(conv.id) { Transcript(conv, running, feed, speaker.speakingKey, speaker::toggle, held = watchable && !running, closesAt = info?.closesAt, taps = taps,

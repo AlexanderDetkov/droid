@@ -132,6 +132,33 @@ object HomeDay {
     }
 }
 
+/**
+ * A chat on the home screen, as one of Dash's apps: its [name], his [words] about it, how he looks ([feel]), whether
+ * it's the owner's turn ([calls]) or he's at it ([working]), and when it last changed ([at]).
+ */
+data class AppTile(val conv: String, val name: String, val words: String, val feel: Feel, val calls: Boolean, val working: Boolean, val at: Long)
+
+/**
+ * The home screen's apps: the chats of the last week (not [hidden], Dash's own home page), the owner's turn first, then
+ * what he's at, then the latest; at most [max].
+ */
+fun appTiles(convs: List<Conv>, running: Set<String>, hidden: String?, now: Long = System.currentTimeMillis(), max: Int = 6): List<AppTile> =
+    convs.filter { it.id != hidden && it.messages.isNotEmpty() && now - it.updatedAt < 7 * 86_400_000L }.map { c ->
+        val working = c.id in running
+        val outcome = lastOutcome(c.messages, working)
+        val mood = lastMood(c.messages)
+        val calls = !working && (outcome == Outcome.ASKS || mood?.calls == true)
+        val failed = outcome == Outcome.FAILED
+        val words = when {
+            working -> latestStatus(c.messages)
+            mood != null && mood.words.isNotBlank() -> mood.words
+            failed -> "Couldn't finish"
+            else -> ""
+        }
+        val feel = when { working -> Feel.THINKING; mood != null -> mood.feel; calls -> Feel.NEEDS_YOU; failed -> Feel.CONFUSED; else -> Feel.CONTENT }
+        AppTile(c.id, appName(c), words, feel, calls, working, c.updatedAt)
+    }.sortedWith(compareByDescending<AppTile> { it.calls }.thenByDescending { it.working }.thenByDescending { it.at }).take(max)
+
 /** How the agent last set Dash in the last turn, if it did. */
 fun lastMood(messages: List<Msg>): Mood? = lastTurn(messages).let { turn ->
     // a turn the owner stopped keeps no mood it was given on the way (no "Your turn" for what they stopped)

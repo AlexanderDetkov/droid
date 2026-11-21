@@ -55,7 +55,8 @@ fun pageSend(ctx: Context, conv: String, pageId: String?, text: String, data: St
     val answered = awaited(app, c, i) && if (page.note.isNotEmpty()) Notify.answer(ctx, conv, page.note, pageReply(text, data).put("button", "page"))
         else { app.runner.answerPage(conv, page.id, text, data); true }
     if (!answered) startTask(ctx, conv, text, data = data)
-    app.store.update(conv) { it.answered(page.id, if (answered) text else "") }
+    // a question the agent waited on is answered; the chat's app goes on, live (see currentApp)
+    if (answered || i != c.messages.currentApp()) app.store.update(conv) { it.answered(page.id, if (answered) text else "") }
 }
 
 /**

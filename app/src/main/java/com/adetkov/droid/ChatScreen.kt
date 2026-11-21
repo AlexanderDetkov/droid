@@ -731,7 +731,9 @@ fun EmptyState(onSuggestion: (String) -> Unit, modifier: Modifier, listening: Bo
                /** The home page's greeting (Dash's words when he made it), and when he made it ("this morning"). */
                greeting: String? = null, made: String? = null,
                /** He's making today's home page. */
-               preparing: Boolean = false) {
+               preparing: Boolean = false,
+               /** Dash's apps (the chats of the last week) and opening one. */
+               apps: List<AppTile> = emptyList(), onOpen: (String) -> Unit = {}) {
     // Dash says hi, then rests: he listens while you talk and reads along while you type.
     val rig = rememberDash()  // at rest, so the greeting below is a change: he hops
     var greeted by remember { mutableStateOf(false) }
@@ -741,19 +743,23 @@ fun EmptyState(onSuggestion: (String) -> Unit, modifier: Modifier, listening: Bo
     rig.level = level
     // The agent's own page for the home screen (droid show --home), the owner's day: Dash greets them, and his page is
     // under him in place of the starting points.
-    if (home != null) {
+    // Dash's board: what he's doing for you and did, a tile each (your turn first), around his page for your day.
+    if (home != null || apps.isNotEmpty()) {
         val scroll = rememberScrollState()
         val drag = rememberListDrag(scroll)
+        val (now, before) = apps.partition { it.calls || it.working }
         Column(modifier.verticalScroll(scroll).padding(horizontal = 16.dp)) {
             Row(Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 14.dp), verticalAlignment = Alignment.CenterVertically) {
                 Dash(rig, Modifier.size(width = 66.dp, height = 74.dp).testTag("dash"), label = null)
                 Box(Modifier.weight(1f).padding(start = 6.dp)) { SpeechBubble(if (preparing) "Getting your day ready…" else greeting ?: "Hi! What should I do?") }
             }
-            CompositionLocalProvider(LocalListDrag provides drag) {
+            if (now.isNotEmpty()) AppTiles(now, onOpen, Modifier.padding(bottom = 16.dp))
+            if (home != null) CompositionLocalProvider(LocalListDrag provides drag) {
                 Box(Modifier.fillMaxWidth().testTag("home_page")) { home() }
             }
-            if (made != null) Text("Dash made this page for you $made", Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 16.dp),
+            if (made != null) Text("Dash made this page for you $made", Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 8.dp),
                 style = MaterialTheme.typography.bodySmall, color = P.faint, textAlign = TextAlign.Center)
+            if (before.isNotEmpty()) AppTiles(before, onOpen, Modifier.padding(top = 12.dp, bottom = 16.dp))
         }
         return
     }
@@ -787,6 +793,39 @@ fun EmptyState(onSuggestion: (String) -> Unit, modifier: Modifier, listening: Bo
                 }
             }
         }
+    }
+}
+
+/** Tiles two by two, one per app (see [AppTile]). */
+@Composable
+private fun AppTiles(tiles: List<AppTile>, onOpen: (String) -> Unit, modifier: Modifier = Modifier) {
+    Column(modifier.fillMaxWidth().testTag("apps"), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        tiles.chunked(2).forEach { row ->
+            Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                row.forEach { t -> AppTileView(t, Modifier.weight(1f).fillMaxHeight()) { onOpen(t.conv) } }
+                if (row.size == 1 && tiles.size > 1) Spacer(Modifier.weight(1f))  // a tile alone takes the row
+            }
+        }
+    }
+}
+
+/** One app: Dash as he stands with it, its name, and his words about it; ringed in his color when it's your turn. */
+@Composable
+private fun AppTileView(t: AppTile, modifier: Modifier, onClick: () -> Unit) {
+    val rig = rememberDash("tile:${t.conv}", feel = t.feel)
+    LaunchedEffect(t.feel) { rig.feel(t.feel) }
+    val shape = RoundedCornerShape(24.dp)
+    Column(modifier.heightIn(min = 128.dp).clip(shape).background(P.surface)
+        .let { if (t.calls) it.border(2.dp, P.call, shape) else it }.clickable(onClick = onClick).padding(14.dp).testTag("app_tile")) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Dash(rig, Modifier.size(width = 40.dp, height = 44.dp), label = null, onPoke = null)
+            if (t.calls) Text("Your turn", Modifier.padding(start = 8.dp), style = MaterialTheme.typography.labelLarge, color = P.call, fontWeight = FontWeight.Bold)
+            else if (t.working) Text("Working", Modifier.padding(start = 8.dp), style = MaterialTheme.typography.labelLarge, color = P.muted)
+        }
+        Text(t.name, Modifier.padding(top = 8.dp), style = MaterialTheme.typography.titleMedium.copy(fontSize = 17.sp, lineHeight = 22.sp, fontWeight = FontWeight.Bold),
+            maxLines = 2, overflow = TextOverflow.Ellipsis)
+        if (t.words.isNotEmpty()) Text(t.words, Modifier.padding(top = 2.dp), style = MaterialTheme.typography.bodyMedium, color = P.muted,
+            maxLines = 2, overflow = TextOverflow.Ellipsis)
     }
 }
 
