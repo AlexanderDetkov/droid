@@ -399,7 +399,11 @@ private fun Root(request: Request?, modifier: Modifier) {
                         }
                     }
                     Composer(
-                        text = draft, onText = { if (voice.listening) voice.cancel(); draft = it },  // typing takes over from the voice
+                        text = draft, onText = {
+                            if (voice.listening) voice.cancel()  // typing takes over from the voice
+                            if (draft.isBlank() && it.isNotBlank()) app.runner.prewarm(convId)  // the agent starts up while the user types
+                            draft = it
+                        },
                         files = files, onRemove = { discard(it); files = files - it },
                         listening = if (voice.listening) listenMode else null, level = { voice.level }, running = running,
                         onAttach = { attaching = true }, onSend = { voice.cancel(); sendNow(draft) },

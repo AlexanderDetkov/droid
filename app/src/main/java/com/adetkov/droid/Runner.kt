@@ -157,7 +157,7 @@ class Runner(
     private var starts = 0
 
     /**
-     * Starts the process for the next message to [convId] (a new chat if null) ahead of time, saving its ~1 s
+     * Starts the process for the next message to [convId] (a new chat if null) ahead of time, saving its ~2 s
      * startup. Unused, it is dropped after [WARM_FOR] or by [dropWarm]. Skipped while the chat has a run.
      */
     fun prewarm(convId: String?) {
