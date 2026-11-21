@@ -260,7 +260,8 @@ class AgentService : Service() {
         if (id in app.runner.ownNote) return null  // the agent took it over, or silenced it (droid notify --id chat)
         val conv = app.store.get(id) ?: return null
         val last = conv.messages.lastOrNull { it.kind == Kind.AGENT || it.kind == Kind.STATUS || it.kind == Kind.NOTE }
-        val text = last?.text ?: "Done"
+        // A failure says what it means, as the chat does (see plainStatus)
+        val text = last?.let { m -> if (m.kind == Kind.STATUS) plainStatus(m.text, conv.engine)?.text ?: m.text else m.text } ?: "Done"
         val outcome = lastOutcome(conv.messages, false)
         val mood = lastMood(conv.messages)
         return Notification.Builder(this, CH_DONE)

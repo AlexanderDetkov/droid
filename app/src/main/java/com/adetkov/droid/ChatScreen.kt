@@ -6,6 +6,9 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -119,6 +122,8 @@ fun Transcript(
     /** The run's screen while it is up (working, or held after answering), shown live in the last turn. */
     feed: ScreenFeed?,
     speakingKey: String?, onSpeak: (String, String) -> Unit, onRetry: () -> Unit, onWatch: () -> Unit, modifier: Modifier,
+    /** A failure that Setup fixes (a sign-in run out, free models used up): open Setup. */
+    onSetup: () -> Unit = {},
     /** A page handed over the agent's screen (droid.screen): open it with the owner's touches going to it. */
     onTakeOver: () -> Unit = {},
     /** The run answered and still holds its hidden screen, for a reply on it or for the user to take it over. */
@@ -203,7 +208,7 @@ fun Transcript(
                                     conv = conv.id, index = item.index, live = pageLive(droid, conv, item.index)) { selecting = stripMarkdown(m.text) }
                                 Kind.PAGE -> PageMessage(m, conv.id, pageLive(droid, conv, item.index), onTakeOver)
                                 Kind.WAKE -> WakeLine(m.text)
-                                Kind.STATUS -> StatusRow(m.text, retry = if (item === items[lastIndex] && !running) onRetry else null)
+                                Kind.STATUS -> StatusRow(m.text, conv.engine, retry = if (item === items[lastIndex] && !running) onRetry else null, onSetup = onSetup)
                                 else -> Text(m.text, style = MaterialTheme.typography.bodySmall, color = P.muted)
                             }
                         }
@@ -394,22 +399,41 @@ private fun SelectTextSheet(text: String, onDismiss: () -> Unit) {
 
 /** How a turn ended without an answer: stopped, failed, interrupted. The last one offers Retry. */
 @Composable
-private fun StatusRow(text: String, retry: (() -> Unit)?) {
+private fun StatusRow(text: String, engine: Engine, retry: (() -> Unit)?, onSetup: () -> Unit) {
     val stopped = text == "Stopped"
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Icon(painterResource(if (stopped) R.drawable.ic_stop_circle else R.drawable.ic_error), null, Modifier.size(16.dp),
-            tint = if (stopped) P.muted else P.danger)
-        Text(text, Modifier.padding(start = 8.dp).weight(1f, fill = false), style = MaterialTheme.typography.bodyMedium,
-            color = if (stopped) P.muted else P.danger, maxLines = 3, overflow = TextOverflow.Ellipsis)
-        if (retry != null) Row(
-            Modifier.padding(start = 12.dp).clip(RoundedCornerShape(50)).border(1.dp, P.hairline, RoundedCornerShape(50))
-                .clickable(onClick = retry).padding(horizontal = 12.dp, vertical = 6.dp).testTag("retry"),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(painterResource(R.drawable.ic_retry), null, Modifier.size(16.dp), tint = P.text)
-            Text("Retry", Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelMedium)
+    // The agent's words when they already say it; otherwise what they mean, with theirs a tap away (and Setup when
+    // that's where it's fixed). A long one opens in full on a tap too.
+    val plain = remember(text, engine) { plainStatus(text, engine) }
+    var open by remember(text) { mutableStateOf(false) }
+    val color = if (stopped) P.muted else P.danger
+    Column {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            // The icon stays with the first line when the text runs to more
+            Row(Modifier.weight(1f, fill = false)) {
+                Icon(painterResource(if (stopped) R.drawable.ic_stop_circle else R.drawable.ic_error), null,
+                    Modifier.padding(top = 2.dp).size(16.dp), tint = color)
+                Text(plain?.text ?: text, Modifier.padding(start = 8.dp).clickable(enabled = !stopped) { open = !open }.testTag("status"),
+                    style = MaterialTheme.typography.bodyMedium, color = color, maxLines = if (open) Int.MAX_VALUE else 3, overflow = TextOverflow.Ellipsis)
+            }
+            if (retry != null && plain?.setup != true) Pill(R.drawable.ic_retry, "Retry", retry, Modifier.padding(start = 12.dp).testTag("retry"))
+        }
+        if (open && plain != null && plain.text != text.removePrefix("Error: ").removePrefix("Failed: ")) Text(text, Modifier.padding(start = 24.dp, top = 6.dp).testTag("status_said"),
+            style = MaterialTheme.typography.bodySmall, color = P.muted)
+        if (plain?.setup == true) Row(Modifier.padding(start = 24.dp, top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Pill(R.drawable.ic_setup, "Setup", onSetup, Modifier.testTag("status_setup"))
+            if (retry != null) Pill(R.drawable.ic_retry, "Retry", retry, Modifier.testTag("retry"))
         }
     }
+}
+
+@Composable
+private fun Pill(icon: Int, label: String, onClick: () -> Unit, modifier: Modifier = Modifier) = Row(
+    modifier.clip(RoundedCornerShape(50)).border(1.dp, P.hairline, RoundedCornerShape(50))
+        .clickable(onClick = onClick).padding(horizontal = 12.dp, vertical = 6.dp),
+    verticalAlignment = Alignment.CenterVertically,
+) {
+    Icon(painterResource(icon), null, Modifier.size(16.dp), tint = P.text)
+    Text(label, Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelMedium)
 }
 
 /**
@@ -643,15 +667,25 @@ fun EmptyState(onSuggestion: (String) -> Unit, modifier: Modifier, listening: Bo
     val feel = when { listening -> Feel.LISTENING; typing -> Feel.READING; !greeted -> Feel.HAPPY; else -> Feel.IDLE }
     LaunchedEffect(feel) { rig.feel(feel) }
     rig.level = level
-    Box(modifier) {
-        Column(Modifier.align(Alignment.Center).padding(horizontal = 32.dp).padding(bottom = 72.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+    // The suggestions step aside when there's no room for them below Dash and his words (the keyboard up with a long
+    // draft, say), rather than run into them: Dash stays, reading along.
+    BoxWithConstraints(modifier) {
+        var words by remember { mutableIntStateOf(0) }
+        var chips by remember { mutableIntStateOf(0) }
+        val fits = with(LocalDensity.current) {
+            val h = maxHeight.toPx()
+            // The words' column is centered with 72 dp of room below it; the chips sit 8 dp off the bottom
+            (h + words - 72.dp.toPx()) / 2 + 12.dp.toPx() <= h - 8.dp.toPx() - chips
+        }
+        Column(Modifier.align(Alignment.Center).padding(horizontal = 32.dp).padding(bottom = 72.dp).onSizeChanged { words = it.height },
+            horizontalAlignment = Alignment.CenterHorizontally) {
             Dash(rig, Modifier.size(width = 112.dp, height = 124.dp).testTag("dash"), label = null)
             Text("What can I do for you?", Modifier.padding(top = 10.dp), style = MaterialTheme.typography.headlineSmall, textAlign = TextAlign.Center)
             Text("I use your apps on a hidden screen while you keep using the phone.", Modifier.padding(top = 8.dp),
                 style = MaterialTheme.typography.bodyMedium, color = P.muted, textAlign = TextAlign.Center)
         }
-        LazyRow(
-            Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(bottom = 8.dp).testTag("suggestions"),
+        AnimatedVisibility(fits, Modifier.align(Alignment.BottomCenter), enter = fadeIn(tween(160)), exit = fadeOut(tween(160))) { LazyRow(
+            Modifier.fillMaxWidth().padding(bottom = 8.dp).onSizeChanged { chips = it.height }.testTag("suggestions"),
             contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             items(SUGGESTIONS) { (icon, title, rest) ->
@@ -664,7 +698,7 @@ fun EmptyState(onSuggestion: (String) -> Unit, modifier: Modifier, listening: Bo
                     Text(rest, style = MaterialTheme.typography.bodySmall, color = P.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
-        }
+        } }
     }
 }
 

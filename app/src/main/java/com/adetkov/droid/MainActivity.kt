@@ -368,7 +368,7 @@ private fun Root(request: Request?, modifier: Modifier) {
                             val taps = remember(conv.id) { app.runner.taps.filter { it.first == conv.id }.map { it.second to it.third } }
                             key(conv.id) { Transcript(conv, running, feed, speaker.speakingKey, speaker::toggle, held = watchable && !running, closesAt = info?.closesAt, taps = taps,
                                 doing = doingMap[conv.id], typing = draft.isNotBlank(), listening = voice.listening, level = { voice.level },
-                                onRetry = { haptic(); retryTask(ctx, conv.id) },
+                                onRetry = { haptic(); retryTask(ctx, conv.id) }, onSetup = { go(Screen.SETUP) },
                                 onWatch = { watching = true }, modifier = Modifier.fillMaxSize(),
                                 onTakeOver = { handoff = true; watching = true }) }
                         }
