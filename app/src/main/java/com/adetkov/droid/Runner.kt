@@ -51,6 +51,9 @@ internal const val TOOK_OVER = "[I used your hidden screen myself since your las
  * A chat's run: its process id, and the port and token of its live view, once the run reports them. [started]: when the
  * current request was sent. [closesAt]: when a run that answered will close its screen (null while working or watched).
  */
+/** A page chat [conv]'s agent asked to look at, [id] (`droid look`), to draw on its [display]; [html] null: done with it. */
+data class Look(val conv: String, val id: String, val display: Int, val html: String?)
+
 data class RunInfo(
     val pid: Int? = null, val port: Int? = null, val token: String? = null,
     val started: Long = System.currentTimeMillis(), val closesAt: Long? = null,
@@ -110,6 +113,8 @@ class Runner(
     val notes = requests<Pair<String, JSONObject>>()
     /** What the agent says out loud (`droid say`): (chat, text), for the app to speak. */
     val says = requests<Pair<String, String>>()
+    /** Pages the agent asked to look at (`droid look`), to draw on its display; one with no html is done with. */
+    val looks = requests<Look>()
     /** Chats whose agent took over (or silenced) their answer's notification this turn (`droid notify --id chat`). */
     val ownNote: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
     /** Notifications the agent's command waits on ("chat/id": `droid notify --wait`), until it's answered (see Notify). */
@@ -354,6 +359,8 @@ class Runner(
             "dash" -> dash(id, o.opt("feel")?.toString().orEmpty(), o.optString("words"))
             // On the run's own thread, so pages shown under one id land in the order shown (and never write one file at once).
             "show" -> showPage(id, o)
+            "look" -> lookPage(id, o)
+            "look_done" -> o.optString("id").takeIf { PAGE_ID.matches(it) }?.let { looks.tryEmit(Look(id, it, -1, null)) }
             "later" -> o.optLong("at").takeIf { it > 0 }?.let { wakes.tryEmit(Wake(id, it, o.optString("text"))) }
             "say" -> o.optString("text").takeIf { it.isNotBlank() }?.let { says.tryEmit(id to it) }
             "notify" -> {
@@ -390,6 +397,17 @@ class Runner(
         }
         putPage(id, PageInfo(pid, wait, o.optString("where", "chat").ifEmpty { "chat" }, pageTitle(html)), html)
         pages.tryEmit(id to pid)
+    }
+
+    private fun lookPage(id: String, o: JSONObject) {
+        val lid = o.optString("id").takeIf { PAGE_ID.matches(it) } ?: return
+        val f = File(shown(id), "$lid.html")
+        val html = try { if (backend.fetch(o.optString("path"), f)) f.readText().also { f.delete() } else null } catch (e: IOException) { null }
+        if (html == null) {
+            try { backend.reply(lid, JSONObject().put("error", "Droid couldn't read ${o.optString("path")}").toString()) } catch (_: IOException) {}
+            return
+        }
+        looks.tryEmit(Look(id, lid, o.optInt("display", -1), html))
     }
 
     /** Page [info] with [html] in chat [id]: a new PAGE message, or the one with its id shown again (see [withPage]). */

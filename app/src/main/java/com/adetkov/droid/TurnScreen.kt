@@ -86,7 +86,7 @@ fun HomeBar(onMenu: () -> Unit, onSettings: () -> Unit) {
  * page's own next step takes the talk bar's place at the bottom.
  */
 @Composable
-fun TurnBar(title: String, onBack: () -> Unit, onMore: () -> Unit, onTalk: (() -> Unit)?) {
+fun TurnBar(title: String, onBack: () -> Unit, onMore: () -> Unit, onTalk: (() -> Unit)?, typeOnly: Boolean = false) {
     Row(Modifier.fillMaxWidth().statusBarsPadding().height(60.dp).padding(start = 4.dp, end = 6.dp), verticalAlignment = Alignment.CenterVertically) {
         IconBtn(R.drawable.ic_back, "Back", onBack, Modifier.testTag("back"), size = 48.dp, iconSize = 24.dp)
         Column(Modifier.weight(1f).padding(start = 4.dp, end = 8.dp)) {
@@ -94,9 +94,10 @@ fun TurnBar(title: String, onBack: () -> Unit, onMore: () -> Unit, onTalk: (() -
             Text(title, style = MaterialTheme.typography.titleMedium.copy(fontSize = 17.sp, fontWeight = FontWeight.SemiBold),
                 maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.testTag("asked"))
         }
+        // (a keyboard where the phone has no voice set up)
         if (onTalk != null) Box(Modifier.size(48.dp).clip(CircleShape).background(P.call.copy(alpha = .14f)).clickable(onClick = onTalk)
-            .testTag("talk_top").semantics { contentDescription = "Talk to Dash" }, contentAlignment = Alignment.Center) {
-            Icon(painterResource(R.drawable.ic_mic), null, Modifier.size(22.dp), tint = P.text)
+            .testTag("talk_top").semantics { contentDescription = if (typeOnly) "Type to Dash" else "Talk to Dash" }, contentAlignment = Alignment.Center) {
+            Icon(painterResource(if (typeOnly) R.drawable.ic_keyboard else R.drawable.ic_mic), null, Modifier.size(22.dp), tint = P.text)
         }
         IconBtn(R.drawable.ic_more, "Chat options", onMore, Modifier.testTag("overflow"), size = 48.dp)
     }
@@ -246,7 +247,7 @@ private fun AnswerBody(conv: Conv, start: Int, onTakeOver: () -> Unit, onRetry: 
         key(answerAt, answer.text, dark) {
             FillPage("screen:${conv.id}:$answerAt:${answer.text.hashCode()}:$dark", "answer:${conv.id}:$answerAt",
                 { cx -> answerDocument(cx, answer.text, dark, PageMode.SCREEN) }, namedPaths(answer.text), actions,
-                modifier.fillMaxWidth().testTag("answer_page"), live = pageLive(app, conv, answerAt), onFooter = onFooter)
+                modifier.fillMaxWidth().testTag("answer_page"), live = pageLive(app, conv, answerAt), onFooter = onFooter, screenOf = conv.id)
         }
         return
     }
@@ -310,7 +311,7 @@ private fun WaitingPage(conv: String, m: Msg, info: PageInfo, onTakeOver: () -> 
     key(info.id, m.text, dark) {
         FillPage("screen:$conv:${info.id}:${m.text.hashCode()}:$dark", "page:$conv:${info.id}",
             { cx -> pageDocument(cx, m.text, dark, PageMode.SCREEN) }, namedPaths(m.text), actions,
-            modifier.fillMaxWidth().testTag("waiting_page"), onFooter = onFooter)
+            modifier.fillMaxWidth().testTag("waiting_page"), onFooter = onFooter, screenOf = conv)
     }
 }
 

@@ -87,10 +87,10 @@ button.quiet, .button.quiet { border-color: transparent; color: var(--muted); fo
    in reach, while the rest scrolls above it (droid.js keeps room for it); in the chat's history it is the page's last row. */
 footer { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0 0; }
 footer > :is(button, .button, a) { flex: 1 1 0; min-width: min(100%, 140px); min-height: 60px; }
-html.screen :is(body, #droid) > footer:last-child {
+html.screen :is(body, #droid) > footer:not(:has(~ :not(script, style, template))) {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; margin: 0; padding: 12px 20px 16px; background: var(--bg);
 }
-html.screen :is(body, #droid) > footer:last-child::before {
+html.screen :is(body, #droid) > footer:not(:has(~ :not(script, style, template)))::before {
   content: ""; position: absolute; left: 0; right: 0; top: -24px; height: 24px; pointer-events: none;
   background: linear-gradient(to bottom, transparent, var(--bg));
 }

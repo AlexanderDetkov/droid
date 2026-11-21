@@ -40,6 +40,30 @@
     get dark() { return document.documentElement.classList.contains("dark"); },
 
     /**
+     * What's picked and typed on the page now, in words, for what the owner says or types while looking at it (Droid
+     * sends it along): picked "Fern check-in", "how's the fern?" in Message. Empty if nothing is.
+     */
+    _state() {
+      const words = (s) => (s || "").replace(/\s+/g, " ").trim();
+      // what the owner sees it called: its label's words (but its own value), or its hint
+      const name = (el) => {
+        const l = el.closest("label") || (el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`));
+        const mine = l ? words(l.innerText) : "";
+        const own = mine && el.value && !["checkbox", "radio"].includes(el.type) ? words(mine.replace(words(el.value), "")) : mine;
+        return own || words(el.getAttribute("aria-label") || el.placeholder || "");
+      };
+      const out = [];
+      for (const el of document.querySelectorAll("input, textarea, select")) {
+        const type = (el.type || "").toLowerCase();
+        if (["hidden", "button", "submit", "reset", "file", "password"].includes(type)) continue;
+        if (type === "checkbox" || type === "radio") { if (el.checked) out.push(`picked "${(name(el) || words(el.value)).slice(0, 120)}"`); continue; }
+        const v = el.tagName === "SELECT" ? words(el.selectedOptions[0]?.text) : words(el.value);
+        if (v) out.push(`"${v.slice(0, 1500)}" in ` + (name(el) ? `"${name(el).slice(0, 60)}"` : el.tagName === "SELECT" ? "a list" : "a text box"));
+      }
+      return out.join(", ").slice(0, 3000);
+    },
+
+    /**
      * Renders an answer: its Markdown (a line break is a line break, as in Droid's own answers) and HTML segments, then
      * runs its scripts in order, as a page load would. They run once the document is parsed, so each gets
      * DOMContentLoaded once, from here; and load from here only if the real one came first.
@@ -75,7 +99,8 @@
   let had = null, room = "";
   const footer = () => {
     if (!document.body) return;
-    const f = document.querySelector(":is(body, #droid) > footer:last-child");
+    // the page's last element but for scripts and styles after it
+    const f = document.querySelector(":is(body, #droid) > footer:not(:has(~ :not(script, style, template)))");
     const has = !!(f && f.querySelector("button, .button, a, input, select, textarea, label"));
     const pad = onScreen && f ? (f.offsetHeight + 16) + "px" : "";
     if (pad !== room) { room = pad; document.body.style.paddingBottom = pad; }

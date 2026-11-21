@@ -237,6 +237,43 @@ class Show(Command):
         self.assertEqual([(e['op'], e['where'], e['id'], e['wait']) for e in events], [('show', 'float', 'p1', False)])
 
 
+class Look(Command):
+    def test_draws_it_then_takes_the_screenshot_then_takes_it_away(self):
+        p = os.path.join(self.dir, 'p.html')
+        with open(p, 'w') as f:
+            f.write('<p>Hi</p>')
+        shot = os.path.join(self.dir, 'shot')
+        with open(shot, 'w') as f:
+            f.write('#!/bin/sh\necho "Saved /tmp/shot-1.png"\necho /tmp/shot-1.png\n')
+        os.chmod(shot, 0o755)
+        d.SHOT = shot
+        os.environ['AGENT_DISPLAY'] = '7'
+        os.makedirs(d.REPLIES)
+        real = d.emit
+        def emit(e):  # the app draws it and answers
+            real(e)
+            if e['op'] == 'look':
+                with open(os.path.join(d.REPLIES, e['id'] + '.json'), 'w') as f:
+                    f.write('{"ok": true}')
+        d.emit = emit
+        try:
+            code, out, _, events = self.run_droid('look', p)
+        finally:
+            d.emit = real
+        self.assertEqual(code, 0)
+        self.assertEqual(out.strip(), '/tmp/shot-1.png')
+        self.assertEqual([e['op'] for e in events], ['look', 'look_done'])
+        self.assertEqual((events[0]['display'], events[0]['path']), (7, os.path.realpath(p)))
+
+    def test_needs_a_display(self):
+        os.environ.pop('AGENT_DISPLAY', None)
+        p = os.path.join(self.dir, 'p.html')
+        with open(p, 'w') as f:
+            f.write('<p>Hi</p>')
+        code, _, err, events = self.run_droid('look', p)
+        self.assertEqual((code, events), (1, []))
+
+
 class Output(Command):
     """The app's end of the task's output is a pipe, which `droid` reopens."""
 

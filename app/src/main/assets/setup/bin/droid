@@ -10,6 +10,9 @@
                                  the owner is in, or on Droid's home screen under Dash (until you put another there;
                                  what it sends starts a new chat). --wait prints what the page sends (droid.send) as JSON {"text",
                                  "data"}. --id ID: showing the same ID again updates that page in place.
+  droid look FILE                Shows you an HTML page as the owner's screen would show it as your answer (under
+                                 Dash and his words, above the talk bar unless it ends with a <footer>): it's drawn
+                                 on your hidden display, and this prints the screenshot's path, for you to look at.
   droid notify TITLE [TEXT] [options]
                                  Posts a notification, or updates the one with the same --id. Options:
       --id ID                    names it, to update it (progress), take it away (--cancel) or wait on it. The id
@@ -225,6 +228,42 @@ def show(args):
         print(f"Shown ({pid}).")
 
 
+def look(args):
+    if len(args) != 1:
+        die("usage: droid look FILE")
+    path = os.path.realpath(args[0])
+    if not os.path.isfile(path) or not os.access(path, os.R_OK):
+        die(f"no file {args[0]}")
+    if not 0 < os.path.getsize(path) <= 2_000_000:
+        die("a page is a file of up to 2 MB, and not empty")
+    display = os.environ.get("AGENT_DISPLAY", "")
+    if not display.isdigit():
+        die("this task has no hidden display to draw it on")
+    lid = "look-" + uuid.uuid4().hex[:8]
+    os.makedirs(REPLIES, exist_ok=True)
+    reply = f"{REPLIES}/{lid}.json"
+    emit(dict(op="look", path=path, id=lid, display=int(display)))
+    try:
+        end = time.time() + 30
+        while not os.path.exists(reply):
+            if time.time() >= end:
+                die("Droid didn't draw it in time")
+            time.sleep(0.2)
+        time.sleep(0.05)
+        with open(reply) as f:
+            r = json.loads(f.read() or "{}")
+        os.remove(reply)
+        if "error" in r:
+            die(r["error"])
+        shot = subprocess.run([SHOT], capture_output=True, text=True, timeout=90).stdout.strip().splitlines()
+    finally:
+        emit(dict(op="look_done", id=lid))
+    if not shot:
+        die("couldn't take the screenshot")
+    print(shot[-1])
+
+
+SHOT = "shot"
 ACTIONS = ("run:", "open:", "page:", "chat:", "screen:", "dismiss:")
 
 
@@ -499,6 +538,8 @@ def main():
         show(rest)
     elif cmd == "notify":
         notify(rest)
+    elif cmd == "look":
+        look(rest)
     elif cmd == "wait":
         timeout = seconds(option(rest, "--timeout", "540"))
         if len(rest) != 1:

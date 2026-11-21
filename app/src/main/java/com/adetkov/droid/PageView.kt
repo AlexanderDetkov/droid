@@ -51,6 +51,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -187,6 +188,8 @@ class PageWebView(ctx: Context, val origin: String) : WebView(ctx) {
     /** Its content height in px, as it changes. */
     var onHeight: (Int) -> Unit = {}
     var pageHeight = 0; private set
+    /** It loaded. */
+    var onLoaded: () -> Unit = {}
     /** Whether it ends with a footer of buttons, its next step (see droid.js), as that changes. */
     var onFooter: (Boolean) -> Unit = {}
     var hasFooter = false; private set
@@ -310,7 +313,7 @@ class PageWebView(ctx: Context, val origin: String) : WebView(ctx) {
             return req.isForMainFrame
         }
 
-        override fun onPageFinished(view: WebView, url: String?) { markDone(again = true) }
+        override fun onPageFinished(view: WebView, url: String?) { markDone(again = true); onLoaded() }
 
         override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
             Log.w("Droid", "page renderer gone (crash=${detail.didCrash()})")
@@ -500,14 +503,34 @@ private fun Modifier.bleed(by: androidx.compose.ui.unit.Dp) = layout { m, c ->
 fun FillPage(
     key: String, name: String, document: (Context) -> String, named: Set<String>, actions: PageActions, modifier: Modifier = Modifier,
     live: Boolean = actions.live, onFooter: (Boolean) -> Unit = {},
+    /** The owner's screen shows it as chat [screenOf]'s answer: see [ScreenPage]. */
+    screenOf: String? = null,
 ) {
     val cache = remember { PageCache() }
     DisposableEffect(cache) { onDispose { cache.clear() } }
+    var shown by remember { mutableStateOf<PageWebView?>(null) }
+    DisposableEffect(screenOf, shown) {
+        val v = shown
+        if (screenOf != null && v != null) ScreenPage.set(screenOf, v)
+        onDispose { if (screenOf != null && v != null) ScreenPage.clear(screenOf, v) }
+    }
     AndroidView(
-        factory = { ctx -> cache.obtain(ctx, key, pageOrigin(name)) { it.isVerticalScrollBarEnabled = true; it.show(document(ctx), named) } },
+        factory = { ctx -> cache.obtain(ctx, key, pageOrigin(name)) { it.isVerticalScrollBarEnabled = true; it.show(document(ctx), named) }.also { shown = it } },
         modifier = modifier,
         update = { v -> v.actions = actions; v.live = live; v.onFooter = onFooter; onFooter(v.hasFooter) },
     )
+}
+
+/**
+ * The page on the owner's screen as a chat's answer, for what they say or type while looking at it: what's picked and
+ * typed on it goes along (droid.js `_state`).
+ */
+object ScreenPage {
+    private var conv: String? = null
+    private var view: java.lang.ref.WeakReference<PageWebView>? = null
+    fun set(c: String, v: PageWebView) { conv = c; view = java.lang.ref.WeakReference(v) }
+    fun clear(c: String, v: PageWebView) { if (conv == c && view?.get() === v) { conv = null; view = null } }
+    fun view(c: String): PageWebView? = view?.get()?.takeIf { conv == c && !it.dead }
 }
 
 /**

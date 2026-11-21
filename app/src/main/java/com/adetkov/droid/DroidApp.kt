@@ -62,6 +62,7 @@ class DroidApp : Application() {
         bg.launch { runner.wakes.collect { Later.schedule(this@DroidApp, it) } }
         bg.launch { runner.notes.collect { (conv, spec) -> Notify.prepare(this@DroidApp, conv, spec) } }
         bg.launch { runner.says.collect { (_, text) -> main.post { say(text) } } }
+        bg.launch { runner.looks.collect { l -> LookPage.handle(this@DroidApp, l) } }
         bg.launch { Later.restore(this@DroidApp) }  // this process may be the phone starting again
         bg.launch { Updates.check(this@DroidApp) }
     }

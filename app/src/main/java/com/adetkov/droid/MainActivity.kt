@@ -188,6 +188,19 @@ private fun Root(request: Request?, modifier: Modifier) {
         if (text.isBlank() && files.isEmpty()) return null
         speaker.stop()
         haptic()
+        // Said or typed with the agent's page on screen: it also learns what's picked and typed on the page right now,
+        // so "make it say 8" works on the draft they're looking at.
+        val page = convId?.takeIf { !wholeChat }?.let { ScreenPage.view(it) }
+        if (page != null) {
+            val to = convId; val sending = files
+            draft = ""; files = emptyList()
+            page.evaluateJavascript("window.droid && droid._state ? droid._state() : ''") { r ->
+                val seen = runCatching { org.json.JSONTokener(r).nextValue() as? String }.getOrNull()?.trim().orEmpty()
+                val v = if (seen.isEmpty()) via else listOfNotNull(via, "your page was on my screen, with $seen").joinToString("; ")
+                if (ownerSend(ctx, to, text.trim(), sending, v) == null) sending.forEach(::discard)
+            }
+            return to
+        }
         return ownerSend(ctx, convId, text.trim(), files, via).also {
             if (it == null) files.forEach(::discard)  // the chat was deleted: nothing has them
             convId = it; draft = ""; files = emptyList()
@@ -387,7 +400,8 @@ private fun Root(request: Request?, modifier: Modifier) {
                     val pinned = footer && !running && !wholeChat
                     if (conv == null || conv.messages.isEmpty()) HomeBar(onMenu = { scope.launch { drawer.open() } }, onSettings = { go(Screen.SETTINGS) })
                     else TurnBar(conv.title, onBack = { if (wholeChat) wholeChat = false else open(null) }, onMore = { chatMenu = conv },
-                        onTalk = if (pinned) ({ talk(Listen.VOICE) }) else null)
+                        onTalk = if (pinned) ({ if (app.speech.installed) talk(Listen.VOICE) else typing = true }) else null,
+                        typeOnly = !app.speech.installed)
                     Box(Modifier.weight(1f).fillMaxWidth()) {
                         if (conv == null || conv.messages.isEmpty()) {
                             // A starter goes at a tap: nothing to type (the agent asks before it sends anything anywhere).
