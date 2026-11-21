@@ -91,6 +91,18 @@ class SetupTest {
         assertNull(authStatus("{ not json"))
     }
 
+    @Test fun newChatsGoToThePickedAgentUntilACheckSaysOtherwise() {
+        val codex = mapOf(Engine.CODEX to EngineStatus(installed = true, signedIn = false, detail = "Installed, sign-in needed"))
+        // A new process, before its first check reaches the Linux: the pick stands, whatever was saved.
+        assertEquals(Engine.CODEX, SetupState(signedIn = true).engineFor(Engine.CODEX))
+        assertEquals(Engine.CODEX, SetupState(signedIn = true, others = codex).engineFor(Engine.CODEX))
+        // Checked: an agent that can't take a chat gives way to one that can, if there is one.
+        assertEquals(Engine.CLAUDE, SetupState(signedIn = true, others = codex, linuxChecked = true).engineFor(Engine.CODEX))
+        assertEquals(Engine.CODEX, SetupState(others = codex, linuxChecked = true).engineFor(Engine.CODEX))
+        val signedIn = mapOf(Engine.CODEX to EngineStatus(installed = true, signedIn = true))
+        assertEquals(Engine.CODEX, SetupState(signedIn = true, others = signedIn, linuxChecked = true).engineFor(Engine.CODEX))
+    }
+
     @Test fun putsTheNetworksDnsFirst() {
         val public = "nameserver 1.1.1.1\nnameserver 8.8.8.8\n"
         val net = listOf("192.168.1.1", "fe80::1", "127.0.0.1", "10.0.0.2", "10.0.0.3").map(InetAddress::getByName)

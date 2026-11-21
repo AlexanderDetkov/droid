@@ -302,9 +302,24 @@ def pick_opencode_model(listing):
     return None
 
 
+OPENCODE_AUTH = os.path.expanduser('~/.local/share/opencode/auth.json')
+
+
+def opencode_has_keys():
+    """Whether the owner gave OpenCode a provider key (Setup saves them in its auth.json)."""
+    try:
+        with open(OPENCODE_AUTH, encoding='utf-8') as f:
+            return bool(json.load(f))
+    except (OSError, ValueError):
+        return False
+
+
 def opencode_default():
-    """OpenCode's free models come and go, so the default is asked of OpenCode each run (about a second, while the
-    owner is still typing) rather than named here; None leaves the choice to OpenCode."""
+    """Without a provider key, one of OpenCode's free models. They come and go, so it is asked of OpenCode each run
+    (about a second, while the owner is still typing) rather than named here. None leaves the choice to OpenCode, as
+    it is once the owner added a key: then OpenCode picks among that provider's models."""
+    if opencode_has_keys():
+        return None
     try:
         listing = subprocess.run(['opencode', 'models', '--verbose'], capture_output=True, text=True, timeout=30).stdout
     except (OSError, subprocess.SubprocessError):

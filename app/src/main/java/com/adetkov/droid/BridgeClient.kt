@@ -37,7 +37,10 @@ class BridgeClient(val port: Int, val token: String) {
         try { connect(2_000).use { (_, input, out) -> frame(out, 'q', ByteArray(0)); input.read() } } catch (_: IOException) {}
     }
 
-    /** Starts `sh -c [cmd]` as the shell user; with [mergeStderr] its stderr comes on stdout, as redirectErrorStream does. */
+    /**
+     * Starts `sh -c [cmd]` as the shell user; with [mergeStderr] its stderr comes on stdout, as redirectErrorStream does.
+     * If the app goes away it carries on, as under `su`: its stdin ends and its output is dropped.
+     */
     fun exec(cmd: String, mergeStderr: Boolean = true): Process {
         val c = connect(10_000)
         c.socket.soTimeout = 0

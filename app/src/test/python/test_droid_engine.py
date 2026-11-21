@@ -11,6 +11,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ADAPTER = os.path.join(HERE, '../../main/assets/setup/bin/droid-engine')
@@ -122,6 +123,20 @@ class OpenCode(unittest.TestCase):
         self.assertEqual(de.pick_opencode_model(listing), 'opencode/super-vl-free')
         self.assertIsNone(de.pick_opencode_model(model('opencode', 'beam-free', False)))
         self.assertIsNone(de.pick_opencode_model('Error: no network'))
+
+    def test_a_provider_key_leaves_the_default_to_opencode(self):
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(de, 'OPENCODE_AUTH', os.path.join(d, 'auth.json')), \
+                mock.patch.object(de.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, stdout='')) as models:
+            de.opencode_default()  # no auth.json: a free model is looked for
+            with open(de.OPENCODE_AUTH, 'w') as f:
+                f.write('{}')
+            de.opencode_default()  # no keys in it either
+            self.assertEqual(models.call_count, 2)
+            with open(de.OPENCODE_AUTH, 'w') as f:
+                json.dump({'anthropic': {'type': 'api', 'key': 'k'}}, f)
+            self.assertIsNone(de.opencode_default())
+            self.assertEqual(models.call_count, 2)  # not asked
 
     def test_command(self):
         c = de.OpenCode.command('ses_x', 'anthropic/claude-sonnet-4-5')

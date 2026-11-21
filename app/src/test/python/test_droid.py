@@ -159,6 +159,31 @@ class Show(Command):
         self.assertEqual([(e['op'], e['where'], e['id'], e['wait']) for e in events], [('show', 'float', 'p1', False)])
 
 
+class Output(Command):
+    """The app's end of the task's output is a pipe, which `droid` reopens."""
+
+    def fifo(self):
+        f = os.path.join(self.dir, 'fifo')
+        os.mkfifo(f)
+        os.environ['DROID_OUT'] = f
+        return f
+
+    def test_a_pipe_nobody_reads_is_not_waited_on(self):
+        self.fifo()
+        code, _, err, _ = self.run_droid('dash', 'happy')
+        self.assertEqual(code, 1)
+        self.assertIn("isn't reading", err)
+
+    def test_a_pipe_that_is_read_gets_the_event(self):
+        r = os.open(self.fifo(), os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            code, _, _, _ = self.run_droid('dash', 'happy', 'done')
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(os.read(r, 4096)), {'type': 'droid', 'op': 'dash', 'feel': 'happy', 'words': 'done'})
+        finally:
+            os.close(r)
+
+
 class Wait(Command):
     def test_only_an_id(self):
         os.makedirs(d.REPLIES)

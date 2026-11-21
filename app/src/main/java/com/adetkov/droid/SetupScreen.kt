@@ -110,6 +110,14 @@ fun SetupScreen(setup: Setup, firstRun: Boolean, onClose: () -> Unit) {
                         if (!s.paired && s.pairing == null) Action("Pair", idle, primary = true) { withPermissions(setup::pair) }
                         else if (s.paired && !s.helper) Action("Start", idle, primary = true) { withPermissions(setup::startHelper) }
                     }
+                    // Checked again on coming back here, so it goes once the setting is on.
+                    if (s.helper && !s.secureSettings) Text(
+                        "Android didn't let Droid switch Wireless debugging on by itself, which it needs to start again after a " +
+                            "restart. In Developer options, turn on \"USB debugging (Security settings)\" on Xiaomi, Redmi or POCO, " +
+                            "or \"Disable permission monitoring\" on OPPO, OnePlus or realme, then come back here.",
+                        Modifier.padding(start = 54.dp, end = 16.dp, bottom = 14.dp).testTag("setup_secure_settings"),
+                        style = MaterialTheme.typography.bodySmall, color = P.danger,
+                    )
                     AnimatedVisibility(s.pairing != null) { Pairing(s.pairing.orEmpty(), setup) }
                     if (s.paired && s.pairing == null && !s.helper) TextButton({ withPermissions(setup::pair) }, Modifier.padding(start = 54.dp), enabled = idle) {
                         Text("Pair again", color = P.muted, style = MaterialTheme.typography.bodySmall)

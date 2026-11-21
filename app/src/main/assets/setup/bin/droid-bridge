@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # The `android` command on phones without root: runs a shell command in Android as the shell user, through Droid's
 # helper (Bridge.java in the app) on 127.0.0.1:$DROID_BRIDGE, which proves it knows $DROID_TOKEN and asks the same.
-# Usage: droid-bridge 'command'. Stdin, stdout, stderr and the exit code pass through.
-import hashlib, hmac, os, socket, struct, sys, threading
+# Usage: droid-bridge 'command'. Stdin, stdout, stderr and the exit code pass through, and like a command in a pipe it
+# ends when its caller goes: `android 'logcat' | head` stops logcat once head has its lines.
+import hashlib, hmac, os, signal, socket, struct, sys, threading
 
 def frame(kind, payload=b""):
     return kind + struct.pack(">I", len(payload)) + payload
@@ -16,9 +17,12 @@ def read_exact(sock, n):
         buf += chunk
     return buf
 
-def main():
-    port = int(os.environ["DROID_BRIDGE"])
-    token = os.environ["DROID_TOKEN"].encode()
+def read_frame(sock):
+    kind, n = struct.unpack(">cI", read_exact(sock, 5))
+    return kind, read_exact(sock, n)
+
+def request(port, token, kind, command):
+    """A connection to the helper that has asked it to run [command] as [kind]."""
     mac = lambda label, nonce: hmac.new(token, label + nonce, hashlib.sha256).digest()
     sock = socket.create_connection(("127.0.0.1", port))
     # Each message goes out whole and at once: TCP would otherwise hold a second one back until the first is
@@ -28,17 +32,48 @@ def main():
     sock.sendall(a)
     if not hmac.compare_digest(read_exact(sock, 32), mac(b"droid-bridge-server", a)):
         sys.exit("droid-bridge: not Droid's helper on port %d" % port)
-    sock.sendall(mac(b"droid-bridge-client", read_exact(sock, 32)) + frame(b"X", " ".join(sys.argv[1:]).encode()))
+    sock.sendall(mac(b"droid-bridge-client", read_exact(sock, 32)) + frame(kind, command))
+    return sock
+
+sock = None  # the connection to the helper
+lock = threading.Lock()  # one frame at a time on it
+
+def gone(code):
+    """Our caller stopped reading, or stops us: the command stops too, as it would in a pipe."""
+    if sock and lock.acquire(timeout=1):  # not if stdin is stuck halfway through a frame
+        try:
+            sock.send(frame(b"k"), socket.MSG_DONTWAIT)
+        except OSError:
+            pass
+    os._exit(code)
+
+def main():
+    global sock
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        if signal.getsignal(sig) != signal.SIG_IGN:  # ignored stays ignored (nohup, a shell's cleanup)
+            signal.signal(sig, lambda signum, _: gone(128 + signum))
+    port = int(os.environ["DROID_BRIDGE"])
+    token = os.environ["DROID_TOKEN"].encode()
+    command = " ".join(sys.argv[1:]).encode()
+    # 'a' runs it as the agent's command, which the helper ends once we're gone; it answers 'a' first. A helper from
+    # before 'a' (still running after an app update) closes the connection instead: then 'X', which runs it the same
+    # way except that it carries on without us. Stdin waits for that answer, so none of it goes to the wrong one.
+    sock = request(port, token, b"a", command)
+    try:
+        read_frame(sock)
+    except (EOFError, ConnectionResetError):
+        sock.close()
+        sock = request(port, token, b"X", command)
 
     def pump_stdin():
         try:
             fd = sys.stdin.fileno()
             while True:
                 data = os.read(fd, 65536)
+                with lock:
+                    sock.sendall(frame(b"i", data) if data else frame(b"e"))
                 if not data:
                     break
-                sock.sendall(frame(b"i", data))
-            sock.sendall(frame(b"e"))
         except OSError:
             pass
     threading.Thread(target=pump_stdin, daemon=True).start()
@@ -46,15 +81,17 @@ def main():
     out, err = sys.stdout.buffer, sys.stderr.buffer
     while True:
         try:
-            kind, n = struct.unpack(">cI", read_exact(sock, 5))
-            payload = read_exact(sock, n)
-        except EOFError:
+            kind, payload = read_frame(sock)
+        except (EOFError, OSError):
             sys.exit("droid-bridge: Droid's helper went away")
-        if kind == b"o":
-            out.write(payload); out.flush()
-        elif kind == b"r":
-            err.write(payload); err.flush()
-        elif kind == b"x":
+        try:
+            if kind == b"o":
+                out.write(payload); out.flush()
+            elif kind == b"r":
+                err.write(payload); err.flush()
+        except OSError:  # a broken pipe: whoever reads us is gone, as `head` is once it has its lines
+            gone(141)
+        if kind == b"x":
             os._exit(struct.unpack(">i", payload)[0] & 0xff)
 
 main()

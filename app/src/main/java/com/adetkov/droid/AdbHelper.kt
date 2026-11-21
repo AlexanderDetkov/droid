@@ -39,6 +39,13 @@ class AdbHelper(private val app: Context) {
     /** Paired with this phone's adbd: Droid remembers its certificate. */
     val paired: Boolean get() = prefs.contains(SERVER)
 
+    /** Droid may switch Wireless debugging on by itself, as it must to start the helper after a restart. */
+    val canToggle: Boolean
+        get() = app.checkSelfPermission(Manifest.permission.WRITE_SECURE_SETTINGS) == PackageManager.PERMISSION_GRANTED
+
+    /** Grants [canToggle], run as the shell user (only it may). Some phones refuse it until a setting allows it. */
+    val grantCommand get() = "pm grant ${app.packageName} ${Manifest.permission.WRITE_SECURE_SETTINGS}"
+
     private fun saved(): BridgeClient? {
         val port = prefs.getInt(PORT, 0)
         val token = prefs.getString(TOKEN, null)
@@ -73,7 +80,6 @@ class AdbHelper(private val app: Context) {
         if (!canDiscover) throw IOException(NO_LOCAL_NETWORK)
         val cr = app.contentResolver
         val wasOn = Settings.Global.getInt(cr, ADB_WIFI, 0) == 1
-        val canToggle = app.checkSelfPermission(Manifest.permission.WRITE_SECURE_SETTINGS) == PackageManager.PERMISSION_GRANTED
         if (!wasOn) {
             if (!onWifi()) throw IOException(NO_WIFI)
             if (!canToggle) throw IOException("Turn on Wireless debugging in Developer options")
@@ -98,10 +104,14 @@ class AdbHelper(private val app: Context) {
             // Leave Wireless debugging as it was: the helper doesn't need it once started, as long as adbd keeps running.
             if (!wasOn) Settings.Global.putInt(cr, ADB_WIFI, 0)
         }
-        // Had adbd stopped as Wireless debugging went off, it would have taken the helper with it: check it's still there.
-        if (!wasOn) Thread.sleep(1_000)
-        client.ping() ?: throw IOException("Droid's helper stopped right after it started. Check that USB debugging is on in " +
-            "Developer options: Android stops adbd, and the helper with it, when neither USB nor Wireless debugging is on.")
+        // Had adbd stopped or restarted (Wireless debugging going off, USB debugging coming on), it would have taken the
+        // helper with it: check it's still there, and if it doesn't answer, that it's gone, so retries don't add helpers.
+        Thread.sleep(1_000)
+        if (client.ping() == null) {
+            client.quit()
+            throw IOException("Droid's helper stopped right after it started. Check that USB debugging is on in Developer " +
+                "options: Android stops adbd, and the helper with it, when neither USB nor Wireless debugging is on.")
+        }
         prefs.edit { putInt(PORT, client.port); putString(TOKEN, client.token); remove(UNTRUSTED) }
         Log.i(TAG, "helper started on port ${client.port}")
         return client
@@ -126,17 +136,19 @@ class AdbHelper(private val app: Context) {
     }
 
     /**
-     * Run by adbd as the shell user. Grants Droid WRITE_SECURE_SETTINGS, so it can switch Wireless debugging on by
-     * itself after a restart (a permission only the shell user can grant). Turns USB debugging on: whatever it does,
-     * the helper stays in adbd's cgroup, and once neither USB nor Wireless debugging is on, Android stops adbd and the
-     * whole cgroup with it. That comes before the helper starts, in case turning it on restarts adbd. Then starts the
-     * bridge in its own session, so it outlives this connection, and kills it if it doesn't come up within 30 s (a
-     * helper whose token Droid never saved would serve nobody).
+     * Run by adbd as the shell user. Grants Droid WRITE_SECURE_SETTINGS ([canToggle]). Keeps the pairing: Android drops
+     * a key unused for 7 days (adb_allowed_connection_time, Developer options' "Disable adb authorization timeout"),
+     * and Droid connects only to start the helper, once per boot. Turns USB debugging on: whatever it does, the helper
+     * stays in adbd's cgroup, and once neither USB nor Wireless debugging is on, Android stops adbd and the whole cgroup
+     * with it. That comes first, and a moment before the helper starts: Android applies it in the background, and on
+     * some phones it restarts adbd. Then starts the bridge in its own session, so it outlives this connection, and
+     * kills it if it doesn't come up within 30 s (a helper whose token Droid never saved would serve nobody).
      */
     private fun launchCommand(token: String, nonce: String, proof: File) =
         "echo $nonce > '${proof.path}'; " +
-            "pm grant ${app.packageName} ${Manifest.permission.WRITE_SECURE_SETTINGS} 2>/dev/null; " +
-            "settings put global ${Settings.Global.ADB_ENABLED} 1; " +
+            "$grantCommand 2>/dev/null; " +
+            "settings put global adb_allowed_connection_time 0; " +
+            "[ \"\$(settings get global ${Settings.Global.ADB_ENABLED})\" = 1 ] || { settings put global ${Settings.Global.ADB_ENABLED} 1; sleep 2; }; " +
             "mkdir -p $SHELL_BASE && chmod 700 $SHELL_BASE && cd $SHELL_BASE && rm -f bridge.log || exit 1; " +
             "DROID_TOKEN=$token CLASSPATH='$apk' setsid nohup app_process / com.adetkov.droid.Bridge > bridge.log 2>&1 < /dev/null & pid=\$!; " +
             "for i in \$(seq 300); do grep -q '^port=' bridge.log && break; sleep 0.1; done; " +
