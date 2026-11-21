@@ -75,6 +75,9 @@ button.quiet, .button.quiet { border-color: transparent; color: var(--muted); fo
   background: var(--surface); text-align: center; white-space: normal; text-decoration: none; color: var(--text);
 }
 .tiles > :is(button, .button, a).primary { background: var(--call); color: var(--on-call); }
+.card .tiles > :is(button, .button, a):not(.primary) { background: var(--raised); }
+/* A big number in a tile half the width still fits on one line ($206.62) */
+.tiles .big { font-size: 32px; line-height: 38px; }
 button.danger { color: var(--danger); }
 button:disabled { opacity: .38; cursor: default; }
 /* A page that was answered, or is from an earlier turn, stays to read; its controls no longer act (see PageView). A
