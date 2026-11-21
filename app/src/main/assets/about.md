@@ -18,7 +18,9 @@ Source, releases and issues: https://github.com/AlexanderDetkov/droid
 ## Voice models, downloaded if you set up voice
 
 - **Silero VAD** (MIT). https://github.com/snakers4/silero-vad
-- **NVIDIA Parakeet TDT 0.6B v2** (CC-BY-4.0): speech recognition. https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2
+- **NVIDIA Parakeet Unified EN 0.6B** (NVIDIA Open Model License): speech recognition. https://huggingface.co/nvidia/parakeet-unified-en-0.6b
+- **NVIDIA Parakeet TDT 0.6B v2** (CC-BY-4.0): speech recognition on phones set up before Unified, until updated. https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2
+- **Pipecat Smart Turn v3.2** (BSD-2-Clause): hearing when you've finished talking. https://huggingface.co/pipecat-ai/smart-turn-v3
 - **NVIDIA TitaNet small** (Apache-2.0, NeMo): voice match.
 - **Kyutai Pocket TTS** in sherpa-onnx's ONNX export, for non-commercial use only: Droid's voice, which imitates its "bria" sample. https://github.com/kyutai-labs/pocket-tts
 

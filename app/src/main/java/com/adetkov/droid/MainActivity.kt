@@ -309,7 +309,7 @@ private fun Root(request: Request?, modifier: Modifier) {
         }
     }
     if (attaching) AttachSheet(onCamera = { withCamera { camera.reset(); shooting = true } }, pickers) { attaching = false }
-    if (needVoice) ConfirmDialog("Set up voice", "Talking to Droid needs the speech models (820 MB), which run on the phone.",
+    if (needVoice) ConfirmDialog("Set up voice", "Talking to Droid needs the speech models (860 MB), which run on the phone.",
         "Set up", { go(Screen.SETUP) }, { needVoice = false })
 
     BackHandler(voice.listening) { voice.cancel(); draft = typed }

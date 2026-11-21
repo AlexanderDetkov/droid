@@ -174,7 +174,8 @@ fun AdvancedScreen(onBack: () -> Unit, onMemory: () -> Unit, onSetup: () -> Unit
 
             Group("Phone") {
                 NavItem(R.drawable.ic_setup, "Setup and updates",
-                    (if (setup.access == Access.ROOT) "Root" else "Wireless debugging") + ", Linux, agents, sign-in", onSetup, "settings_setup")
+                    if (setup.voice && !setup.voiceCurrent) "Better speech-to-text is out"
+                    else (if (setup.access == Access.ROOT) "Root" else "Wireless debugging") + ", Linux, agents, sign-in", onSetup, "settings_setup")
             }
 
             Group(null) {

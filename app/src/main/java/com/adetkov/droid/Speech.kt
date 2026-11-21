@@ -24,20 +24,28 @@ const val MIC_RATE = 16000
 
 /**
  * The on-device speech models (sherpa-onnx), downloaded into [dir] by [Setup.downloadVoice]:
- * Parakeet TDT 0.6B v2 for speech-to-text, Pocket TTS for the voice, Silero for voice activity.
- * The big two load on first use and are freed by [release]; each has its own lock so a run can't free them mid-use.
+ * Parakeet Unified EN 0.6B for speech-to-text ([ASR]; a phone set up before it has Parakeet TDT 0.6B v2 until
+ * [Setup.updateSpeechToText]), Smart Turn for whether the user is done ([Turn]), Pocket TTS for the voice, Silero for
+ * voice activity. The big ones load on first use and are freed by [release]; speech-to-text and the voice each have
+ * their own lock so a run can't free them mid-use.
  */
 class Speech(val dir: File) {
     private val asrLock = Any()
+    private val turnLock = Any()
     private val ttsLock = Any()
     private var asr: OfflineRecognizer? = null
+    private var turn: Turn? = null
     private var tts: OfflineTts? = null
     private var voice: WaveData? = null
 
     val installed get() = FILES.all { dir.resolve(it).isFile }
+    /** Whether speech-to-text is [ASR], not the model before it (which has no marker), and Smart Turn is there. */
+    val current get() = dir.resolve(MARKER).let { it.isFile && it.readText().trim() == ASR } && dir.resolve(TURN).isFile
 
     /** The thread every screen's [Voice] transcribes on: one for the app, as one utterance is heard at a time. */
     val transcriber: ExecutorService = Executors.newSingleThreadExecutor { Thread(it, "asr").apply { isDaemon = true } }
+    /** Smart Turn's thread, beside [transcriber]: a pause is judged while it's transcribed. */
+    val turner: ExecutorService = Executors.newSingleThreadExecutor { Thread(it, "turn").apply { isDaemon = true } }
 
     private fun path(name: String) = dir.resolve(name).path
 
@@ -46,12 +54,23 @@ class Speech(val dir: File) {
         sampleRate = MIC_RATE, numThreads = 1,
     ))
 
-    /** Loads the recognizer ahead of [transcribe], so it is ready by the time the user stops talking. */
-    fun warmUp() { synchronized(asrLock) { recognizer() } }
+    /** Loads the recognizer (and Smart Turn) ahead of [transcribe], so it is ready by the time the user stops talking. */
+    fun warmUp() { synchronized(asrLock) { recognizer() }; synchronized(turnLock) { turn() } }
+
+    /** The probability that [samples] (ending a moment after the last word) are a finished turn, or null without Smart Turn. */
+    fun finished(samples: FloatArray): Float? = synchronized(turnLock) {
+        val t = turn() ?: return null
+        val start = System.nanoTime()
+        t.complete(samples).also { Log.i(TAG, "turn %.2f in %d ms".format(it, (System.nanoTime() - start) / 1_000_000)) }
+    }
 
     /** Loads the voice ahead of [synthesize], e.g. while the agent works on a spoken request. */
     fun warmUpVoice() { synchronized(ttsLock) { synthesizer() } }
 
+    /**
+     * Transcribes [samples], by greedy search: beam search (which hotwords would need) is 2.5–4× slower on a Pixel 6a,
+     * and each transcription is on the way to sending (see the README).
+     */
     fun transcribe(samples: FloatArray): String = synchronized(asrLock) {
         val r = recognizer()
         val start = System.nanoTime()
@@ -80,12 +99,14 @@ class Speech(val dir: File) {
         Unit
     }
 
-    /** Frees both models off the main thread, waiting for any use in progress. */
-    fun release() {
-        thread(isDaemon = true) {
+    /** Frees both models off the main thread (or on this one, if [wait]), waiting for any use in progress. */
+    fun release(wait: Boolean = false) {
+        val free = {
             synchronized(asrLock) { asr?.release(); asr = null }
+            synchronized(turnLock) { turn?.release(); turn = null }
             synchronized(ttsLock) { tts?.release(); tts = null; voice = null }
         }
+        if (wait) free() else thread(isDaemon = true) { free() }
     }
 
     private fun recognizer(): OfflineRecognizer = asr ?: timed("speech recognizer") {
@@ -97,6 +118,9 @@ class Speech(val dir: File) {
             tokens = path("parakeet/tokens.txt"), modelType = "nemo_transducer", numThreads = THREADS,
         )))
     }.also { asr = it }
+
+    private fun turn(): Turn? = turn ?: dir.resolve(TURN).takeIf { it.isFile }?.let { timed("turn model") { Turn(it, THREADS) } }
+        ?.also { turn = it }
 
     private fun synthesizer(): OfflineTts = tts ?: timed("voice") {
         voice = WaveReader.readWave(path("pocket/voice.wav"))
@@ -117,6 +141,14 @@ class Speech(val dir: File) {
     }
 
     companion object {
+        /** The speech-to-text model: sherpa-onnx's name for it, its archive's and the marker's. */
+        const val ASR = "sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming"
+        /** Names the model in `parakeet/`: [ASR], or none for Parakeet TDT 0.6B v2 (same files, other weights). */
+        const val MARKER = "parakeet/model.txt"
+        /** Pipecat's Smart Turn v3.2 (int8), pinned to a revision of its Hugging Face repo and checked against its SHA-256. */
+        const val TURN = "smart-turn-v3.2-cpu.onnx"
+        const val TURN_URL = "https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/f766f81d3cfdf7737ac64aad813d91bbfd56bf93/$TURN"
+        const val TURN_SHA256 = "2bb026316b14a660486a75b1733cd3fbab8c2fd0314dc9af7be49f8cca967e4f"
         const val VAD_WINDOW = 512  // 32 ms at 16 kHz
         private const val THREADS = 4
         private const val TAG = "Droid"

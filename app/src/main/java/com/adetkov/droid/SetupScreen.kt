@@ -133,8 +133,13 @@ fun SetupScreen(setup: Setup, firstRun: Boolean, onClose: () -> Unit) {
                 }
                 AnimatedVisibility(s.signInUrl != null && s.deviceCode == null) { s.signInUrl?.let { SignIn(it, setup) } }
                 Line()
-                Step(4, "Voice", if (s.voice) "Installed" else "Talk to Droid and hear answers, all on the phone. 820 MB.", s.voice, optional = true) {
-                    Action(if (s.voice) "Redownload" else "Download", idle, primary = false) { setup.downloadVoice() }
+                Step(4, "Voice", when {
+                    !s.voice -> "Talk to Droid and hear answers, all on the phone. 860 MB."
+                    !s.voiceCurrent -> "Installed. Better speech-to-text is out: 500 MB"
+                    else -> "Installed"
+                }, s.voice, optional = true) {
+                    if (s.voice && !s.voiceCurrent) Action("Update", idle) { setup.updateSpeechToText() }
+                    else Action(if (s.voice) "Redownload" else "Download", idle, primary = false) { setup.downloadVoice() }
                 }
                 Line()
                 Step(5, "Assistant", if (s.assistant) "Long-press power to talk to Droid" else "Open Droid by long-pressing power", s.assistant, optional = true) {

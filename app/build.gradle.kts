@@ -17,6 +17,7 @@ android {
         targetSdk = 37
         versionCode = 1
         versionName = "0.9"
+        externalNativeBuild { ndkBuild { abiFilters += listOf("arm64-v8a", "x86_64") } }  // the CPUs the APKs are split by
     }
 
     // Release signing from keystore.properties (storeFile, storePassword, keyAlias, keyPassword), kept out of git.
@@ -41,6 +42,9 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+    // libturn.so (src/main/cpp): Smart Turn on sherpa-onnx's own onnxruntime
+    ndkVersion = "30.0.14904198"
+    externalNativeBuild { ndkBuild { path = file("src/main/cpp/Android.mk") } }
     packaging {
         jniLibs.excludes += listOf("**/libsherpa-onnx-c-api.so", "**/libsherpa-onnx-cxx-api.so")  // the JNI library doesn't use them
     }
@@ -78,9 +82,9 @@ abstract class Download : DefaultTask() {
 }
 
 val sherpaOnnx = tasks.register<Download>("downloadSherpaOnnx") {
-    val version = "1.13.8"
+    val version = "2.0.2"
     url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/v$version/sherpa-onnx-$version.aar"
-    sha256 = "633c24321e06b1fe79feafa03ea16cbc0f8a286641e2da3559bac91bdb13bd96"
+    sha256 = "6420cfb86c2ef8462dadd77b2202b7430487bdfb2bc715e9ce2864871209a80e"
     output = layout.projectDirectory.file("libs/sherpa-onnx-$version.aar")
 }
 

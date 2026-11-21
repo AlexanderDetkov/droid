@@ -3,7 +3,9 @@ package com.adetkov.droid
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.pm.PackageManager
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Handler
@@ -29,10 +31,12 @@ import kotlin.concurrent.thread
 import kotlin.math.sqrt
 
 /**
- * Speech-to-text on the phone: records until the user stops talking (Silero VAD), showing a live transcript,
- * then transcribes the whole utterance with Parakeet. Call from the main thread; callbacks arrive there.
+ * Speech-to-text on the phone: records until the user has finished talking, showing a live transcript, then
+ * transcribes the whole utterance with Parakeet. Silero VAD hears the pauses; at each one, Smart Turn ([Turn]) and the
+ * transcript decide whether that's the end: then a short silence ends it, if neither thinks so a long one, else 1.2 s.
+ * Call from the main thread; callbacks arrive there.
  */
-class Voice(private val speech: Speech) {
+class Voice(private val speech: Speech, private val audio: AudioManager) {
     /** True from [start] until a callback ends the session (it includes the final transcription). */
     var listening by mutableStateOf(false)
         private set
@@ -78,8 +82,25 @@ class Voice(private val speech: Speech) {
         @Volatile var finishing = false
         @Volatile var cancelled = false
         @Volatile private var decoding = false
-        /** The latest live transcript and the sample index it covers audio up to. */
+        /** The latest live transcript, and the speech end it covers (with [SETTLE] after it). */
         @Volatile private var partial: Pair<Int, String>? = null
+        /** For the pause after the speech ending at the first number: how much silence ends the turn (see [judge]). */
+        @Volatile private var ending: Pair<Int, Int>? = null
+
+        /** How much silence ends the turn at a pause, from Smart Turn's [p] and the [text] up to it. */
+        private fun judge(p: Float?, text: String?, asked: Long): Int {
+            p ?: return END_SILENCE
+            val sounds = p > 0.5f
+            val reads = text?.let { readsFinished(it) }  // none past PARTIALS_UP_TO
+            // Short commands often come without a period: when Smart Turn is sure, the last word alone may vouch.
+            val sure = p > SURE && text != null && readsFinished(text, stop = false)
+            return when {
+                sounds && (reads == true || sure) -> PAUSE  // both say it's finished: now
+                !sounds && reads != true -> LONG_SILENCE  // neither does: a thought is on its way
+                else -> END_SILENCE
+            }.also { Log.i("Droid", "pause: sounds finished %.2f, reads finished %s: ends after %d ms (judged in %d ms)".format(
+                p, reads, it * 1000 / MIC_RATE, (System.nanoTime() - asked) / 1_000_000)) }
+        }
 
         /** Runs [f] on the main thread if this is still the live session. */
         private fun ui(f: () -> Unit) { main.post { if (session === this && !cancelled) f() } }
@@ -87,7 +108,7 @@ class Voice(private val speech: Speech) {
         private fun close(f: () -> Unit) = ui { session = null; end(); f() }
 
         fun run() {
-            val mic = source ?: AudioMic.open() ?: return close { onError("The microphone is busy") }
+            val mic = source ?: AudioMic.open(audio) ?: return close { onError("The microphone is busy") }
             asr.execute { speech.warmUp() }
             val vad = speech.vad()
             val audio = Samples()
@@ -96,6 +117,8 @@ class Voice(private val speech: Speech) {
             var firstSpeech = -1      // sample index where speech started
             var lastSpeech = 0        // sample index just past the last speech frame
             var lastPartial = 0
+            var queued = -1           // the speech end the latest transcription covers
+            var judged = -1           // the speech end whose pause has been judged
             var paused = false        // onPause was called for the current pause
             try {
                 while (!cancelled && !finishing) {
@@ -114,21 +137,33 @@ class Voice(private val speech: Speech) {
                     if (silence == 0) paused = false
                     else if (heard && !paused && silence >= PAUSE) { paused = true; ui(onPause) }
                     if (!heard && audio.size > NO_SPEECH_TIMEOUT) break
-                    if (heard && silence > END_SILENCE) break
+                    val enough = ending?.takeIf { it.first == lastSpeech }?.second ?: END_SILENCE
+                    if (heard && silence >= enough) { Log.i("Droid", "turn over after ${silence * 1000 / MIC_RATE} ms of silence"); break }
                     if (audio.size > MAX_LENGTH) break
-                    // Live transcript: re-transcribe the utterance about once a second, and once soon after each pause,
-                    // so that by the end of the silence the transcript usually covers everything said (no final pass).
-                    val due = audio.size - lastPartial >= MIC_RATE || (silence >= PAUSE && lastPartial < lastSpeech)
-                    if (heard && !decoding && due && audio.size < PARTIALS_UP_TO) {
-                        val end = audio.size
-                        lastPartial = end
-                        decoding = true
-                        val clip = audio.slice(firstSpeech - LEAD, end)
+                    // Live transcript: re-transcribe what was said about once a second, and at each pause, which Smart Turn
+                    // judges meanwhile; so by the end of the silence the transcript covers everything said (no final pass).
+                    val transcribe = audio.size < PARTIALS_UP_TO
+                    val pause = heard && silence >= PAUSE && judged != lastSpeech
+                    // (not once they've gone quiet: the pause about to come would wait behind it)
+                    val periodic = heard && transcribe && !decoding && queued != lastSpeech && silence < PAUSE / 2 &&
+                        audio.size - lastPartial >= MIC_RATE
+                    if (pause || periodic) {
+                        val spoke = lastSpeech
+                        // what was said, and silence after it, so the end is punctuated as one (zeros past what was heard)
+                        val clip = if (transcribe && queued != spoke) audio.slice(firstSpeech - LEAD, spoke + SETTLE) else null
+                        if (clip != null) { queued = spoke; lastPartial = audio.size }
+                        val sounds = if (!pause) null else {
+                            judged = spoke
+                            val heardSoFar = audio.slice(firstSpeech - LEAD, audio.size)
+                            speech.turner.submit<Float?> { try { speech.finished(heardSoFar) } catch (e: Exception) { Log.w("Droid", "turn failed", e); null } }
+                        }
+                        if (periodic) decoding = true
+                        val asked = System.nanoTime()
                         asr.execute {
-                            val text = try { speech.transcribe(clip) } catch (e: Exception) { "" }
-                            partial = end to text
-                            decoding = false
-                            if (text.isNotEmpty()) ui { onPartial(text) }
+                            val text = clip?.let { try { speech.transcribe(it) } catch (e: Exception) { "" } }
+                            if (text != null) { partial = spoke to text; if (text.isNotEmpty()) ui { onPartial(text) } }
+                            if (sounds != null) ending = spoke to judge(sounds.get(), if (transcribe) partial?.takeIf { it.first == spoke }?.second else null, asked)
+                            if (periodic) decoding = false
                         }
                     }
                 }
@@ -145,7 +180,7 @@ class Voice(private val speech: Speech) {
             val clip = audio.slice(firstSpeech - LEAD, lastSpeech + TAIL)
             asr.execute {
                 val done = partial?.takeIf { it.first >= lastSpeech }?.second
-                val text = done ?: try { speech.transcribe(clip) } catch (e: Exception) {
+                val text = done ?: try { speech.transcribe(audio.slice(firstSpeech - LEAD, lastSpeech + SETTLE)) } catch (e: Exception) {
                     Log.w("Droid", "transcription failed", e)
                     return@execute close { onError("Couldn't transcribe that") }
                 }
@@ -156,14 +191,17 @@ class Voice(private val speech: Speech) {
 
     companion object {
         private const val SPEECH_PROB = 0.5f
+        private const val SURE = 0.95f                      // Smart Turn this sure needs no period (see [judge])
         private const val MIN_SPEECH_FRAMES = 8              // ~0.25 s of speech before it counts
-        private const val END_SILENCE = MIC_RATE * 6 / 5     // stop 1.2 s after the user stops talking
-        private const val PAUSE = MIC_RATE / 4               // a pause this long gets a fresh transcript
+        private const val END_SILENCE = MIC_RATE * 6 / 5     // stop 1.2 s after the user stops talking...
+        private const val LONG_SILENCE = MIC_RATE * 5 / 2    // ...or 2.5 s, when they don't sound or read done
+        private const val PAUSE = MIC_RATE / 4               // a pause this long gets a fresh transcript and a judgment
         private const val NO_SPEECH_TIMEOUT = MIC_RATE * 7   // give up if nothing is said for 7 s
         private const val MAX_LENGTH = MIC_RATE * 120
         private const val PARTIALS_UP_TO = MIC_RATE * 30     // longer dictation just waits for the end
         private const val LEAD = MIC_RATE * 3 / 10           // audio kept before speech starts...
         private const val TAIL = MIC_RATE * 3 / 10           // ...and after it ends
+        private const val SETTLE = MIC_RATE / 2              // silence after the speech that's transcribed with it
         /** What an utterance's audio (onFinal's) holds besides the speech: always this many samples, [LEAD] and [TAIL]. */
         const val PADDING = LEAD + TAIL
     }
@@ -177,11 +215,15 @@ class Voice(private val speech: Speech) {
 fun rememberVoice(): Pair<Voice, Speaker> {
     val ctx = LocalContext.current
     val speech = (ctx.applicationContext as DroidApp).speech
-    val voice = remember { Voice(speech) }
+    val voice = remember { Voice(speech, ctx.getSystemService(AudioManager::class.java)) }
     val speaker = remember { Speaker(ctx, speech) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     DisposableEffect(lifecycle) {
-        val observer = LifecycleEventObserver { _, e -> if (e == Lifecycle.Event.ON_STOP) voice.cancel() }
+        val observer = LifecycleEventObserver { _, e ->
+            // Talking is what these screens are for: the recognizer loads now (a few seconds), not after the first word.
+            if (e == Lifecycle.Event.ON_START && speech.installed) speech.transcriber.execute { speech.warmUp() }
+            if (e == Lifecycle.Event.ON_STOP) voice.cancel()
+        }
         lifecycle.addObserver(observer)
         onDispose { lifecycle.removeObserver(observer); voice.cancel(); speaker.shutdown() }
     }
@@ -251,7 +293,7 @@ interface Mic {
     fun close()
 }
 
-private class AudioMic(private val rec: AudioRecord) : Mic {
+private class AudioMic(private val rec: AudioRecord, private val audio: AudioManager, private val headset: Boolean) : Mic {
     override fun read(frame: FloatArray): Int {
         var n = 0
         while (n < frame.size) {
@@ -262,21 +304,39 @@ private class AudioMic(private val rec: AudioRecord) : Mic {
         return n
     }
 
-    override fun close() { rec.stop(); rec.release() }
+    override fun close() {
+        rec.stop(); rec.release()
+        if (headset) audio.clearCommunicationDevice()  // the headset goes back to music quality, for the answer read aloud
+    }
 
     companion object {
-        /** Null if the microphone can't be opened (another app or a call holds it). The caller checks the permission. */
+        /** Bluetooth headsets, whose mic Android uses only when asked to. (A wired or USB one's is used anyway.) */
+        private val HEADSETS = setOf(AudioDeviceInfo.TYPE_BLUETOOTH_SCO, AudioDeviceInfo.TYPE_BLE_HEADSET)
+
+        /**
+         * The microphone: a Bluetooth headset's when one is connected (it's at the mouth wherever the phone is), else
+         * the phone's. Null if it can't be opened (another app or a call holds it). The caller checks the permission.
+         */
         @SuppressLint("MissingPermission")
-        fun open(): Mic? {
+        fun open(audio: AudioManager): Mic? {
+            // Asking for the headset brings up its mic link, which takes a moment: until then this records from the
+            // phone, and then follows the route.
+            val headset = audio.availableCommunicationDevices.firstOrNull { it.type in HEADSETS }
+                ?.takeIf { audio.setCommunicationDevice(it) }
             val format = AudioFormat.ENCODING_PCM_FLOAT
             val size = maxOf(AudioRecord.getMinBufferSize(MIC_RATE, AudioFormat.CHANNEL_IN_MONO, format), MIC_RATE * 4)
+            fun fail(): Mic? { if (headset != null) audio.clearCommunicationDevice(); return null }
             val rec = try {
                 AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, MIC_RATE, AudioFormat.CHANNEL_IN_MONO, format, size)
-            } catch (e: Exception) { return null }
-            if (rec.state != AudioRecord.STATE_INITIALIZED) { rec.release(); return null }
+            } catch (e: Exception) { return fail() }
+            if (rec.state != AudioRecord.STATE_INITIALIZED) { rec.release(); return fail() }
+            headset?.let { h ->
+                audio.getDevices(AudioManager.GET_DEVICES_INPUTS).firstOrNull { it.type == h.type && it.address == h.address }
+                    ?.let(rec::setPreferredDevice)
+            }
             rec.startRecording()
-            if (rec.recordingState != AudioRecord.RECORDSTATE_RECORDING) { rec.release(); return null }
-            return AudioMic(rec)
+            if (rec.recordingState != AudioRecord.RECORDSTATE_RECORDING) { rec.release(); return fail() }
+            return AudioMic(rec, audio, headset != null)
         }
     }
 }

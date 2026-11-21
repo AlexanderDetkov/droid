@@ -78,6 +78,8 @@ data class SetupState(
     val linux: Boolean = false,
     val signedIn: Boolean = false,
     val voice: Boolean = false,
+    /** Voice has the newest speech-to-text model (else [Setup.updateSpeechToText] offers it). */
+    val voiceCurrent: Boolean = true,
     /** The voice match model. */
     val voiceMatch: Boolean = false,
     /** Droid is the digital assistant, through its [AssistService]. */
@@ -354,23 +356,57 @@ class Setup(private val app: DroidApp) {
         }
     }
 
-    /** On-device speech: Silero VAD, Parakeet TDT 0.6B v2 (speech-to-text), Pocket TTS (voice). About 820 MB. */
+    /** On-device speech: Silero VAD, Parakeet Unified EN 0.6B (speech-to-text), Smart Turn, Pocket TTS (voice). About 860 MB. */
     fun downloadVoice() = step("Downloading voice") { fetchVoice(); check() }
+
+    /** Brings speech-to-text up to [Speech.current] (about 500 MB): the newer model and Smart Turn, keeping the rest of the voice. */
+    fun updateSpeechToText() = step("Downloading speech-to-text") {
+        val models = app.speech.dir
+        if (!models.resolve(Speech.TURN).isFile) fetchTurn(models)
+        val dir = models.resolve("parakeet")
+        if (!app.speech.current) {
+            val tmp = File(dir.path + ".new").apply { deleteRecursively(); mkdirs() }
+            try {
+                fetch("$SHERPA/asr-models/${Speech.ASR}.tar.bz2", "Speech-to-text") { untarBz2(it, tmp) }
+                File(tmp, "test_wavs").deleteRecursively()
+                File(tmp, "model.txt").writeText(Speech.ASR)
+                app.speech.release(wait = true)
+                dir.deleteRecursively()
+                if (!tmp.renameTo(dir)) throw IOException("Could not move the speech-to-text model into place")
+            } finally {
+                tmp.deleteRecursively()
+            }
+        }
+        check()
+    }
+
+    /** Smart Turn into [dir], checked against its SHA-256. */
+    private fun fetchTurn(dir: File, label: String = "Speech-to-text") {
+        val tmp = File(dir, Speech.TURN + ".new")
+        try {
+            if (download(Speech.TURN_URL, tmp, label) != Speech.TURN_SHA256) throw IOException("Smart Turn download is corrupt, try again")
+            if (!tmp.renameTo(File(dir, Speech.TURN))) throw IOException("Could not move Smart Turn into place")
+        } finally {
+            tmp.delete()
+        }
+    }
 
     private fun fetchVoice() {
         val dir = app.speech.dir
         val tmp = File(dir.path + ".new").apply { deleteRecursively(); mkdirs() }
         try {
-            download("$SHERPA/asr-models/silero_vad.onnx", File(tmp, "silero_vad.onnx"), "Voice 1/3")
-            fetch("$SHERPA/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2", "Voice 2/3") { untarBz2(it, File(tmp, "parakeet")) }
-            fetch("$SHERPA/tts-models/sherpa-onnx-pocket-tts-int8-2026-01-26.tar.bz2", "Voice 3/3") { untarBz2(it, File(tmp, "pocket")) }
+            download("$SHERPA/asr-models/silero_vad.onnx", File(tmp, "silero_vad.onnx"), "Voice 1/4")
+            fetch("$SHERPA/asr-models/${Speech.ASR}.tar.bz2", "Voice 2/4") { untarBz2(it, File(tmp, "parakeet")) }
+            File(tmp, Speech.MARKER).writeText(Speech.ASR)
+            fetchTurn(tmp, "Voice 3/4")
+            fetch("$SHERPA/tts-models/sherpa-onnx-pocket-tts-int8-2026-01-26.tar.bz2", "Voice 4/4") { untarBz2(it, File(tmp, "pocket")) }
             File(tmp, "pocket/test_wavs/bria.wav").renameTo(File(tmp, "pocket/voice.wav"))  // the voice it imitates
             listOf("parakeet/test_wavs", "pocket/test_wavs").forEach { File(tmp, it).deleteRecursively() }
             app.speech.release()
             dir.deleteRecursively()
             if (!tmp.renameTo(dir)) throw IOException("Could not move the voice models into place")
         } finally {
-            tmp.deleteRecursively()  // what a failed download left, up to 820 MB (once moved into place, nothing)
+            tmp.deleteRecursively()  // what a failed download left, up to 860 MB (once moved into place, nothing)
         }
     }
 
@@ -523,7 +559,7 @@ class Setup(private val app: DroidApp) {
         val secureSettings = !helper || app.adb.canToggle || probe(app.adb.grantCommand).let { app.adb.canToggle }
         val reached = { s: SetupState ->
             s.copy(checked = true, root = root, su = su, access = access, paired = app.adb.paired, helper = helper, helperError = helperError,
-                secureSettings = secureSettings, voice = app.speech.installed, voiceMatch = app.voiceMatch.installed, assistant = assistant,
+                secureSettings = secureSettings, voice = app.speech.installed, voiceCurrent = app.speech.current, voiceMatch = app.voiceMatch.installed, assistant = assistant,
                 engine = app.prefs.engine.value)
         }
         // Out of reach for now: what the last check found in the Linux stands (see [needed]).

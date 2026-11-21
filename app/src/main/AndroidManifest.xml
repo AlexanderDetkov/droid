@@ -10,6 +10,8 @@
     <!-- Without root: start Droid's helper again after the phone restarts (HelperJob). -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- A Bluetooth headset's microphone, for talking to Droid with earbuds in -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <!-- Pages the agent shows floating over other apps (FloatPage), or full screen from the background. Granted by
          Droid itself through appops, as root or the shell user, the first time a page asks for it. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
