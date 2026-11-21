@@ -5,11 +5,15 @@ import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.io.IOException
 
-/** The agent's `android` command (assets/setup/bin/android): its display default, through its Python tests. */
+/** The agent's `android` and `shot` commands (assets/setup/bin): `android`'s display default and `shot --text`, through their Python tests. */
 class AndroidCommandTest {
-    @Test fun androidCommandTests() {
+    @Test fun androidCommandTests() = python("src/test/python/test_android.py")
+
+    @Test fun shotTextTests() = python("src/test/python/test_shot.py")
+
+    private fun python(test: String) {
         val run = try {
-            val p = ProcessBuilder("python3", "-I", "src/test/python/test_android.py").redirectErrorStream(true).start()
+            val p = ProcessBuilder("python3", "-I", test).redirectErrorStream(true).start()
             val out = p.inputStream.bufferedReader().readText()
             p.waitFor() to out
         } catch (_: IOException) { null }

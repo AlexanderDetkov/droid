@@ -1,8 +1,62 @@
 #!/bin/sh
 # Screenshot this task's hidden display ($AGENT_DISPLAY) and print the PNG's path; view it with the Read tool.
+# `shot --text` instead lists what's on it as text: each label, field and control, and where to tap it.
 # The display's helper writes into Android's /data/local/tmp/droid/vd: at /proc/1/root in the chroot, at its own path
 # under proot (DROID_HOST is empty there).
-D=${DROID_HOST-/proc/1/root}/data/local/tmp/droid/vd/$AGENT_DISPLAY
+V=/data/local/tmp/droid/vd/$AGENT_DISPLAY
+D=${DROID_HOST-/proc/1/root}$V
+
+if [ "$1" = --text ]; then
+  # Android's `uiautomator dump --windows` (an option its help leaves out) reads every display's windows; this keeps
+  # this task's display and only what reads or acts: text, descriptions, fields, switches, lists.
+  rm -f "$D/ui.xml"
+  OUT=$(android "uiautomator dump --windows $V/ui.xml" 2>&1)
+  [ -s "$D/ui.xml" ] || { echo "no text: Android couldn't read the hidden display (${OUT:-no answer}); use shot"; exit 1; }
+  exec python3 -I - "$D/ui.xml" "$AGENT_DISPLAY" <<'EOF'
+import re, sys
+import xml.etree.ElementTree as ET
+try:
+    displays = ET.parse(sys.argv[1]).getroot()
+except ET.ParseError as e:
+    sys.exit(f"no text: Android's dump didn't parse ({e}); use shot")
+mine = [d for d in displays.iter('display') if d.get('id') == sys.argv[2]]
+if not mine:
+    sys.exit("no text: nothing is open on the hidden display; use shot")
+lines = []
+for window in mine[0].iter('window'):
+    for n in window.iter('node'):
+        text = ' '.join((n.get('text') or '').split())[:200]
+        desc = ' '.join((n.get('content-desc') or '').split())[:200]
+        cls = (n.get('class') or '').rsplit('.', 1)[-1]
+        flags = []
+        if 'EditText' in cls:
+            flags.append('field' + (', password' if n.get('password') == 'true' else ''))
+        if n.get('checkable') == 'true':
+            flags.append('on' if n.get('checked') == 'true' else 'off')
+        if n.get('selected') == 'true':
+            flags.append('selected')
+        if n.get('enabled') == 'false':
+            flags.append('disabled')
+        if n.get('scrollable') == 'true':
+            flags.append('scrolls')
+        # Worth a line: words, or a field, switch or list; a bare box (selected or tappable) has its label on a child
+        if not (text or desc or 'EditText' in cls or n.get('checkable') == 'true' or n.get('scrollable') == 'true'):
+            continue
+        m = re.match(r'\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]', n.get('bounds') or '')
+        if not m:
+            continue
+        x1, y1, x2, y2 = map(int, m.groups())
+        if x2 <= x1 or y2 <= y1:
+            continue  # off screen
+        label = text if not desc or desc == text else (f'{text} ({desc})' if text else desc)
+        x, y = (x1 + x2) // 2, (y1 + y2) // 2
+        if lines and lines[-1][0] == label and abs(lines[-1][1] - x) < 100 and abs(lines[-1][2] - y) < 100:
+            continue  # a tab or button and the label inside it: once
+        lines.append((label, x, y, f"{label or cls}  @{x},{y}" + (f"  [{', '.join(flags)}]" if flags else '')))
+print('\n'.join(l[3] for l in lines) if lines else "no text on the hidden display (a picture or a game, say); use shot")
+EOF
+fi
+
 OUT=/tmp/shot-$AGENT_DISPLAY.png
 rm -f "$D/shot.done" "$D/shot.png"; touch "$D/shot.req"
 for _ in $(seq 50); do [ -f "$D/shot.done" ] && break; sleep 0.1; done

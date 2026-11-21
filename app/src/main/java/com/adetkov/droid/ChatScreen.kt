@@ -648,14 +648,18 @@ private fun Timeline(lines: List<Line>) {
     }
 }
 
-/** Starting points shown on a new chat; tapping one puts it in the message box. */
+/**
+ * Starting points shown on a new chat; tapping one puts it in the message box. The quick ones come first, so a first
+ * try answers within a minute (Claude on the demo phone, 2026-11-20: calendar 46 s, timer 27 s, quiet 31 s; the three
+ * after them take 3 to 4 minutes, going through several apps).
+ */
 private val SUGGESTIONS = listOf(
-    Triple(R.drawable.ic_s_messages, "Catch me up", "on unread messages"),
     Triple(R.drawable.ic_s_calendar, "Check my calendar", "today and tomorrow"),
     Triple(R.drawable.ic_s_alarm, "Set a timer", "for 10 minutes"),
+    Triple(R.drawable.ic_s_dnd, "Quiet my phone", "until tomorrow morning"),
+    Triple(R.drawable.ic_s_messages, "Catch me up", "on unread messages"),
     Triple(R.drawable.ic_s_mail, "Triage my inbox", "and flag anything urgent"),
     Triple(R.drawable.ic_s_music, "Play something", "I'd like but haven't heard"),
-    Triple(R.drawable.ic_s_dnd, "Quiet my phone", "until tomorrow morning"),
 )
 
 @Composable
