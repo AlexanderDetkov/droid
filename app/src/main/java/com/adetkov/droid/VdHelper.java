@@ -2,9 +2,10 @@
 // Usage: VdHelper WIDTH HEIGHT DPI FLAGS ASSOCIATION_ID [AGENT_PID]
 //   ASSOCIATION_ID: 0 for none, a plain virtual display
 //   AGENT_PID: phone-agent's; the helper ends when it does (a vd-start.sh from before this passes none)
-// Prints "pid=", "displayId=" and "port=" lines. Saves a PNG of the display whenever
-// /data/local/tmp/droid/vd/<displayId>/shot.req appears, and streams it to the app's Watch view on 127.0.0.1:<port>,
-// which can send touches back (take over).
+// Prints "pid=", "displayId=" and "port=" lines. Answers the agent's `shot` in /data/local/tmp/droid/vd/<displayId>
+// once the display has settled (see Settle): shot.req with shot.png, text.req with ui.xml (what's on it, as
+// `uiautomator dump --windows` writes it), each then .done, holding "changing" if it never settled. Streams the display
+// to the app's Watch view on 127.0.0.1:<port>, which can send touches back (take over).
 package com.adetkov.droid;
 
 import android.annotation.SuppressLint;
@@ -153,7 +154,7 @@ public class VdHelper {
 
         File dir = new File(ROOT, String.valueOf(displayId));
         dir.mkdirs();
-        File req = new File(dir, "shot.req");
+        File shotReq = new File(dir, "shot.req"), textReq = new File(dir, "text.req");
         if (server != null) {
             java.net.ServerSocket ss = server;
             Thread t = new Thread(() -> serveFrames(ss, token, displayId));
@@ -162,42 +163,233 @@ public class VdHelper {
         }
         // Pixels are only copied when someone needs them: a `shot` request, or a Watch client due for a frame.
         Image pending = null;
-        for (int tick = 0; ; tick++) {
+        Settle settle = new Settle();
+        int[] coarse = null;  // the latest frame, coarsely (see sample)
+        long nextCheck = 0, nextTop = 0;
+        while (true) {
+            long now = SystemClock.uptimeMillis();
             Image img = reader.acquireLatestImage();
             if (img != null) {
                 if (pending != null) pending.close();
                 pending = img;
+                int[] seen = sample(img, w, h);
+                settle.frame(now, differs(coarse, seen));
+                coarse = seen;
             }
-            boolean shot = req.exists();
-            if (pending != null && (shot || frameDue())) {
+            if (now >= nextTop) {
+                nextTop = now + 250;
+                String top = topActivity(displayId);
+                settle.screen(top, now);
+                topApp = top == null ? null : top.substring(0, top.indexOf('/'));
+            }
+            boolean shot = shotReq.exists(), text = textReq.exists();
+            if (shot || text) settle.ask(now);
+            boolean due = settle.due(now);
+            if (pending != null && ((due && shot) || frameDue())) {
                 latest = toBitmap(pending, w, h);
                 pending.close();
                 pending = null;
             }
-            if (tick % 10 == 0 && !clients.isEmpty()) topApp = topPackage(displayId);
-            // Normally vd-stop.sh ends this helper; if phone-agent ended without it (killed, or its `android` call
-            // failed), the display would otherwise stay up, and keep the phone awake, until the phone restarts.
-            if (tick % 10 == 0 && lifeline.gone()) {
-                System.out.println("phone-agent is gone: ending the display");
-                File[] left = dir.listFiles();
-                if (left != null) for (File f : left) f.delete();
-                dir.delete();
-                System.exit(0);
-            }
-            if (shot) {
-                req.delete();
-                File out = new File(dir, "shot.png");
-                if (latest != null) {
-                    try (FileOutputStream os = new FileOutputStream(out)) {
-                        latest.compress(Bitmap.CompressFormat.PNG, 100, os);
-                    }
-                } else {
-                    out.delete();
+            if (now >= nextCheck) {
+                nextCheck = now + 1000;
+                // Normally vd-stop.sh ends this helper; if phone-agent ended without it (killed, or its `android` call
+                // failed), the display would otherwise stay up, and keep the phone awake, until the phone restarts.
+                if (lifeline.gone()) {
+                    System.out.println("phone-agent is gone: ending the display");
+                    File[] left = dir.listFiles();
+                    if (left != null) for (File f : left) f.delete();
+                    dir.delete();
+                    System.exit(0);
                 }
-                new File(dir, "shot.done").createNewFile();
             }
-            Thread.sleep(100);
+            if (due) {
+                // What the agent gets besides the picture or text: whether the screen was still changing.
+                byte[] note = (settle.settled(now) ? "" : "changing\n").getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+                settle.done();
+                if (text) {
+                    textReq.delete();
+                    File out = new File(dir, "ui.xml");
+                    try {
+                        writeFile(out, windowsXml(displayId).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    } catch (Throwable e) {
+                        System.out.println("text: " + e);
+                        out.delete();
+                    }
+                    writeFile(new File(dir, "text.done"), note);
+                }
+                if (shot) {
+                    shotReq.delete();
+                    File out = new File(dir, "shot.png");
+                    if (latest != null) {
+                        try (FileOutputStream os = new FileOutputStream(out)) {
+                            latest.compress(Bitmap.CompressFormat.PNG, 100, os);
+                        }
+                    } else {
+                        out.delete();
+                    }
+                    writeFile(new File(dir, "shot.done"), note);
+                }
+            }
+            Thread.sleep(settle.waiting() ? 20 : 100);
         }
+    }
+
+    /**
+     * When a `shot` (or `shot --text`) is due: once the display has settled, or after [MOST] ms however it looks.
+     * Settled is no change for [QUIET] ms, and at least that long since the request, so a tap just before it has time
+     * to show. A change is a frame in a burst (an animation, a page loading) or one that differs over more than a
+     * sliver of the screen: a blinking cursor or a clock's seconds don't hold a shot back, a spinner does. A screen
+     * that opened since the agent's last look (another activity in front) must also have been still for [QUIET_NEW]
+     * ms since it opened: an app starting cold may sit on its splash, or pause while it loads.
+     */
+    static final class Settle {
+        static final long QUIET = 500, QUIET_NEW = 1500, MOST = 5000, BURST = 150;
+        long lastFrame;   // uptime of the display's latest frame
+        long lastChange;  // uptime of its latest change
+        long asked;       // uptime the waiting request was first seen; 0: none
+        String screen;    // the activity in front, checked every 250 ms
+        long opened;      // uptime it came to the front
+        String looked;    // the activity in front at the agent's last look
+
+        /** A new frame; [big] if it differs from the one before over more than a sliver (see [differs]). */
+        void frame(long now, boolean big) {
+            if (big || now - lastFrame < BURST) lastChange = now;
+            lastFrame = now;
+        }
+        void screen(String activity, long now) {
+            if (!java.util.Objects.equals(activity, screen)) { screen = activity; opened = now; }
+        }
+        void ask(long now) { if (asked == 0) asked = now; }
+        boolean waiting() { return asked != 0; }
+        boolean settled(long now) {
+            if (now - asked < QUIET || now - lastChange < QUIET) return false;
+            return java.util.Objects.equals(screen, looked) || now - Math.max(lastChange, opened) >= QUIET_NEW;
+        }
+        boolean due(long now) { return asked != 0 && (settled(now) || now - asked >= MOST); }
+        void done() { asked = 0; looked = screen; }
+    }
+
+    /** One pixel in [STEP] each way: enough to tell a page changing from a cursor blinking, at ~0.2 ms a frame. */
+    static final int STEP = 8;
+
+    static int[] sample(Image img, int w, int h) {
+        Image.Plane p = img.getPlanes()[0];
+        java.nio.ByteBuffer b = p.getBuffer();
+        int row = p.getRowStride(), px = p.getPixelStride(), cols = w / STEP, rows = h / STEP;
+        int[] s = new int[cols * rows];
+        for (int y = 0; y < rows; y++)
+            for (int x = 0; x < cols; x++) s[y * cols + x] = b.getInt(y * STEP * row + x * STEP * px);
+        return s;
+    }
+
+    /** Whether more than 1 sample in 300 changed (a cursor or a clock's seconds change a handful); a first frame does. */
+    static boolean differs(int[] before, int[] now) {
+        if (before == null || before.length != now.length) return true;
+        int changed = 0, most = now.length / 300;
+        for (int i = 0; i < now.length; i++) if (before[i] != now[i] && ++changed > most) return true;
+        return false;
+    }
+
+    static void writeFile(File f, byte[] b) throws java.io.IOException {
+        try (FileOutputStream os = new FileOutputStream(f)) {
+            os.write(b);
+        }
+    }
+
+    /**
+     * What's on [displayId], as `uiautomator dump --windows` writes it (what `shot --text` reads): its windows' visible
+     * nodes. Read here, in a helper that's already running, through a UiAutomation of its own for the moment it takes,
+     * instead of uiautomator's, which starts a Java process and waits for a second of quiet first (2-3 s a dump).
+     * Accessibility services the owner uses keep running (a plain UiAutomation would pause them), and only one
+     * UiAutomation may be connected at a time, so another task's dump is waited out.
+     */
+    static String windowsXml(int displayId) throws Exception {
+        android.os.HandlerThread thread = new android.os.HandlerThread("droid-text");
+        thread.start();
+        android.app.UiAutomation ui = null;
+        try {
+            Class<?> iconn = Class.forName("android.app.IUiAutomationConnection");
+            Object conn = Class.forName("android.app.UiAutomationConnection").getDeclaredConstructor().newInstance();
+            Constructor<android.app.UiAutomation> c = android.app.UiAutomation.class.getDeclaredConstructor(Looper.class, iconn);
+            c.setAccessible(true);
+            ui = c.newInstance(thread.getLooper(), conn);
+            java.lang.reflect.Method connect = android.app.UiAutomation.class.getMethod("connect", int.class);
+            for (long give = SystemClock.uptimeMillis() + 3000; ; ) {
+                try {
+                    connect.invoke(ui, android.app.UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES);
+                    break;
+                } catch (java.lang.reflect.InvocationTargetException e) {
+                    // "already registered": another task's dump (or uiautomator) has the one UiAutomation
+                    if (!(e.getCause() instanceof IllegalStateException) || SystemClock.uptimeMillis() > give) throw e;
+                    SystemClock.sleep(50);
+                }
+            }
+            android.accessibilityservice.AccessibilityServiceInfo info = ui.getServiceInfo();
+            info.flags |= android.accessibilityservice.AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+                    | android.accessibilityservice.AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS;
+            ui.setServiceInfo(info);
+            // The windows come a moment after asking for them (uiautomator waits for a second of quiet instead).
+            java.util.List<android.view.accessibility.AccessibilityWindowInfo> windows = null;
+            for (long give = SystemClock.uptimeMillis() + 1000; SystemClock.uptimeMillis() < give; SystemClock.sleep(10)) {
+                windows = ui.getWindowsOnAllDisplays().get(displayId);
+                if (windows != null && !windows.isEmpty()) break;
+            }
+            StringBuilder x = new StringBuilder("<?xml version='1.0' encoding='UTF-8'?><displays><display id=\"" + displayId + "\">");
+            if (windows != null) for (android.view.accessibility.AccessibilityWindowInfo win : windows) {
+                x.append("<window>");
+                android.view.accessibility.AccessibilityNodeInfo root = win.getRoot();
+                if (root != null) node(x, root, 0);
+                x.append("</window>");
+            }
+            return x.append("</display></displays>").toString();
+        } finally {
+            if (ui != null) try { android.app.UiAutomation.class.getMethod("disconnect").invoke(ui); } catch (Exception ignored) {}
+            thread.quitSafely();
+        }
+    }
+
+    /** [n] and its visible children as uiautomator's <node> elements, with the attributes `shot --text` reads. */
+    static void node(StringBuilder x, android.view.accessibility.AccessibilityNodeInfo n, int depth) {
+        android.graphics.Rect r = new android.graphics.Rect();
+        n.getBoundsInScreen(r);
+        x.append("<node");
+        attr(x, "text", n.getText());
+        attr(x, "content-desc", n.getContentDescription());
+        attr(x, "hint", n.getHintText());
+        attr(x, "class", n.getClassName());
+        attr(x, "password", String.valueOf(n.isPassword()));
+        attr(x, "checkable", String.valueOf(n.isCheckable()));
+        attr(x, "checked", String.valueOf(n.isChecked()));
+        attr(x, "selected", String.valueOf(n.isSelected()));
+        attr(x, "enabled", String.valueOf(n.isEnabled()));
+        attr(x, "focused", String.valueOf(n.isFocused()));
+        attr(x, "scrollable", String.valueOf(n.isScrollable()));
+        attr(x, "bounds", "[" + r.left + "," + r.top + "][" + r.right + "," + r.bottom + "]");
+        x.append(">");
+        for (int i = 0; depth < 100 && i < n.getChildCount(); i++) {
+            android.view.accessibility.AccessibilityNodeInfo child = n.getChild(i);
+            if (child != null && child.isVisibleToUser()) node(x, child, depth + 1);
+        }
+        x.append("</node>");
+    }
+
+    /** One XML attribute; characters XML can't hold (controls, a lone half of a surrogate pair) become spaces. */
+    static void attr(StringBuilder x, String name, CharSequence value) {
+        if (value == null) return;
+        x.append(' ').append(name).append("=\"");
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            boolean pair = Character.isHighSurrogate(c) && i + 1 < value.length() && Character.isLowSurrogate(value.charAt(i + 1));
+            if (pair) { x.append(c).append(value.charAt(++i)); continue; }
+            if (c == '&') x.append("&amp;");
+            else if (c == '<') x.append("&lt;");
+            else if (c == '>') x.append("&gt;");
+            else if (c == '"') x.append("&quot;");
+            else if (c == '\n') x.append("&#10;");
+            else if ((c < 0x20 && c != '\t') || Character.isSurrogate(c) || c == 0xFFFE || c == 0xFFFF) x.append(' ');
+            else x.append(c);
+        }
+        x.append('"');
     }
 
     static Bitmap toBitmap(Image img, int w, int h) {
@@ -248,16 +440,16 @@ public class VdHelper {
     /** The live view's clients, as they asked for it. */
     static final java.util.Set<View> clients = java.util.concurrent.ConcurrentHashMap.newKeySet();
     static volatile Bitmap latest;
-    /** The package in front on this display, polled about once a second while someone watches. */
+    /** The package in front on this display, checked every 250 ms. */
     static volatile String topApp;
 
     static Object taskManager;
     static java.lang.reflect.Method rootTasksOnDisplay;
     static boolean topFailed;
 
-    // The package of the visible app on top of this display, or null. IActivityTaskManager, as shell
+    // The visible activity on top of this display (its component, flattened), or null. IActivityTaskManager, as shell
     // (MANAGE_ACTIVITY_TASKS); its root tasks come top first.
-    static String topPackage(int displayId) {
+    static String topActivity(int displayId) {
         try {
             if (rootTasksOnDisplay == null) {
                 taskManager = Class.forName("android.app.ActivityTaskManager").getMethod("getService").invoke(null);
@@ -266,13 +458,19 @@ public class VdHelper {
             for (Object info : (java.util.List<?>) rootTasksOnDisplay.invoke(taskManager, displayId)) {
                 Object top = info.getClass().getField("topActivity").get(info);
                 if (info.getClass().getField("visible").getBoolean(info) && top instanceof android.content.ComponentName)
-                    return ((android.content.ComponentName) top).getPackageName();
+                    return ((android.content.ComponentName) top).flattenToShortString();
             }
         } catch (Exception e) {
-            if (!topFailed) System.out.println("topPackage: " + e);
+            if (!topFailed) System.out.println("topActivity: " + e);
             topFailed = true;
         }
         return null;
+    }
+
+    /** The package of the visible app on top of this display, or null. */
+    static String topPackage(int displayId) {
+        String top = topActivity(displayId);
+        return top == null ? null : top.substring(0, top.indexOf('/'));
     }
 
     /** What one client asked for with its "v WIDTH FPS" line, and when it is due for its next frame. */
@@ -329,7 +527,7 @@ public class VdHelper {
         try (java.net.Socket c = client) {
             if (!handshake(c, token, view)) return;
             clients.add(view);
-            topApp = topPackage(displayId);  // as it is now: polled only while someone watches
+            topApp = topPackage(displayId);  // as it is now
             Thread reader = new Thread(() -> readInput(c, displayId, view));
             reader.setDaemon(true);
             reader.start();

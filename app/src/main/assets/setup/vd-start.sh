@@ -12,9 +12,16 @@ TMP=/data/local/tmp/droid
 LOG=$TMP/vd/helper-$(echo "$MAC" | tr -d :).log
 [ -f "$APK" ] || { echo "error=no APK at $APK"; exit 1; }
 
-# The display matches the phone's screen (an override set with `wm size` wins).
+# The display is shaped like the phone's screen (an override set with `wm size` wins) and lays apps out the same, but
+# 720 pixels across: about the size a model sees a picture at (Claude Code shrinks anything over 2000 pixels, ChatGPT
+# to 768 across), so a spot in a screenshot is the spot to tap, with no scaling for the agent to get wrong.
 SIZE=$(wm size | tail -n 1 | sed 's/.*: *//')
 DPI=$(wm density | tail -n 1 | sed 's/.*: *//')
+W=${SIZE%x*} H=${SIZE#*x}
+S=$W; [ "$H" -lt "$S" ] && S=$H
+if [ "$S" -gt 720 ]; then
+  W=$(( (W * 720 + S / 2) / S )) H=$(( (H * 720 + S / 2) / S )) DPI=$(( (DPI * 720 + S / 2) / S ))
+fi
 
 # A display owned by a VirtualDevice keeps running while the phone is locked (Android 17 puts every other virtual
 # display in the phone's own display group, which sleeps). Without an association the helper falls back to a plain one.
@@ -33,7 +40,7 @@ FLAGS=95691
 # The helper runs as the shell user (uid 2000), like scrcpy, from the app's own APK.
 # The whole group's output goes to the log: anything left holding this script's stdout would keep `android` waiting.
 # The folder is made as the shell user too, so the helper can write into it.
-START="mkdir -p $TMP/vd; (DROID_TOKEN=$TOKEN CLASSPATH=$APK exec nohup app_process / com.adetkov.droid.VdHelper ${SIZE%x*} ${SIZE#*x} $DPI $FLAGS ${ASSOC:-0} $AGENT) > $LOG 2>&1 < /dev/null &"
+START="mkdir -p $TMP/vd; (DROID_TOKEN=$TOKEN CLASSPATH=$APK exec nohup app_process / com.adetkov.droid.VdHelper $W $H $DPI $FLAGS ${ASSOC:-0} $AGENT) > $LOG 2>&1 < /dev/null &"
 if [ "$(id -u)" = 0 ]; then su 2000 -c "$START"; else sh -c "$START"; fi
 for _ in $(seq 50); do
   grep -q '^port=' "$LOG" 2>/dev/null && break

@@ -1,18 +1,32 @@
 #!/bin/sh
-# Screenshot this task's hidden display ($AGENT_DISPLAY) and print the PNG's path; view it with the Read tool.
-# `shot --text` instead lists what's on it as text: each label, field and control, and where to tap it.
-# The display's helper writes into Android's /data/local/tmp/droid/vd: at /proc/1/root in the chroot, at its own path
-# under proot (DROID_HOST is empty there).
+# Screenshot this task's hidden display ($AGENT_DISPLAY) and print the PNG's path, the same each time; view it with the
+# Read tool. `shot --text` instead lists what's on it as text: each label, field and control, and where to tap it.
+# Either waits until the screen has settled (at most 5 s, and it says when it was still changing), so there's no need
+# to sleep first. The display's helper (VdHelper in the app) answers both, from what it shows; it writes into Android's
+# /data/local/tmp/droid/vd: at /proc/1/root in the chroot, at its own path under proot (DROID_HOST is empty there).
 V=/data/local/tmp/droid/vd/$AGENT_DISPLAY
 D=${DROID_HOST-/proc/1/root}$V
 
+# ask KIND: the helper's answer to a KIND request (shot or text), or failure if none comes within 10 s.
+ask() {
+  rm -f "$D/$1.done"
+  touch "$D/$1.req" || return 1
+  for _ in $(seq 200); do [ -f "$D/$1.done" ] && return 0; sleep 0.05; done
+  rm -f "$D/$1.req"
+  return 1
+}
+changing() {
+  if grep -q changing "$D/$1.done" 2>/dev/null; then echo "(the screen was still changing: shot again for a later look)"; fi
+}
+
 if [ "$1" = --text ]; then
-  # Android's `uiautomator dump --windows` (an option its help leaves out) reads every display's windows; this keeps
-  # this task's display and only what reads or acts: text, descriptions, fields, switches, lists.
+  # The helper writes what `uiautomator dump --windows` would (an option its help leaves out), for this display only;
+  # if it can't, Android's own dump, which takes 2-3 s. This keeps only what reads or acts: text, descriptions, fields,
+  # switches, lists.
   rm -f "$D/ui.xml"
-  OUT=$(android "uiautomator dump --windows $V/ui.xml" 2>&1)
+  ask text && [ -s "$D/ui.xml" ] || OUT=$(android "uiautomator dump --windows $V/ui.xml" 2>&1)
   [ -s "$D/ui.xml" ] || { echo "no text: Android couldn't read the hidden display (${OUT:-no answer}); use shot"; exit 1; }
-  exec python3 -I - "$D/ui.xml" "$AGENT_DISPLAY" <<'EOF'
+  python3 -I - "$D/ui.xml" "$AGENT_DISPLAY" <<'EOF'
 import re, sys
 import xml.etree.ElementTree as ET
 try:
@@ -28,9 +42,14 @@ for window in mine[0].iter('window'):
         text = ' '.join((n.get('text') or '').split())[:200]
         desc = ' '.join((n.get('content-desc') or '').split())[:200]
         cls = (n.get('class') or '').rsplit('.', 1)[-1]
+        field = 'EditText' in cls
+        if field and not text and not desc:
+            desc = ' '.join((n.get('hint') or '').split())[:200]  # an empty field's hint says what it's for
         flags = []
-        if 'EditText' in cls:
+        if field:
             flags.append('field' + (', password' if n.get('password') == 'true' else ''))
+            if n.get('focused') == 'true':
+                flags.append('focused')  # where `input text` types
         if n.get('checkable') == 'true':
             flags.append('on' if n.get('checked') == 'true' else 'off')
         if n.get('selected') == 'true':
@@ -40,7 +59,7 @@ for window in mine[0].iter('window'):
         if n.get('scrollable') == 'true':
             flags.append('scrolls')
         # Worth a line: words, or a field, switch or list; a bare box (selected or tappable) has its label on a child
-        if not (text or desc or 'EditText' in cls or n.get('checkable') == 'true' or n.get('scrollable') == 'true'):
+        if not (text or desc or field or n.get('checkable') == 'true' or n.get('scrollable') == 'true'):
             continue
         m = re.match(r'\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]', n.get('bounds') or '')
         if not m:
@@ -55,11 +74,13 @@ for window in mine[0].iter('window'):
         lines.append((label, x, y, f"{label or cls}  @{x},{y}" + (f"  [{', '.join(flags)}]" if flags else '')))
 print('\n'.join(l[3] for l in lines) if lines else "no text on the hidden display (a picture or a game, say); use shot")
 EOF
+  CODE=$?
+  changing text
+  exit $CODE
 fi
 
 OUT=/tmp/shot-$AGENT_DISPLAY.png
-rm -f "$D/shot.done" "$D/shot.png"; touch "$D/shot.req"
-for _ in $(seq 50); do [ -f "$D/shot.done" ] && break; sleep 0.1; done
-if [ ! -f "$D/shot.done" ]; then echo "no screenshot: the hidden display didn't answer within 5 s"
-elif [ -f "$D/shot.png" ]; then cp "$D/shot.png" "$OUT" && echo "$OUT"
+rm -f "$D/shot.png"
+if ! ask shot; then echo "no screenshot: the hidden display didn't answer within 10 s"
+elif [ -f "$D/shot.png" ]; then cp "$D/shot.png" "$OUT" && echo "$OUT" && changing shot
 else echo "no frame yet: nothing has been drawn on the hidden display"; fi
