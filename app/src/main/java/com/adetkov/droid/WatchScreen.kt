@@ -245,7 +245,7 @@ fun WatchScreen(
                             control -> if (working) "Droid is working on this screen too" else "Your touches go to Droid's screen"
                             working -> status
                             asks -> "Waiting for your reply"
-                            else -> "Open for your reply"  // done: kept open in case there's more, as the chat says
+                            else -> "Stays open for your reply"  // done: kept open in case there's more, as the chat says
                         }, color = Color(0xFFE6E6E6), style = MaterialTheme.typography.bodyMedium,
                             maxLines = if (!control && app != null) 1 else 2, overflow = TextOverflow.Ellipsis)
                     }

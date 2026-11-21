@@ -233,7 +233,7 @@ fun Transcript(
                     DashSlot(rig, img, CREATURE, STILL, img?.let { it.height.toFloat() / it.width } ?: screenRatio(), Modifier.testTag("still"),
                         gap = 14.dp, label = "Droid's screen, open", origin = true, onClick = onWatch)
                     val app = rememberAppInfo(feed.app)?.label
-                    Text(if (app != null) "Open in $app for your reply" else "Droid's screen is open for your reply", Modifier.weight(1f).padding(top = 4.dp),
+                    Text(if (app != null) "$app stays open for your reply" else "Droid's screen stays open for your reply", Modifier.weight(1f).padding(top = 4.dp),
                         style = MaterialTheme.typography.bodyMedium, color = P.faint)
                 }
             }
@@ -592,7 +592,7 @@ private fun WorkLog(s: Item.Steps, convId: String, screen: ScreenFeed?, onWatch:
                     // minutes left, rounded up: 10 min just after the answer, 1 min in its last minute
                     val left = closesAt?.let { ((it - now + 59_999) / 60_000).coerceIn(0, HOLD_FOR / 60_000) }
                     val rest = (if (asks) (if (app != null) "$app stays open" else "Screen stays open")
-                        else if (app != null) "Open in $app for your reply" else "Open for your reply") +
+                        else if (app != null) "$app stays open for your reply" else "Stays open for your reply") +
                         (if (left != null && left > 0) " · $left min" else "")
                     val call = P.call
                     val text = P.text
