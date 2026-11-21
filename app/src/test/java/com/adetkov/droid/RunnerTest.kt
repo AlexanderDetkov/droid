@@ -295,8 +295,11 @@ class RunnerTest {
         runner.closeScreens()
     }
 
-    /** Answers each message with "re: " its text; once stdin is closed it exits only when [exit] opens (phone-agent's cleanup). */
-    private class LingerProc(private val answer: CountDownLatch) : Proc {
+    /**
+     * Prints [before] after its agent line, then answers each message with "re: " its text; once stdin is closed it
+     * exits only when [exit] opens (phone-agent's cleanup).
+     */
+    private class LingerProc(private val answer: CountDownLatch, private val before: List<String> = emptyList()) : Proc {
         val writes: MutableList<String> = Collections.synchronizedList(mutableListOf())
         val exit = CountDownLatch(1)
         @Volatile var killedPid = -1
@@ -309,6 +312,7 @@ class RunnerTest {
         override fun kill(pid: Int) { killedPid = pid; exit.countDown() }
         override fun readLines(onLine: (String) -> Unit) {
             onLine("""{"type":"agent","pid":80,"display":8,"port":8708,"token":"t"}""")
+            before.forEach(onLine)
             while (true) {
                 val m = inbox.poll(5, TimeUnit.SECONDS) ?: return
                 if (m === eof) break
@@ -395,7 +399,7 @@ class RunnerTest {
     private fun show(path: String, id: String) = """{"type":"droid","op":"show","path":"$path","id":"$id"}"""
 
     @Test fun aBugWhileHandlingARunFailsItsChatNotTheApp() {
-        val proc = ScriptProc(listOf(show("/root/a.html", "p1")))
+        val proc = ScriptProc(listOf(noteWait, show("/root/a.html", "p1")))
         val backend = object : Backend {
             override fun start(sessionId: String?, model: String, engine: Engine): Proc = proc
             override fun forget(sessionId: String, engine: Engine) {}
@@ -407,6 +411,7 @@ class RunnerTest {
         until("failed") { runner.screens.value.isEmpty() && !store.get(id)!!.running }
         assertEquals("Failed: boom", store.get(id)!!.messages.last().text)
         assertTrue("process left up", proc.closed.await(5, TimeUnit.SECONDS))
+        assertTrue("still waits on the owner", runner.noteWaits.isEmpty())
     }
 
     @Test fun pagesShownUnderOneIdLandInTheOrderShown() {
@@ -426,6 +431,161 @@ class RunnerTest {
         until("ended") { runner.screens.value.isEmpty() }
         assertEquals(listOf("<p>/b</p>"), store.get(id)!!.messages.filter { it.kind == Kind.PAGE }.map { it.text })
         dir.deleteRecursively()
+    }
+
+    /** `droid notify --id n1 --wait`: the agent's command waits on the owner. */
+    private val noteWait = """{"type":"droid","op":"notify","id":"n1","wait":true}"""
+
+    @Test fun aMessageSentWhileAStoppedRunEndsIsATurnOfItsOwn() {
+        val slow = SlowProc()
+        val then = MultiBackend()
+        val backend = object : Backend {
+            var n = 0
+            override fun start(sessionId: String?, model: String, engine: Engine): Proc = if (n++ == 0) slow else then.start(sessionId, model, engine)
+            override fun forget(sessionId: String, engine: Engine) {}
+        }
+        val store = store()
+        val runner = Runner(store, backend, holdFor = 0)
+        val id = runner.send(null, "one")!!
+        runner.stop(id)  // still starting: it ends once it reports its pid
+        runner.send(id, "two")
+        slow.started.countDown()
+        until("answered") { id !in runner.running.value && store.get(id)!!.messages.last().kind == Kind.AGENT }
+        val messages = store.get(id)!!.messages
+        assertEquals(listOf("one", "Stopped", "two", "ok 1"), messages.map { it.text })
+        assertEquals(Outcome.DONE, lastOutcome(messages, false))
+    }
+
+    @Test fun anAgentThatHangsAfterItsAnswerIsKilled() {
+        val backend = LingerBackend()
+        val store = store()
+        val runner = Runner(store, backend, holdFor = 60_000, inUse = { _, _ -> false }, exitWithin = 200)
+        val id = runner.send(null, "one")!!
+        until("killed") { backend.started.firstOrNull()?.killedPid == 80 }
+        until("exited") { runner.screens.value.isEmpty() }
+        assertEquals("re: one", store.get(id)!!.messages.last().text)
+    }
+
+    /** Answers its message, then goes on by itself (to a message it took mid-turn): a step, and [after] ms on an answer. */
+    private class GoOnProc(private val after: Long) : Proc {
+        private val wrote = CountDownLatch(1)
+        @Volatile var killedPid = -1
+        override fun write(line: String) = wrote.countDown()
+        override fun closeStdin() {}
+        override fun waitFor() = 0
+        override fun kill(pid: Int) { killedPid = pid }
+        override fun readLines(onLine: (String) -> Unit) {
+            onLine("""{"type":"agent","pid":82,"display":10,"port":8710,"token":"t"}""")
+            wrote.await(5, TimeUnit.SECONDS)
+            onLine("""{"type":"result","is_error":false,"result":"first"}""")
+            onLine("""{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"ls","description":"Looking"}}]}}""")
+            Thread.sleep(after)
+            onLine("""{"type":"result","is_error":false,"result":"second"}""")
+        }
+    }
+
+    @Test fun anAgentThatGoesOnAfterItsAnswerWorksAgainAndIsntKilled() {
+        val proc = GoOnProc(after = 600)
+        val backend = object : Backend {
+            override fun start(sessionId: String?, model: String, engine: Engine): Proc = proc
+            override fun forget(sessionId: String, engine: Engine) {}
+        }
+        val store = store()
+        val runner = Runner(store, backend, holdFor = 60_000, inUse = { _, _ -> false }, exitWithin = 200)
+        val id = runner.send(null, "one")!!
+        until("working again") { id in runner.running.value && store.get(id)!!.messages.any { it.kind == Kind.STEP } }
+        until("exited") { runner.screens.value.isEmpty() }
+        assertEquals("second", store.get(id)!!.messages.last().text)
+        assertEquals(-1, proc.killedPid)
+    }
+
+    @Test fun whatAProcessWaitedOnEndsWithIt() {
+        val first = LingerProc(CountDownLatch(0), listOf(noteWait, """{"type":"droid","op":"show","path":"/p.html","id":"p1","wait":true}"""))
+        val second = LingerProc(CountDownLatch(0))
+        val procs = ArrayDeque(listOf(first, second))
+        val backend = object : Backend {
+            override fun start(sessionId: String?, model: String, engine: Engine): Proc = synchronized(procs) { procs.removeFirst() }
+            override fun forget(sessionId: String, engine: Engine) {}
+            override fun fetch(path: String, to: File): Boolean { to.parentFile?.mkdirs(); to.writeText("<p>page</p>"); return true }
+        }
+        val dir = File.createTempFile("shown", "").also { it.delete(); it.deleteOnExit() }
+        val store = store()
+        val runner = Runner(store, backend, holdFor = 60_000, inUse = { _, _ -> false }, shown = { File(dir, it) })
+        val id = runner.send(null, "one")!!
+        until("answered") { id !in runner.running.value && store.get(id)!!.messages.last().text == "re: one" }
+        assertEquals(setOf("$id/n1"), runner.noteWaits.toSet())
+        assertTrue(PageInfo.of(store.get(id)!!.page("p1")!!).wait)
+        runner.send(id, "two")  // queued: the agent is exiting
+        first.exit.countDown()
+        until("second run") { second.writes.isNotEmpty() }
+        assertTrue(runner.noteWaits.isEmpty())
+        assertFalse(PageInfo.of(store.get(id)!!.page("p1")!!).wait)
+        until("second answer") { store.get(id)!!.messages.last().text == "re: two" }
+        second.exit.countDown()
+        until("ended") { runner.screens.value.isEmpty() }
+        dir.deleteRecursively()
+    }
+
+    @Test fun anAnswerIsAppliedOnceWhenAMessageComesAsItLands() {
+        val answer = CountDownLatch(1)
+        val backend = LingerBackend(answer)
+        val store = store()
+        lateinit var runner: Runner
+        lateinit var id: String
+        // Asking whether an app is on the screen takes a moment: the owner sends then.
+        runner = Runner(store, backend, holdFor = 60_000, inUse = { _, _ ->
+            if (backend.started[0].writes.size == 1) runner.send(id, "two")
+            false
+        })
+        id = runner.send(null, "one")!!
+        answer.countDown()
+        until("both answered") { id !in runner.running.value && store.get(id)!!.messages.last().text == "re: two" }
+        assertEquals(listOf("one", "re: one", "two", "re: two"), store.get(id)!!.messages.map { it.text })
+        backend.started[0].exit.countDown()
+    }
+
+    @Test fun aChatDeletedWhileItsRunStartsForgetsItsSessionIfTheStartFails() {
+        val starting = CountDownLatch(1)
+        val go = CountDownLatch(1)
+        val forgotten: MutableList<String> = Collections.synchronizedList(mutableListOf())
+        val backend = object : Backend {
+            var n = 0
+            override fun start(sessionId: String?, model: String, engine: Engine): Proc {
+                if (n++ == 0) return MultiProc()
+                starting.countDown(); go.await(5, TimeUnit.SECONDS)
+                throw java.io.IOException("no Linux")
+            }
+            override fun forget(sessionId: String, engine: Engine) { forgotten += sessionId }
+        }
+        val runner = Runner(store(), backend, holdFor = 0)
+        val id = runner.send(null, "one")!!
+        until("first run ended") { runner.screens.value.isEmpty() }
+        runner.send(id, "two")
+        assertTrue(starting.await(5, TimeUnit.SECONDS))
+        runner.delete(id)
+        go.countDown()
+        until("forgotten") { forgotten.isNotEmpty() }
+        assertEquals(listOf("0d0d0d0d-0000-0000-0000-000000000000"), forgotten.toList())
+    }
+
+    @Test fun aChatDeletedBeforeItsRunFailsForgetsItsSession() {
+        val deleted = CountDownLatch(1)
+        val session = """{"type":"system","subtype":"init","session_id":"0e0e0e0e-0000-0000-0000-000000000000"}"""
+        val proc = ScriptProc(listOf(session, show("/a", "p1")))
+        val forgotten: MutableList<String> = Collections.synchronizedList(mutableListOf())
+        val backend = object : Backend {
+            override fun start(sessionId: String?, model: String, engine: Engine): Proc = proc
+            override fun forget(sessionId: String, engine: Engine) { forgotten += sessionId }
+            override fun fetch(path: String, to: File): Boolean { deleted.await(5, TimeUnit.SECONDS); throw IllegalStateException("boom") }
+        }
+        val store = store()
+        val runner = Runner(store, backend, holdFor = 0)
+        val id = runner.send(null, "hi")!!
+        until("session") { store.get(id)?.sessionId != null }
+        runner.delete(id)
+        deleted.countDown()
+        until("forgotten") { forgotten.isNotEmpty() }
+        assertEquals(listOf("0e0e0e0e-0000-0000-0000-000000000000"), forgotten.toList())
     }
 
     @Test fun writingToARunNeverWaitsOnIt() {

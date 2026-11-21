@@ -33,6 +33,12 @@ private const val WARM_USABLE = 150_000L
 const val HOLD_FOR = 10 * 60_000L
 
 /**
+ * How long an agent has to exit once its stdin is closed after an answer, before it is killed: nothing else would end
+ * it (an answered run has nothing to stop), and its screen keeps the phone awake.
+ */
+private const val EXIT_WITHIN = 30_000L
+
+/**
  * What the agent asks of the app, for the app to act on. Unbounded: acting may take a call into Android each (`su`, or
  * Droid's helper), and a burst waits for that rather than being dropped (the agent was told it's done).
  */
@@ -80,6 +86,8 @@ class Runner(
     private val shown: (String) -> File = { File("shown", it) },
     /** Whether an app is in front on the run's hidden screen (its port and token; see [screenInUse]). */
     private val inUse: (Int, String) -> Boolean = { _, _ -> true },
+    /** How long an agent has to exit after its answer (see [EXIT_WITHIN]). */
+    private val exitWithin: Long = EXIT_WITHIN,
 ) {
     /** Chats working on a request (conversation id -> its run). */
     val running = MutableStateFlow<Map<String, RunInfo>>(emptyMap())
@@ -122,6 +130,8 @@ class Runner(
         /** Answered: the process and its screen wait for the next message, until [closer] closes stdin. */
         var idle = false
         var closer: Job? = null
+        /** Kills its process if it hasn't exited in time after its answer (see [letExit]). */
+        var exitTimer: Job? = null
         /** Watch is open on it: a screen held after answering stays while the user looks. */
         var watched = false
         /** The user used the screen since the agent's last turn; the next message says so. */
@@ -258,14 +268,18 @@ class Runner(
         synchronized(lock) {
             val r = runs[id] ?: return
             if (r.gotResult) {
-                release(id, r)?.closeStdin()
+                release(id, r)?.let { letExit(r, it) }
                 if (r.queue.isNotEmpty()) {
                     r.queue.clear()
-                    running.update { it - id }; doing.update { it - id }; closing(id)
+                    // Said first: whoever sees the chat stop running reads why.
                     store.update(id) { it.add(Kind.STATUS, "Stopped").copy(running = false) }
+                    running.update { it - id }; doing.update { it - id }; closing(id)
                 }
                 return
             }
+            // Said now, not once its process has exited: a message sent while it ends goes after this, and its turn
+            // isn't the stopped one.
+            if (!r.stopped) store.update(id) { it.add(Kind.STATUS, "Stopped") }
             r.stopped = true; r.stdinOpen = false; r.queue.clear()
             proc = r.proc; pid = r.pid
         }
@@ -274,7 +288,7 @@ class Runner(
     }
 
     /** Closes every screen held by a run that answered; their agents exit, and they leave [screens]. */
-    fun closeScreens() = synchronized(lock) { runs.forEach { (id, r) -> release(id, r)?.closeStdin() } }
+    fun closeScreens() = synchronized(lock) { runs.forEach { (id, r) -> release(id, r)?.let { letExit(r, it) } } }
 
     /** Watch was opened ([on]) or closed on a chat. A screen held after answering stays while watched, then [holdFor]. */
     fun watching(id: String, on: Boolean) {
@@ -405,7 +419,7 @@ class Runner(
         r.closer?.cancel()
         r.closer = if (r.watched) null else scope.launch {
             delay(holdFor)
-            synchronized(lock) { r.closer = null; release(id, r) }?.closeStdin()
+            synchronized(lock) { r.closer = null; release(id, r) }?.let { letExit(r, it) }
         }
         val closesAt = if (r.watched) null else System.currentTimeMillis() + holdFor
         screens.update { m -> m[id]?.let { m + (id to it.copy(closesAt = closesAt)) } ?: m }
@@ -424,28 +438,56 @@ class Runner(
     private fun closing(id: String) = screens.update { m -> m[id]?.let { m + (id to it.copy(port = null, token = null, closesAt = null)) } ?: m }
 
     /**
+     * Closes the stdin of [proc], [run]'s process after its answer, so its agent exits; one still up [exitWithin] later,
+     * and not working again (it may go on to a message sent mid-turn), is killed, so a cleanup that hangs can't keep its
+     * screen up.
+     */
+    private fun letExit(run: Run, proc: Proc) {
+        proc.closeStdin()
+        val timer = scope.launch {
+            delay(exitWithin)
+            synchronized(lock) { run.pid?.takeIf { run.proc === proc && run.gotResult } }?.let { proc.kill(it) }
+        }
+        synchronized(lock) { run.exitTimer?.cancel(); run.exitTimer = timer }
+    }
+
+    /** Nothing waits on the owner in chat [id] any more (its process is gone): what they answer now is a message. */
+    private fun endWaits(id: String) = noteWaits.removeIf { it.startsWith("$id/") }
+
+    /**
      * A bug in handling chat [id]'s run must not take the app down: the chat says the run failed, and its process is
      * ended (it may hold a hidden screen).
      */
     private fun failed(id: String, run: Run) = CoroutineExceptionHandler { _, e ->
         Log.e("Droid", "run of $id", e)
+        var forget: String? = null
         val (proc, pid) = synchronized(lock) {
             if (runs[id] !== run) return@CoroutineExceptionHandler  // it had ended
+            // Said first: whoever sees the chat stop running reads why.
+            endWaits(id)
+            store.update(id) { it.add(Kind.STATUS, "Failed: ${e.message ?: e}").copy(running = false).waitingOn(null, false) }
             runs.remove(id); running.update { it - id }; screens.update { it - id }; doing.update { it - id }
-            run.closer?.cancel(); run.stdinOpen = false
-            store.update(id) { it.add(Kind.STATUS, "Failed: ${e.message ?: e}").copy(running = false) }
+            run.closer?.cancel(); run.exitTimer?.cancel(); run.stdinOpen = false
+            if (run.deleted) forget = run.session
             run.proc to run.pid
         }
         proc?.closeStdin()
-        if (proc != null && pid != null) scope.launch { proc.kill(pid) }
+        scope.launch {
+            if (proc != null && pid != null) proc.kill(pid)
+            // deleted while running: its session goes too, once its process has (as at the end of [loop])
+            forget?.let { s -> proc?.waitFor(); backend.forget(s, run.engine) }
+        }
     }
 
     private fun loop(id: String, run: Run, first: List<String>) {
         var batch: List<String>? = first
         while (batch != null) {
-            val session = store.get(id)?.sessionId
-            val e = store.get(id)?.engine ?: Engine.CLAUDE
+            val conv = store.get(id)
+            val session = conv?.sessionId
+            val e = conv?.engine ?: Engine.CLAUDE
             val m = model(e)
+            // Known before the start, so a chat deleted meanwhile forgets its session even if the start fails.
+            synchronized(lock) { if (conv != null) { run.engine = e; run.session = session } }
             val proc = try { takeWarm(e, session, m) ?: backend.start(session, m, e) } catch (e: Exception) {
                 store.update(id) { it.add(Kind.STATUS, "Failed: ${e.message}") }
                 synchronized(lock) { run.queue.clear() }
@@ -453,7 +495,7 @@ class Runner(
             }
             synchronized(lock) {
                 starts++
-                run.engine = e; run.proc = proc; run.session = session; run.gotResult = false
+                run.proc = proc; run.gotResult = false
                 run.idle = false; run.touched = false  // a new process has a new screen
                 // The request, then what was sent while it started, in order. A stopped run gets nothing (it is killed
                 // once it reports its pid); what was sent after the Stop waits for the next.
@@ -466,24 +508,22 @@ class Runner(
                 // Gone: a Stop from now on must not kill its pid, which may be another process's by then.
                 run.proc = null; run.pid = null; run.port = null; run.token = null
                 run.stdinOpen = false; run.idle = false; run.closer?.cancel(); run.closer = null
+                run.exitTimer?.cancel(); run.exitTimer = null
+                endWaits(id)  // what it waited on (a next process hasn't started)
                 run.gotResult to run.stopped
             }
-            if (!gotResult) when {
-                stopped -> store.update(id) { it.add(Kind.STATUS, "Stopped") }
-                // Clean exit without a result: the last narration is the answer. Anything else is a failure.
-                exit == 0 -> store.update(id) { it.apply(Ev.Result(false, "")) }
-                else -> store.update(id) { it.add(Kind.STATUS, if (proc.error.isEmpty()) "Failed" else "Failed: ${proc.error}") }
+            store.update(id) { c ->
+                when {
+                    gotResult || stopped -> c  // its answer, or "Stopped" (see stop), is in already
+                    // Clean exit without a result: the last narration is the answer. Anything else is a failure.
+                    exit == 0 -> c.apply(Ev.Result(false, ""))
+                    else -> c.add(Kind.STATUS, if (proc.error.isEmpty()) "Failed" else "Failed: ${proc.error}")
+                }.waitingOn(null, false)
             }
             batch = next(id, run)
         }
-        // Unless it was sent a message meanwhile, which started another run. Nothing waits on the owner any more: what
-        // they answer now is a message.
-        synchronized(lock) {
-            if (runs[id] == null) {
-                noteWaits.removeIf { it.startsWith("$id/") }
-                store.update(id) { it.copy(running = false).waitingOn(null, false) }
-            }
-        }
+        // Unless it was sent a message meanwhile, which started another run.
+        synchronized(lock) { if (runs[id] == null) store.update(id) { it.copy(running = false) } }
         if (synchronized(lock) { run.deleted }) run.session?.let { s -> backend.forget(s, run.engine) }  // deleted while running
     }
 
@@ -518,6 +558,7 @@ class Runner(
     private fun handle(id: String, run: Run, proc: Proc, line: String) {
         for (ev in parseLine(line)) {
             var woke = false
+            var applied = false  // the answer is in the transcript already
             when (ev) {
                 is Ev.Agent -> {
                     val pid = ev.pid.takeIf { it > 0 }
@@ -547,8 +588,10 @@ class Runner(
                     // in; an answer without one, or an error, ends the run.
                     // The answer shows at once: asking the helper takes a moment, and meanwhile its text would read as
                     // the turn's latest step. (One that shows files waits for their copies, so it never points at the
-                    // agent's paths; applying the result again below changes nothing.)
-                    if (!ev.isError && ev.text.isNotBlank() && acts(ev.text).none { it is Act.Show }) store.update(id) { it.apply(ev) }
+                    // agent's paths.) Applied now, it isn't again below: a message sent meanwhile has started a new
+                    // turn, which would get it as its answer too.
+                    applied = !ev.isError && ev.text.isNotBlank() && acts(ev.text).none { it is Act.Show }
+                    if (applied) store.update(id) { it.apply(ev) }
                     val keep = holdFor > 0 && !ev.isError && screens.value[id]?.let { r ->
                         val port = r.port; val token = r.token
                         port != null && token != null && inUse(port, token)
@@ -557,7 +600,7 @@ class Runner(
                         run.gotResult = true
                         (keep && run.stdinOpen).also { if (it) run.idle = true else run.stdinOpen = false }
                     }
-                    if (!held) proc.closeStdin()
+                    if (!held) letExit(run, proc)
                     doing.update { it - id }
                     if (!ev.isError && ev.text.isNotBlank()) results.tryEmit(id to ev.text)
                 }
@@ -565,7 +608,9 @@ class Runner(
             val answered = ev is Ev.Result
             // What an answer shows is copied out of Droid's Linux now, while it's there, and the answer points at the copies.
             val copies = if (ev is Ev.Result && !ev.isError) fetchShown(id, ev.text) else emptyMap()
-            store.update(id) { c -> c.apply(ev).withCopies(copies).let { if (answered) it.copy(running = false) else if (woke) it.copy(running = true) else it } }
+            store.update(id) { c ->
+                (if (applied) c else c.apply(ev).withCopies(copies)).let { if (answered) it.copy(running = false) else if (woke) it.copy(running = true) else it }
+            }
             // Only with the answer in the transcript does the chat stop counting as running (its notification reads it),
             // unless a message came meanwhile: to this process (a new turn), or queued for the next one.
             if (answered) {

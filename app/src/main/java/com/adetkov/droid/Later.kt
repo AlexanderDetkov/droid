@@ -95,19 +95,22 @@ object Later {
         if (am.canScheduleExactAlarms()) am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi) else am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
     }
 
-    @Volatile private var askedExact = false
+    @Volatile private var hasExact = false
 
     /**
-     * Grants Droid exact alarms through `appops` (as root or the shell user), once per process, the first time a wake-up
-     * needs them. Outside the lock and off the main thread: without root it may start Droid's helper, which takes a
-     * while, and a wake-up going off meanwhile (on the main thread) must not wait for that.
+     * Grants Droid exact alarms through `appops` (as root or the shell user) when a wake-up needs them, until it has
+     * them: a try that failed (Droid's helper not up yet, at boot) is made again with the next wake-up. Outside the lock
+     * and off the main thread: without root it may start Droid's helper, which takes a while, and a wake-up going off
+     * meanwhile (on the main thread) must not wait for that.
      */
     private fun allowExact(ctx: Context) {
-        if (askedExact) return
-        askedExact = true
-        if (ctx.getSystemService(AlarmManager::class.java).canScheduleExactAlarms()) return
-        try { (ctx.applicationContext as DroidApp).host.exec("appops set ${ctx.packageName} SCHEDULE_EXACT_ALARM allow").run { outputStream.close(); waitFor() } }
-        catch (e: Exception) { Log.w("Droid", "exact alarms: ${e.message}") }
+        if (hasExact) return
+        val am = ctx.getSystemService(AlarmManager::class.java)
+        if (!am.canScheduleExactAlarms()) {
+            try { (ctx.applicationContext as DroidApp).host.exec("appops set ${ctx.packageName} SCHEDULE_EXACT_ALARM allow").run { outputStream.close(); waitFor() } }
+            catch (e: Exception) { Log.w("Droid", "exact alarms: ${e.message}") }
+        }
+        hasExact = am.canScheduleExactAlarms()
     }
 }
 
@@ -117,6 +120,10 @@ class LaterReceiver : BroadcastReceiver() {
         val w = Later.take(ctx, intent.getStringExtra("id") ?: return) ?: return
         val app = ctx.applicationContext as DroidApp
         if (app.store.get(w.conv) == null) return
-        if (w.note != null) Notify.post(ctx, w.conv, org.json.JSONObject(w.note)) else startTask(ctx, w.conv, w.text, wake = true)
+        if (w.note != null) Notify.post(ctx, w.conv, org.json.JSONObject(w.note))
+        else {
+            startTask(ctx, w.conv, w.text, wake = true)
+            app.store.saveNow()  // it's out of later.json already: the chat must have it on disk at once
+        }
     }
 }
