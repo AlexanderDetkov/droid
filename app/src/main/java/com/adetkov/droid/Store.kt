@@ -4,10 +4,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
@@ -57,16 +57,23 @@ data class Conv(
         copy(messages = messages + Msg(kind, text, now, files, data), updatedAt = now)
 }
 
-/** All conversations, persisted as one JSON file (written off the main thread, debounced, only after a change). */
-class Store(private val file: File) {
+/**
+ * All conversations, persisted as one JSON file: written off the main thread [wait] ms after a change, with what changed
+ * meanwhile, or at once ([saveNow]).
+ */
+class Store(private val file: File, private val wait: Long = 400) {
     private var interrupted = false
     val convs = MutableStateFlow(load())
     private val saveRequests = Channel<Unit>(Channel.CONFLATED)
+    private val urgent = Channel<Unit>(Channel.CONFLATED)
 
     init {
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
-            // A failed write (e.g. disk full) must not end the loop; the next change retries.
-            for (r in saveRequests) { delay(400); try { write() } catch (_: IOException) {} }
+            for (r in saveRequests) {
+                withTimeoutOrNull(wait) { urgent.receive() }  // a change that can't wait (see saveNow) cuts the wait short
+                // A failed write (e.g. disk full) must not end the loop; the next change retries.
+                try { write() } catch (_: IOException) {}
+            }
         }
         if (interrupted) save()
     }
@@ -97,6 +104,9 @@ class Store(private val file: File) {
     }
 
     private fun save() { saveRequests.trySend(Unit) }
+
+    /** Writes the chats now rather than after the usual wait: what changed exists nowhere else (a wake-up's message). */
+    fun saveNow() { saveRequests.trySend(Unit); urgent.trySend(Unit) }
 
     private fun write() {
         val arr = JSONArray()

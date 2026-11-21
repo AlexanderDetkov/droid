@@ -37,4 +37,15 @@ class StoreTest {
         assertFalse(File(f.path + ".tmp").exists())
         assertFalse(bad(f).exists())
     }
+
+    /** A wake-up's message exists nowhere else once it is out of later.json. */
+    @Test fun saveNowDoesntWait() {
+        val f = file().also { it.delete() }
+        val store = Store(f, wait = 60_000)
+        store.create("hi")
+        store.saveNow()
+        val until = System.currentTimeMillis() + 5_000
+        while (!f.exists() && System.currentTimeMillis() < until) Thread.sleep(50)
+        assertEquals(1, JSONArray(f.readText()).length())
+    }
 }

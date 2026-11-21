@@ -87,7 +87,7 @@ private const val CH_DONE = "done"
 /**
  * Foreground service alive while any chat has a run up: one ongoing notification per run (working, or holding its hidden
  * screen after answering), one result notification per finished request. Holding a screen keeps the service up too, so
- * Android doesn't freeze the app and the screen closes on time.
+ * Android doesn't freeze the app and the screen closes on time, and so does an agent exiting after its answer.
  */
 class AgentService : Service() {
     // Main thread, like onStartCommand, so the two never race.
@@ -137,21 +137,26 @@ class AgentService : Service() {
     private suspend fun watch() {
         combine(app.runner.running, app.runner.screens, app.store.convs, app.runner.doing) { _, _, _, _ -> }.collect {
             val busy = app.runner.running.value.keys
-            // Up: working, or holding its screen for a reply (not one whose agent is exiting, its screen gone).
-            val up = app.runner.screens.value.filterValues { it.port != null }.keys + busy
+            val runs = app.runner.screens.value.keys
+            // With an ongoing notification: working, or holding its screen for a reply (not one whose agent is exiting,
+            // its screen gone).
+            val shown = app.runner.screens.value.filterValues { it.port != null }.keys + busy
             // A request finished (its run may hold the screen on): its answer, or why it stopped; not over the chat itself.
             for (id in tracked - busy) { tracked -= id; if (!app.isVisible(id)) doneNotification(id)?.let { nm.notify(nid(id) + 1, it) } }
-            for (id in posted - up) { posted -= id; nm.cancel(nid(id)) }
-            if (up.isEmpty()) {
+            for (id in posted - shown) { posted -= id; nm.cancel(nid(id)) }
+            // Up while any run is, one exiting after its answer too: its agent may go on (to a message sent mid-turn),
+            // which a frozen app wouldn't see.
+            if (runs.isEmpty()) {
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf(lastStartId)
                 return@collect
             }
-            if (fgId !in up) {
-                fgId = busy.firstOrNull() ?: up.first()
+            if (fgId !in shown) {
+                // Only exiting runs: one of them, as finishing up, until they've gone or one goes on.
+                fgId = busy.firstOrNull() ?: shown.firstOrNull() ?: runs.first()
                 startForeground(nid(fgId!!), ongoing(fgId!!), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
             }
-            for (id in up) { posted += id; if (id in busy) tracked += id; nm.notify(nid(id), ongoing(id)) }
+            for (id in shown) { posted += id; if (id in busy) tracked += id; nm.notify(nid(id), ongoing(id)) }
             delay(1000)
         }
     }
@@ -177,7 +182,11 @@ class AgentService : Service() {
 
     private fun runKey(id: String) = "${app.runner.screens.value[id]?.started}/${id in app.runner.running.value}"
 
-    private fun ongoing(id: String) = if (id in app.runner.running.value) runningNotification(id) else heldNotification(id)
+    private fun ongoing(id: String) = when {
+        id in app.runner.running.value -> runningNotification(id)
+        app.runner.screens.value[id]?.port != null -> heldNotification(id)
+        else -> finishingNotification(id)
+    }
 
     /** Dash as the notification's picture, in the pose of what the chat is doing or waits on you for. */
     private fun dash(feel: Feel) = dashPortrait(feel, (64 * resources.displayMetrics.density).toInt(), resources.displayMetrics.density, lightShade(this))
@@ -223,6 +232,26 @@ class AgentService : Service() {
             .setContentIntent(open(id, false))
             .addAction(action(R.drawable.ic_eye, "Watch", open(id, true)))
             .addAction(action(R.drawable.ic_close, "Close screen", stop(id)))
+            .build()
+            .also { it.flags = it.flags or Notification.FLAG_NO_CLEAR or Notification.FLAG_ONGOING_EVENT }
+    }
+
+    /**
+     * A run whose agent is exiting after its answer, shown only while no other run is up (the service needs a
+     * notification): nothing to stop or watch, and it goes once the agent has (see Runner.letExit).
+     */
+    private fun finishingNotification(id: String): Notification {
+        val conv = app.store.get(id)
+        val messages = conv?.messages.orEmpty()
+        return Notification.Builder(this, CH_RUN)
+            .setSmallIcon(R.drawable.ic_notify)
+            .setLargeIcon(dash(chatFeel(false, null, lastOutcome(messages, false), lastMood(messages))))
+            .setContentTitle(conv?.title ?: "Droid")
+            .setContentText("Finishing up…")
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setShowWhen(false)
+            .setContentIntent(open(id, false))
             .build()
             .also { it.flags = it.flags or Notification.FLAG_NO_CLEAR or Notification.FLAG_ONGOING_EVENT }
     }

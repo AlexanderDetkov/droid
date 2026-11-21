@@ -187,7 +187,10 @@ private fun Root(request: Request?, modifier: Modifier) {
         if (text.isBlank() && files.isEmpty()) return null
         speaker.stop()
         haptic()
-        return ownerSend(ctx, convId, text.trim(), files).also { convId = it; draft = ""; files = emptyList() }
+        return ownerSend(ctx, convId, text.trim(), files).also {
+            if (it == null) files.forEach(::discard)  // the chat was deleted: nothing has them
+            convId = it; draft = ""; files = emptyList()
+        }
     }
     var saving by remember { mutableStateOf<Boolean?>(null) }  // the camera's picture is being kept (true: to send)
     var queued by remember { mutableStateOf<(() -> Unit)?>(null) }
