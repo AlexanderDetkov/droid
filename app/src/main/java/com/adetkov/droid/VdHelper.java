@@ -109,6 +109,7 @@ public class VdHelper {
         int w = Integer.parseInt(args[0]), h = Integer.parseInt(args[1]), dpi = Integer.parseInt(args[2]);
         int flags = Integer.parseInt(args[3]), associationId = Integer.parseInt(args[4]);
         Lifeline lifeline = new Lifeline(args.length > 5 ? args[5] : "");
+        File apk = new File(System.getProperty("java.class.path", "").split(":")[0]);  // this helper's APK
         if (lifeline.gone()) {  // it gave up on this helper before it started
             System.out.println("phone-agent is gone");
             System.exit(0);
@@ -164,23 +165,14 @@ public class VdHelper {
         // Pixels are only copied when someone needs them: a `shot` request, or a Watch client due for a frame.
         Image pending = null;
         Settle settle = new Settle();
-        int[] coarse = null;  // the latest frame, coarsely (see sample)
-        long nextCheck = 0, nextTop = 0;
+        long nextCheck = 0;
         while (true) {
             long now = SystemClock.uptimeMillis();
             Image img = reader.acquireLatestImage();
             if (img != null) {
                 if (pending != null) pending.close();
                 pending = img;
-                int[] seen = sample(img, w, h);
-                settle.frame(now, differs(coarse, seen));
-                coarse = seen;
-            }
-            if (now >= nextTop) {
-                nextTop = now + 250;
-                String top = topActivity(displayId);
-                settle.screen(top, now);
-                topApp = top == null ? null : top.substring(0, top.indexOf('/'));
+                settle.frame(now);
             }
             boolean shot = shotReq.exists(), text = textReq.exists();
             if (shot || text) settle.ask(now);
@@ -192,10 +184,12 @@ public class VdHelper {
             }
             if (now >= nextCheck) {
                 nextCheck = now + 1000;
+                if (!clients.isEmpty()) topApp = topPackage(displayId);
                 // Normally vd-stop.sh ends this helper; if phone-agent ended without it (killed, or its `android` call
-                // failed), the display would otherwise stay up, and keep the phone awake, until the phone restarts.
-                if (lifeline.gone()) {
-                    System.out.println("phone-agent is gone: ending the display");
+                // failed), the display would otherwise stay up, and keep the phone awake, until the phone restarts. An
+                // update or reinstall of the app replaces this APK and leaves the run it started orphaned: the same.
+                if (lifeline.gone() || !apk.exists()) {
+                    System.out.println(lifeline.gone() ? "phone-agent is gone: ending the display" : "the app was updated: ending the display");
                     File[] left = dir.listFiles();
                     if (left != null) for (File f : left) f.delete();
                     dir.delete();
@@ -235,59 +229,22 @@ public class VdHelper {
     }
 
     /**
-     * When a `shot` (or `shot --text`) is due: once the display has settled, or after [MOST] ms however it looks.
-     * Settled is no change for [QUIET] ms, and at least that long since the request, so a tap just before it has time
-     * to show. A change is a frame in a burst (an animation, a page loading) or one that differs over more than a
-     * sliver of the screen: a blinking cursor or a clock's seconds don't hold a shot back, a spinner does. A screen
-     * that opened since the agent's last look (another activity in front) must also have been still for [QUIET_NEW]
-     * ms since it opened: an app starting cold may sit on its splash, or pause while it loads.
+     * When a `shot` (or `shot --text`) is due: once no new frame has come for [QUIET] ms (counted from the request too,
+     * so a tap just before it has time to show), or after [MOST] ms however it looks. A blinking cursor (a frame every
+     * 500 ms) still lets it settle; an animation or a page loading doesn't. Some screens never stop (a map, a video),
+     * hence a short [MOST]: an agent that sees a page still loading looks again.
      */
     static final class Settle {
-        static final long QUIET = 500, QUIET_NEW = 1500, MOST = 5000, BURST = 150;
-        long lastFrame;   // uptime of the display's latest frame
-        long lastChange;  // uptime of its latest change
-        long asked;       // uptime the waiting request was first seen; 0: none
-        String screen;    // the activity in front, checked every 250 ms
-        long opened;      // uptime it came to the front
-        String looked;    // the activity in front at the agent's last look
+        static final long QUIET = 400, MOST = 2000;
+        long lastFrame;  // uptime of the display's latest frame
+        long asked;      // uptime the waiting request was first seen; 0: none
 
-        /** A new frame; [big] if it differs from the one before over more than a sliver (see [differs]). */
-        void frame(long now, boolean big) {
-            if (big || now - lastFrame < BURST) lastChange = now;
-            lastFrame = now;
-        }
-        void screen(String activity, long now) {
-            if (!java.util.Objects.equals(activity, screen)) { screen = activity; opened = now; }
-        }
+        void frame(long now) { lastFrame = now; }
         void ask(long now) { if (asked == 0) asked = now; }
         boolean waiting() { return asked != 0; }
-        boolean settled(long now) {
-            if (now - asked < QUIET || now - lastChange < QUIET) return false;
-            return java.util.Objects.equals(screen, looked) || now - Math.max(lastChange, opened) >= QUIET_NEW;
-        }
+        boolean settled(long now) { return now - Math.max(lastFrame, asked) >= QUIET; }
         boolean due(long now) { return asked != 0 && (settled(now) || now - asked >= MOST); }
-        void done() { asked = 0; looked = screen; }
-    }
-
-    /** One pixel in [STEP] each way: enough to tell a page changing from a cursor blinking, at ~0.2 ms a frame. */
-    static final int STEP = 8;
-
-    static int[] sample(Image img, int w, int h) {
-        Image.Plane p = img.getPlanes()[0];
-        java.nio.ByteBuffer b = p.getBuffer();
-        int row = p.getRowStride(), px = p.getPixelStride(), cols = w / STEP, rows = h / STEP;
-        int[] s = new int[cols * rows];
-        for (int y = 0; y < rows; y++)
-            for (int x = 0; x < cols; x++) s[y * cols + x] = b.getInt(y * STEP * row + x * STEP * px);
-        return s;
-    }
-
-    /** Whether more than 1 sample in 300 changed (a cursor or a clock's seconds change a handful); a first frame does. */
-    static boolean differs(int[] before, int[] now) {
-        if (before == null || before.length != now.length) return true;
-        int changed = 0, most = now.length / 300;
-        for (int i = 0; i < now.length; i++) if (before[i] != now[i] && ++changed > most) return true;
-        return false;
+        void done() { asked = 0; }
     }
 
     static void writeFile(File f, byte[] b) throws java.io.IOException {
@@ -440,7 +397,7 @@ public class VdHelper {
     /** The live view's clients, as they asked for it. */
     static final java.util.Set<View> clients = java.util.concurrent.ConcurrentHashMap.newKeySet();
     static volatile Bitmap latest;
-    /** The package in front on this display, checked every 250 ms. */
+    /** The package in front on this display, polled about once a second while someone watches. */
     static volatile String topApp;
 
     static Object taskManager;
@@ -527,7 +484,7 @@ public class VdHelper {
         try (java.net.Socket c = client) {
             if (!handshake(c, token, view)) return;
             clients.add(view);
-            topApp = topPackage(displayId);  // as it is now
+            topApp = topPackage(displayId);  // as it is now: polled only while someone watches
             Thread reader = new Thread(() -> readInput(c, displayId, view));
             reader.setDaemon(true);
             reader.start();

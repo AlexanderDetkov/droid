@@ -1,7 +1,7 @@
 #!/bin/sh
 # Screenshot this task's hidden display ($AGENT_DISPLAY) and print the PNG's path, the same each time; view it with the
 # Read tool. `shot --text` instead lists what's on it as text: each label, field and control, and where to tap it.
-# Either waits until the screen has settled (at most 5 s, and it says when it was still changing), so there's no need
+# Either waits until the screen has settled (at most 2 s, and it says when it was still changing), so there's no need
 # to sleep first. The display's helper (VdHelper in the app) answers both, from what it shows; it writes into Android's
 # /data/local/tmp/droid/vd: at /proc/1/root in the chroot, at its own path under proot (DROID_HOST is empty there).
 V=/data/local/tmp/droid/vd/$AGENT_DISPLAY
