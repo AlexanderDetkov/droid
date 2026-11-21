@@ -36,6 +36,8 @@
 
 It works inside a Droid task (it writes to the task's output, which the app reads).
 """
+import errno
+import fcntl
 import json
 import os
 import re
@@ -94,13 +96,17 @@ def emit(event):
     if len(line) > 4000:
         die("too long")
     try:
-        fd = os.open(out, os.O_WRONLY | os.O_APPEND)
+        # Opened without waiting: a pipe nobody reads any more (the app is gone) would keep a plain open waiting forever.
+        fd = os.open(out, os.O_WRONLY | os.O_APPEND | os.O_NONBLOCK)
         try:
+            # Then written as usual, waiting while the pipe is full.
+            fcntl.fcntl(fd, fcntl.F_SETFL, fcntl.fcntl(fd, fcntl.F_GETFL) & ~os.O_NONBLOCK)
             os.write(fd, line)
         finally:
             os.close(fd)
     except OSError as e:
-        die(f"couldn't reach the app ({e.strerror})")
+        die("the app isn't reading this task's output any more; nothing was sent" if e.errno == errno.ENXIO
+            else f"couldn't reach the app ({e.strerror})")
 
 
 def option(args, name, default=None):

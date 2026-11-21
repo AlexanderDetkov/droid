@@ -4,6 +4,7 @@ import android.app.NotificationManager
 import android.app.role.RoleManager
 import android.content.ComponentName
 import android.content.Context
+import android.content.SharedPreferences
 import android.net.ConnectivityManager
 import android.os.Build
 import android.os.PowerManager
@@ -29,6 +30,8 @@ import java.net.InetAddress
 import java.net.URI
 import java.security.DigestInputStream
 import java.security.MessageDigest
+import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 
 private const val ALPINE = "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases"
 private const val SHERPA = "https://github.com/k2-fsa/sherpa-onnx/releases/download"
@@ -37,6 +40,8 @@ private const val SCREENSHOTS = "assist_screenshot_enabled"
 private const val SCREEN_TEXT = "assist_structure_enabled"
 /** Remove's exit code when something is mounted under the Linux (rm and su exit with others). */
 private const val MOUNTED = 3
+/** The agents besides Claude Code, which Setup adds on request. */
+private val OTHERS = listOf(Engine.CODEX, Engine.OPENCODE)
 
 /** An engine besides Claude Code: installed in the chroot, and usable (signed in, or needing no sign-in). [detail] is for the UI. */
 data class EngineStatus(val installed: Boolean = false, val signedIn: Boolean = false, val detail: String = "Not installed")
@@ -58,6 +63,11 @@ data class SetupState(
     val helper: Boolean = false,
     /** Without root: why the helper isn't running, for the user, or null. */
     val helperError: String? = null,
+    /**
+     * Without root: Droid may switch Wireless debugging on by itself (WRITE_SECURE_SETTINGS, which starting the helper
+     * grants), as it must to start the helper after a restart. Some phones refuse that grant until a setting allows it.
+     */
+    val secureSettings: Boolean = true,
     /** Without root: what pairing is doing now (see PairingService), or null when it isn't under way. */
     val pairing: String? = null,
     /** The Linux environment with Claude Code. */
@@ -85,6 +95,8 @@ data class SetupState(
     val engine: Engine = Engine.CLAUDE,
     /** Codex and OpenCode, once checked. */
     val others: Map<Engine, EngineStatus> = emptyMap(),
+    /** A check in this process reached the Linux: [installed], [signedIn] and [others] are what it found there. */
+    val linuxChecked: Boolean = false,
     /** The one-time code to enter at [signInUrl] while a device-code sign-in (Codex) waits; null for Claude's paste-the-code. */
     val deviceCode: String? = null,
     /** Android refuses the input Droid injects (some makers' phones until a Developer options switch is on), so the agent can't tap or type. */
@@ -95,6 +107,11 @@ data class SetupState(
     /** The agent for new chats: the one picked in Settings, or else the first that can take one (say OpenCode's free
      *  models, for someone without a Claude account). */
     val readyEngine: Engine? get() = engine.takeIf(::usable) ?: Engine.entries.firstOrNull(::usable)
+    /**
+     * The agent for a new chat, [picked] being the one picked in Settings: that one, unless a check found that it can't
+     * take a chat and another can. Until a check has reached the Linux, what is known may be out of date: the pick stands.
+     */
+    fun engineFor(picked: Engine) = if (!linuxChecked || usable(picked)) picked else Engine.entries.firstOrNull(::usable) ?: picked
     /** Droid can run commands in Android: root, or its helper. */
     val connected get() = if (access == Access.ROOT) root else helper
     val ready get() = isEmulator || (connected && installed && readyEngine != null)
@@ -112,7 +129,10 @@ class Setup(private val app: DroidApp) {
     /** Until a check reaches Android, what the last one that did found. */
     val state = MutableStateFlow(SetupState(
         access = savedAccess ?: Access.ROOT, installed = prefs.getBoolean("installed", false), signedIn = prefs.getBoolean("signedIn", false),
-        email = prefs.getString("email", null), plan = prefs.getString("plan", null),
+        email = prefs.getString("email", null), plan = prefs.getString("plan", null), engine = app.prefs.engine.value,
+        others = OTHERS.filter { prefs.contains("${it.id}.detail") }.associateWith {
+            EngineStatus(prefs.getBoolean("${it.id}.installed", false), prefs.getBoolean("${it.id}.signedIn", false), prefs.getString("${it.id}.detail", null).orEmpty())
+        },
     ))
     private val host get() = app.host
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -164,8 +184,9 @@ class Setup(private val app: DroidApp) {
             prefs.edit {
                 putString("access", a.name)
                 putBoolean("ready", false); putBoolean("installed", false); putBoolean("signedIn", false); remove("email"); remove("plan")
+                putOthers(emptyMap())
             }
-            state.update { SetupState(access = a, busy = it.busy) }
+            state.update { SetupState(access = a, busy = it.busy, engine = app.prefs.engine.value) }
         }
         check()
     }
@@ -371,8 +392,9 @@ class Setup(private val app: DroidApp) {
             // Mounts exist only inside each run's private namespace, so none can be under the base here; check anyway.
             run("grep -q ' ${h.base}' /proc/self/mountinfo && exit $MOUNTED; rm -rf ${h.base} $SHELL_BASE")
         } else {
-            // The helper itself stays, for the next install.
-            run("rm -rf ${h.rootfs} ${h.rootfs}.new ${h.base}/bin ${h.base}/tmp ${h.base}/*.sh")
+            // All but the helper, which stays for the next install, and its folder. What the agent made read-only (Go's
+            // module cache, say) is made writable first, or rm couldn't empty it.
+            run("chmod -R u+w ${h.base} 2>/dev/null; rm -rf ${h.base}/*")
         }
         when (r.code) {
             0 -> {}
@@ -405,19 +427,22 @@ class Setup(private val app: DroidApp) {
     private fun checkEngines(installed: Boolean): Map<Engine, EngineStatus> {
         if (!installed) return emptyMap()
         val bin = "${host.rootfs}/root/.local/bin"
+        val last = state.value.others
         val out = HashMap<Engine, EngineStatus>()
-        if (run("test -x $bin/codex").code == 0) {
-            val r = run("${host.base}/enter.sh codex login status")
-            val ok = r.code == 0
-            val last = state.value.others[Engine.CODEX]
-            // Only Codex saying so is a sign-out; a check that failed otherwise keeps what the last one found.
-            out[Engine.CODEX] = if (!ok && last != null && "not logged in" !in stripAnsi(r.out).lowercase()) last
-                else EngineStatus(true, ok, if (ok) stripAnsi(r.out).lines().firstOrNull { it.isNotBlank() }?.trim() ?: "Signed in" else "Installed, sign-in needed")
-        }
-        if (run("test -x $bin/opencode").code == 0) {
-            // OpenCode runs on its free models with no key, so it's usable either way; keys add providers.
-            val n = Regex("(\\d+) credential").find(stripAnsi(run("${host.base}/enter.sh opencode auth list").out))?.groupValues?.get(1)?.toIntOrNull() ?: 0
-            out[Engine.OPENCODE] = EngineStatus(true, true, if (n > 0) "Installed, $n provider key${if (n == 1) "" else "s"}" else "Installed, free models only until you add a key")
+        for (e in OTHERS) when (probe("test -x $bin/${e.id}").code) {
+            0 -> out[e] = if (e == Engine.CODEX) {
+                val r = probe("${host.base}/enter.sh codex login status")
+                val ok = r.code == 0
+                // Only Codex saying so is a sign-out; a check that failed otherwise keeps what the last one found.
+                last[e]?.takeIf { !ok && "not logged in" !in stripAnsi(r.out).lowercase() }
+                    ?: EngineStatus(true, ok, if (ok) stripAnsi(r.out).lines().firstOrNull { it.isNotBlank() }?.trim() ?: "Signed in" else "Installed, sign-in needed")
+            } else {
+                // OpenCode runs on its free models with no key, so it's usable either way; keys add providers.
+                val n = Regex("(\\d+) credential").find(stripAnsi(probe("${host.base}/enter.sh opencode auth list").out))?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                EngineStatus(true, true, if (n > 0) "Installed, $n provider key${if (n == 1) "" else "s"}" else "Installed, free models only until you add a key")
+            }
+            1 -> {}  // not installed
+            else -> last[e]?.let { out[e] = it }  // no answer (the helper, say): what the last check found stands
         }
         return out
     }
@@ -427,7 +452,8 @@ class Setup(private val app: DroidApp) {
 
     /** Reads what is in place. [ask]: the owner tapped Start, so starting the helper may ask them (see [AdbHelper.ensure]). */
     private fun check(ask: Boolean = false): Unit = synchronized(checking) {
-        val root = exec(RootHost, "id").let { it.code == 0 && "uid=0" in it.out }
+        // Longer than the others: the root manager may be asking the owner whether to allow Droid.
+        val root = exec(RootHost, "id", timeoutS = 90).let { it.code == 0 && "uid=0" in it.out }
         // Root stays on offer wherever there is an su (see SetupScreen): Magisk's is there while it refuses Droid (its
         // prompt missed or denied). KernelSU and APatch don't ask, and show theirs once Droid is allowed in their app,
         // which Setup notices on coming back from it.
@@ -444,20 +470,24 @@ class Setup(private val app: DroidApp) {
         }
         val connected = if (access == Access.ROOT) root else helper
         val assistant = roleHeld() && serviceActive()
+        // Starting the helper grants Droid the right to switch Wireless debugging on, but some phones refuse the shell
+        // user that until a setting in Developer options allows it: ask again on each check, so it's there once it does.
+        val secureSettings = !helper || app.adb.canToggle || probe(app.adb.grantCommand).let { app.adb.canToggle }
         val reached = { s: SetupState ->
             s.copy(checked = true, root = root, su = su, access = access, paired = app.adb.paired, helper = helper, helperError = helperError,
-                voice = app.speech.installed, voiceMatch = app.voiceMatch.installed, assistant = assistant, engine = app.prefs.engine.value)
+                secureSettings = secureSettings, voice = app.speech.installed, voiceMatch = app.voiceMatch.installed, assistant = assistant,
+                engine = app.prefs.engine.value)
         }
         // Out of reach for now: what the last check found in the Linux stands (see [needed]).
         if (!connected) return state.update(reached)
-        val probe = run("test -L ${host.rootfs}/root/.local/bin/claude")  // links into the rootfs's own /root
-        if (probe.code !in 0..1) return state.update(reached)  // gone out of reach after all (the helper stopped, say)
+        val claude = probe("test -L ${host.rootfs}/root/.local/bin/claude")  // links into the rootfs's own /root
+        if (claude.code !in 0..1) return state.update(reached)  // gone out of reach after all (the helper stopped, say)
         // Some makers' phones (Xiaomi's, OPPO's) refuse input from adb until a switch in Developer options is on, which
         // would leave the agent able to see the hidden screen but not tap it. A key no app handles shows whether they do.
-        val inputBlocked = inputRefused(run("input keyevent 0").out)
-        val installed = probe.code == 0
-        val linux = installed || run("test -e ${host.rootfs} -o -e ${host.rootfs}.new").code == 0
-        val status = if (!installed) null else authStatus(run("${host.base}/enter.sh claude auth status --json").out)
+        val inputBlocked = inputRefused(probe("input keyevent 0").out)
+        val installed = claude.code == 0
+        val linux = installed || probe("test -e ${host.rootfs} -o -e ${host.rootfs}.new").code == 0
+        val status = if (!installed) null else authStatus(probe("${host.base}/enter.sh claude auth status --json").out)
         // No answer at all (the command itself failed): what the last check found stands, as when Android is out of reach.
         val last = state.value
         val kept = installed && status == null
@@ -467,16 +497,24 @@ class Setup(private val app: DroidApp) {
         val email = if (kept) last.email else field("email")
         val plan = if (kept) last.plan else field("subscriptionType")
         val others = checkEngines(installed)
-        val screenshots = assistant && run("settings get secure $SCREENSHOTS; settings get secure $SCREEN_TEXT").out.lines()
+        val screenshots = assistant && probe("settings get secure $SCREENSHOTS; settings get secure $SCREEN_TEXT").out.lines()
             .filter { it.isNotBlank() }.all { it.trim() == "1" }
         state.update {
             reached(it).copy(installed = installed, linux = linux, signedIn = signedIn, screenshots = screenshots, email = email, plan = plan,
-                others = others, inputBlocked = inputBlocked)
+                others = others, inputBlocked = inputBlocked, linuxChecked = true)
         }
         prefs.edit {
             putBoolean("ready", state.value.ready); putBoolean("installed", installed); putBoolean("signedIn", signedIn)
             putString("email", email); putString("plan", plan)
+            putOthers(others)
         }
+    }
+
+    /** Keeps what a check found of the other agents for the next process, which needs it before its first check. */
+    private fun SharedPreferences.Editor.putOthers(others: Map<Engine, EngineStatus>) = OTHERS.forEach { e ->
+        val s = others[e]
+        if (s == null) listOf("installed", "signedIn", "detail").forEach { remove("${e.id}.$it") }
+        else { putBoolean("${e.id}.installed", s.installed); putBoolean("${e.id}.signedIn", s.signedIn); putString("${e.id}.detail", s.detail) }
     }
 
     private fun busy(what: String) = state.update { it.copy(busy = what) }
@@ -500,16 +538,33 @@ class Setup(private val app: DroidApp) {
     private class Out(val code: Int, val out: String)
 
     /** Runs [cmd] on the current host (root, or the helper), stdout and stderr together, handing each line to [onLine]. */
-    private fun run(cmd: String, stdin: String? = null, onLine: (String) -> Unit = {}): Out = exec(host, cmd, stdin, onLine)
+    private fun run(cmd: String, stdin: String? = null, onLine: (String) -> Unit = {}): Out = exec(host, cmd, stdin, onLine = onLine)
 
-    private fun exec(h: Host, cmd: String, stdin: String? = null, onLine: (String) -> Unit = {}): Out = try {
-        val p = h.exec(cmd)
-        if (stdin != null) p.outputStream.use { it.write(stdin.toByteArray()) } else p.outputStream.close()
-        val out = StringBuilder()
-        p.inputStream.bufferedReader().forEachLine { out.appendLine(it); onLine(it) }
-        Out(p.waitFor(), out.toString())
-    } catch (e: IOException) {
-        Out(-1, e.message.orEmpty())  // no su binary, or no helper
+    /**
+     * [run] for a check, which every step ends with: one stuck command (a sign-in status that never answers, a helper
+     * that stopped answering) gives up after a while instead of holding up every step after it.
+     */
+    private fun probe(cmd: String): Out = exec(host, cmd, timeoutS = 30)
+
+    /** [timeoutS]: if more than 0, the command is stopped after that many seconds, as if it had failed. */
+    private fun exec(h: Host, cmd: String, stdin: String? = null, timeoutS: Long = 0, onLine: (String) -> Unit = {}): Out {
+        val p = try {
+            h.exec(cmd).also { p -> if (stdin != null) p.outputStream.use { it.write(stdin.toByteArray()) } else p.outputStream.close() }
+        } catch (e: IOException) {
+            return Out(-1, e.message.orEmpty())  // no su binary, or no helper
+        }
+        val out = StringBuffer()
+        // Read on a thread of its own, so a command that hangs can be given up on.
+        val reader = thread(isDaemon = true, name = "setup-output") {
+            try { p.inputStream.bufferedReader().forEachLine { out.appendLine(it); onLine(it) } } catch (_: IOException) {}
+        }
+        if (timeoutS > 0 && !p.waitFor(timeoutS, TimeUnit.SECONDS)) {
+            p.destroy()
+            return Out(-1, "No answer within $timeoutS s: $cmd")
+        }
+        // A background child may hold the output open after the command exits: with a time limit, not for long.
+        reader.join(if (timeoutS > 0) 5_000 else 0)
+        return Out(p.waitFor(), out.toString())
     }
 
     /**

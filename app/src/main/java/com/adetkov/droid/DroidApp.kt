@@ -41,10 +41,9 @@ class DroidApp : Application() {
         store = Store(filesDir.resolve("conversations.json"))
         adb = AdbHelper(this)
         backend = defaultBackend(this) { host }
-        // New chats go to the agent picked in Settings, or else to one that can take them (none signed in: still that one)
-        runner = Runner(store, backend, { prefs.model(it) }, {
-            prefs.engine.value.takeIf { setup.state.value.usable(it) } ?: setup.state.value.readyEngine ?: prefs.engine.value
-        }, shown = { Shown.dir(this, it) }, inUse = ::screenInUse)
+        // New chats go to the agent picked in Settings, or else to one that can take them (see SetupState.engineFor)
+        runner = Runner(store, backend, { prefs.model(it) }, { setup.state.value.engineFor(prefs.engine.value) },
+            shown = { Shown.dir(this, it) }, inUse = ::screenInUse)
         speech = Speech(filesDir.resolve("models"))
         voiceMatch = VoiceMatch(this)
         // Voice match's misses start over at any unlock, not just one into Droid (this process lives on: the assistant
