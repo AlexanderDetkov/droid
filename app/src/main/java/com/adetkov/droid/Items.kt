@@ -142,8 +142,9 @@ data class AppTile(val conv: String, val name: String, val words: String, val fe
  * The home screen's apps: the chats of the last week (not [hidden], Dash's own home page), the owner's turn first, then
  * what he's at, then the latest; at most [max].
  */
-fun appTiles(convs: List<Conv>, running: Set<String>, hidden: String?, now: Long = System.currentTimeMillis(), max: Int = 6): List<AppTile> =
-    convs.filter { it.id != hidden && it.messages.isNotEmpty() && now - it.updatedAt < 7 * 86_400_000L }.map { c ->
+fun appTiles(convs: List<Conv>, running: Set<String>, hidden: String?, now: Long = System.currentTimeMillis(), max: Int = 6,
+             within: Long = 7 * 86_400_000L): List<AppTile> =
+    convs.filter { it.id != hidden && it.messages.isNotEmpty() && now - it.updatedAt < within }.map { c ->
         val working = c.id in running
         val outcome = lastOutcome(c.messages, working)
         val mood = lastMood(c.messages)

@@ -268,7 +268,7 @@ class AgentService : Service() {
         return Notification.Builder(this, CH_DONE)
             .setSmallIcon(R.drawable.ic_notify)
             .setLargeIcon(dash(chatFeel(false, null, outcome, mood)))
-            .apply { turnLabel(outcome, mood)?.let { setSubText(it) } }
+            .setSubText(appName(conv))  // the app it's from, in its header
             // Dash's words are the headline, as in the chat; the request names the chat when he has none
             .setContentTitle(mood?.words?.takeIf { it.isNotBlank() } ?: conv.title)
             .setContentText(plain(text))

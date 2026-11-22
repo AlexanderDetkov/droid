@@ -106,9 +106,9 @@ fun SettingsScreen(onBack: () -> Unit, onInstructions: () -> Unit, onSetup: () -
             }
 
             Group(null) {
-                ToggleItem(R.drawable.ic_speaker, "Read answers aloud", "When you asked by voice", speak, prefs::setSpeakReplies, "settings_speak")
+                ToggleItem(R.drawable.ic_speaker, "Talk out loud", "I read my answers to you when you talk to me", speak, prefs::setSpeakReplies, "settings_speak")
                 Divider()
-                ToggleItem(R.drawable.ic_sparkle, "Your day from Dash", "Each day he puts what's next and what needs you on Droid's home screen",
+                ToggleItem(R.drawable.ic_sparkle, "Your day from me", "Each morning, on your home screen",
                     home, prefs::setHomePage, "settings_home_page")
             }
 

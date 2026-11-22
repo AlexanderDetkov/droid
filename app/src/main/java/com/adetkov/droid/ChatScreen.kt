@@ -749,8 +749,8 @@ fun EmptyState(onSuggestion: (String) -> Unit, modifier: Modifier, listening: Bo
         val drag = rememberListDrag(scroll)
         val (now, before) = apps.partition { it.calls || it.working }
         Column(modifier.verticalScroll(scroll).padding(horizontal = 16.dp)) {
-            Row(Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-                Dash(rig, Modifier.size(width = 66.dp, height = 74.dp).testTag("dash"), label = null)
+            Row(Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Dash(rig, Modifier.size(width = 80.dp, height = 88.dp).testTag("dash"), label = null)
                 Box(Modifier.weight(1f).padding(start = 6.dp)) { SpeechBubble(if (preparing) "Getting your day ready…" else greeting ?: "Hi! What should I do?") }
             }
             if (now.isNotEmpty()) AppTiles(now, onOpen, Modifier.padding(bottom = 16.dp))

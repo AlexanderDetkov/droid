@@ -141,7 +141,7 @@ object Notify {
             .setContentIntent(pi(-1, "tap", page(o.optString("tap").ifEmpty { "chat:" })))
             .setDeleteIntent(pi(-2, SWIPED, ""))
         if (text.isNotEmpty()) b.setContentText(text.replace(Regex("\\s+"), " "))
-        if (feel.call) b.setSubText("Your turn")
+        b.setSubText(appName(c))  // the app it's from, as its header says (Dash's look says whose turn it is)
         val image = o.optString("imageFile").takeIf { it.isNotEmpty() }?.let { picture(it) }
         if (image != null) b.setStyle(Notification.BigPictureStyle().bigPicture(image).apply { if (text.isNotEmpty()) setSummaryText(text) })
         else if (text.isNotEmpty()) b.setStyle(Notification.BigTextStyle().bigText(text))

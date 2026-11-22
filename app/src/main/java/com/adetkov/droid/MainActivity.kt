@@ -47,14 +47,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalDrawerSheet
-import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -133,7 +129,7 @@ class MainActivity : ComponentActivity() {
     )
 }
 
-private enum class Screen { CHAT, SETTINGS, ADVANCED, VOICE_MATCH, INSTRUCTIONS, MEMORY, SETUP, ABOUT }
+private enum class Screen { CHAT, APPS, SETTINGS, ADVANCED, VOICE_MATCH, INSTRUCTIONS, MEMORY, SETUP, ABOUT }
 
 @Composable
 private fun Root(request: Request?, modifier: Modifier) {
@@ -168,7 +164,6 @@ private fun Root(request: Request?, modifier: Modifier) {
     var toRename by remember { mutableStateOf<Conv?>(null) }
     var needVoice by remember { mutableStateOf(false) }
     var listenMode by remember { mutableStateOf<Listen?>(null) }
-    val drawer = rememberDrawerState(DrawerValue.Closed)
     val (voice, speaker) = rememberVoice()
     val withMic = rememberWithMic()
     val haptic = rememberHaptic()
@@ -276,8 +271,7 @@ private fun Root(request: Request?, modifier: Modifier) {
     fun open(id: String?) {
         if (id != convId) { draft = ""; files.forEach(::discard); files = emptyList(); footer = false }
         convId = id; voice.cancel(); shooting = false; screen = Screen.CHAT; wholeChat = false; typing = false
-        focus.clearFocus()  // the drawer's search
-        scope.launch { drawer.close() }
+        focus.clearFocus()
     }
 
     // First run: setup stays up until Start, so the optional steps (voice, assistant) can be done there too.
@@ -293,7 +287,7 @@ private fun Root(request: Request?, modifier: Modifier) {
             notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         askedNotif = true
     }
-    // A notification's chat: opened as from the drawer; Watch only if its screen is up. A frame later, so Watch grows
+    // A notification's chat: opened as from Your apps; Watch only if its screen is up. A frame later, so Watch grows
     // out of this chat's window, not the one that was open.
     var handled by rememberSaveable { mutableStateOf(0L) }  // once each (not again when Setup was shown meanwhile)
     LaunchedEffect(request) {
@@ -343,10 +337,9 @@ private fun Root(request: Request?, modifier: Modifier) {
     BackHandler(conv != null && screen == Screen.CHAT) { if (wholeChat) wholeChat = false else open(null) }
     BackHandler(voice.listening) { voice.cancel(); draft = typed }
     BackHandler(shooting && !voice.listening) { shooting = false }
-    BackHandler(drawer.isOpen) { scope.launch { drawer.close() } }
     BackHandler(screen != Screen.CHAT) {
         screen = when (screen) {
-            Screen.SETTINGS -> Screen.CHAT; Screen.ADVANCED, Screen.ABOUT -> Screen.SETTINGS; Screen.VOICE_MATCH, Screen.MEMORY -> Screen.ADVANCED
+            Screen.SETTINGS, Screen.APPS -> Screen.CHAT; Screen.ADVANCED, Screen.ABOUT -> Screen.SETTINGS; Screen.VOICE_MATCH, Screen.MEMORY -> Screen.ADVANCED
             else -> returnTo
         }
     }
@@ -379,26 +372,17 @@ private fun Root(request: Request?, modifier: Modifier) {
             Screen.MEMORY -> MemoryScreen(app.backend) { screen = Screen.ADVANCED }
             Screen.ABOUT -> AboutScreen { screen = Screen.SETTINGS }
             Screen.SETUP -> SetupScreen(app.setup, firstRun = false) { screen = returnTo }
+            Screen.APPS -> AppsScreen(convs, runningMap.keys, app.prefs.homeChat, onOpen = ::open, onLongPress = { chatMenu = it },
+                onBack = { screen = Screen.CHAT })
             Screen.CHAT -> {
-              // Droid's screen in the chat: small frames, twice a second. The drawer's tile for this chat shares it, so
-              // it opens already showing what the chat shows.
+              // Droid's screen in the chat: small frames, twice a second.
               val feed = if (conv != null && conv.messages.isNotEmpty())
                   rememberScreenFeed(info?.port, info?.token, width = 540, fps = 2, isUp = { conv.id in app.runner.screens.value }) else null
-              ModalNavigationDrawer(
-                drawerState = drawer,
-                drawerContent = {
-                    Drawer(convs, convId, runningMap.keys, setup, ::open,
-                        screens = screens, doing = doingMap, visible = drawer.targetValue == DrawerValue.Open || drawer.currentValue == DrawerValue.Open,
-                        chatFeed = feed,
-                        isUp = { id -> id in app.runner.screens.value },
-                        onLongPress = { chatMenu = it },
-                        onSettings = { go(Screen.SETTINGS); scope.launch { drawer.close() } })
-                },
-            ) {
+              run {
                 Column(Modifier.fillMaxSize().background(P.bg).imePadding()) {
                     // the page's next step at the bottom takes the talk bar's place; a microphone up here instead
                     val pinned = footer && !running && !wholeChat
-                    if (conv == null || conv.messages.isEmpty()) HomeBar(onMenu = { scope.launch { drawer.open() } }, onSettings = { go(Screen.SETTINGS) })
+                    if (conv == null || conv.messages.isEmpty()) HomeBar(onMenu = { go(Screen.APPS) }, onSettings = { go(Screen.SETTINGS) })
                     else TurnBar(appName(conv), onBack = { if (wholeChat) wholeChat = false else open(null) }, onMore = { chatMenu = conv },
                         onTalk = if (pinned) ({ if (app.speech.installed) talk(Listen.VOICE) else typing = true }) else null,
                         typeOnly = !app.speech.installed)
@@ -490,135 +474,6 @@ private fun Root(request: Request?, modifier: Modifier) {
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun Drawer(
-    convs: List<Conv>, convId: String?, running: Set<String>, setup: SetupState, onOpen: (String?) -> Unit,
-    /** Runs with a screen (working, or held after answering) and whether the drawer shows: those get live windows. */
-    screens: Map<String, RunInfo>, visible: Boolean, isUp: (String) -> Boolean,
-    onLongPress: (Conv) -> Unit, onSettings: () -> Unit,
-    /** The open chat's own screen feed, if it has one: its tile uses it. */
-    chatFeed: ScreenFeed? = null,
-    /** What each working chat's run is doing. */
-    doing: Map<String, Doing> = emptyMap(),
-) {
-    var query by rememberSaveable { mutableStateOf("") }
-    ModalDrawerSheet(
-        drawerContainerColor = P.drawer, drawerContentColor = P.text, windowInsets = androidx.compose.foundation.layout.WindowInsets(0),
-        drawerShape = RoundedCornerShape(topEnd = 0.dp, bottomEnd = 0.dp), modifier = Modifier.width(320.dp),
-    ) {
-        Column(Modifier.fillMaxHeight().statusBarsPadding().navigationBarsPadding().imePadding()) {
-            Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 6.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Row(
-                    Modifier.weight(1f).height(44.dp).clip(RoundedCornerShape(22.dp)).background(P.surface).padding(horizontal = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(painterResource(R.drawable.ic_search), null, Modifier.size(20.dp), tint = P.muted)
-                    Box(Modifier.weight(1f).padding(start = 10.dp)) {
-                        if (query.isEmpty()) Text("Search", style = MaterialTheme.typography.bodyLarge, color = P.muted)
-                        BasicTextField(query, { query = it }, Modifier.fillMaxWidth().testTag("search"), singleLine = true,
-                            textStyle = MaterialTheme.typography.bodyLarge.copy(color = P.text), cursorBrush = SolidColor(P.text))
-                    }
-                    if (query.isNotEmpty()) IconBtn(R.drawable.ic_close, "Clear", { query = "" }, size = 28.dp, iconSize = 16.dp, tint = P.muted)
-                }
-                IconBtn(R.drawable.ic_new_chat, "New chat", { onOpen(null) }, Modifier.testTag("drawer_new"), size = 44.dp)
-            }
-            // Now: each chat whose run is up, as its screen, live while an app is on it.
-            // (one whose agent is only exiting after its answer, with nothing left to show, is in the list again)
-            val live = remember(convs, screens, running) {
-                convs.filter { it.id in running || screens[it.id]?.port != null }.sortedByDescending { it.updatedAt }
-            }
-            if (query.isBlank() && live.isNotEmpty()) {
-                // room under the label for Dash's hook (and his call's rings) over each tile
-                SectionLabel("Now", Modifier.padding(start = 24.dp, top = 8.dp, bottom = 22.dp))
-                LazyRow(Modifier.fillMaxWidth().testTag("now"), contentPadding = PaddingValues(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    items(live, key = { it.id }) { c ->
-                        NowTile(c, screens[c.id], visible, working = c.id in running, doing = doing[c.id], isUp = { isUp(c.id) },
-                            shared = chatFeed.takeIf { c.id == convId }) { onOpen(c.id) }
-                    }
-                }
-                Spacer(Modifier.height(8.dp))
-            }
-            val q = query.trim()
-            val now = System.currentTimeMillis()
-            val matches = remember(convs, q) {
-                convs.mapNotNull { c ->
-                    when {
-                        q.isEmpty() || c.title.contains(q, true) -> c to null
-                        else -> c.messages.firstOrNull { (it.kind == Kind.USER || it.kind == Kind.AGENT) && it.text.contains(q, true) &&
-                            (!hasHtml(it.text) || htmlToText(it.text).contains(q, true)) }  // a page's words, not its markup
-                            ?.let { c to snippet(it.text, q) }
-                    }
-                }.sortedByDescending { it.first.updatedAt }
-            }
-            val listed = if (q.isEmpty()) matches.filter { m -> live.none { it.id == m.first.id } } else matches  // the rest are under Now
-            val pinned = if (q.isEmpty()) listed.filter { it.first.pinned } else emptyList()
-            val groups = (listed - pinned.toSet()).groupBy { dayGroup(it.first.updatedAt, now) }
-            LazyColumn(Modifier.weight(1f).testTag("chats"), contentPadding = PaddingValues(bottom = 12.dp)) {
-                fun section(label: String, list: List<Pair<Conv, String?>>) {
-                    item(key = "h$label") { SectionLabel(label, Modifier.padding(start = 24.dp, top = 16.dp, bottom = 6.dp)) }
-                    items(list, key = { "${label}_${it.first.id}" }) { (c, snip) ->
-                        ChatRow(c, snip, c.id == convId, c.id in running, { onOpen(c.id) }, { onLongPress(c) }, visible, doing[c.id], now)
-                    }
-                }
-                if (pinned.isNotEmpty()) section("Pinned", pinned)
-                groups.forEach { (g, list) -> section(g, list) }
-                if (matches.isEmpty()) item {
-                    Text(if (q.isEmpty()) "Your chats will show up here." else "No chats match “$q”.",
-                        Modifier.padding(24.dp), style = MaterialTheme.typography.bodyMedium, color = P.muted)
-                }
-            }
-            HorizontalDivider(color = P.hairline)
-            Row(
-                Modifier.fillMaxWidth().clickable(onClick = onSettings).padding(horizontal = 16.dp, vertical = 12.dp).testTag("drawer_settings"),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Avatar(setup.email)
-                Column(Modifier.weight(1f).padding(start = 12.dp)) {
-                    Text(setup.email ?: "Droid", style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(planLabel(setup.plan) ?: "Settings", style = MaterialTheme.typography.bodySmall, color = P.muted)
-                }
-                Icon(painterResource(R.drawable.ic_settings), "Settings", Modifier.size(22.dp), tint = P.muted)
-            }
-        }
-    }
-}
-
-/**
- * A chat in the drawer's Now row: Dash, framing its run's screen (live while the drawer shows) while an app is on it and
- * a small creature while it works without one, in the pose of what it's doing; its title; and the app Droid is in (or,
- * once the run waits on a held screen, "Your turn" when the answer asked you something, else "Answered").
- * [shared]: the open chat's feed of the same screen, used instead of opening another.
- */
-@Composable
-private fun NowTile(c: Conv, info: RunInfo?, visible: Boolean, working: Boolean, doing: Doing?, isUp: () -> Boolean, shared: ScreenFeed?, onOpen: () -> Unit) {
-    val feed = shared ?: if (visible) rememberScreenFeed(info?.port, info?.token, width = 240, fps = 1, isUp = isUp) else null
-    val f = feed?.frame
-    val app = rememberAppInfo(feed?.app)?.label
-    Column(Modifier.width(88.dp).clickable(remember { MutableInteractionSource() }, null, onClick = onOpen).testTag("now_tile")) {
-        val img = remember(f) { f?.asImageBitmap() }
-        val live = feed?.app != null
-        val outcome = remember(c.messages, working) { lastOutcome(c.messages, working) }
-        val mood = remember(c.messages) { lastMood(c.messages) }
-        val asking = remember(c.messages, working) { waitingPage(c.messages, working) != null }
-        val feel = chatFeel(working, doing, outcome, mood, asking).let { if (it == Feel.HAPPY) Feel.IDLE else it }
-        val rig = rememberDash(c.id, active = visible) { it.frame.snap(if (live) 1f else 0f); it.feel(feel) }
-        LaunchedEffect(live) { rig.frame.t = if (live) 1f else 0f }
-        LaunchedEffect(feel) { rig.feel(feel) }
-        LaunchedEffect(doing?.n) { if (doing != null && doing.n > 0 && visible) rig.react(doing) }
-        DashSlot(rig, img.takeIf { live }, creature = DpSize(40.dp, 55.dp), width = 88.dp, ratio = img?.let { it.height.toFloat() / it.width } ?: screenRatio(),
-            label = if (live) "Droid's screen, live" else "Dash, working", onClick = onOpen)
-        Text(c.title, Modifier.padding(top = 10.dp), style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        val asks = (!working && outcome == Outcome.ASKS) || asking
-        Text(if (asks) "Your turn" else if (working) app ?: "Working" else mood?.words?.ifEmpty { null } ?: "Answered", style = MaterialTheme.typography.labelSmall,
-            color = if (asks) P.call else P.faint, fontWeight = if (asks) FontWeight.Medium else null, maxLines = 1)
-    }
-}
-
-/** How long a chat that asked you something, or couldn't finish, shows Dash in the drawer. */
-private const val WAITS_FOR = 12 * 3600_000L
-
 /** "Claude Max" for the plan names Claude Code reports. */
 fun planLabel(plan: String?): String? = when (plan?.lowercase()) {
     null, "" -> null
@@ -627,39 +482,4 @@ fun planLabel(plan: String?): String? = when (plan?.lowercase()) {
     "team" -> "Claude Team"
     "enterprise" -> "Claude Enterprise"
     else -> "Claude " + plan.replaceFirstChar { it.uppercase() }
-}
-
-/** The words around the first match of [q] in [text], on one line. */
-private fun snippet(text: String, q: String): String {
-    val flat = stripMarkdown(text).replace(Regex("\\s+"), " ")
-    val i = flat.indexOf(q, ignoreCase = true).coerceAtLeast(0)
-    val from = (i - 24).coerceAtLeast(0).let { s -> if (s == 0) 0 else flat.indexOf(' ', s).let { if (it in s until i) it + 1 else s } }
-    return (if (from > 0) "…" else "") + flat.substring(from).take(90)
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun ChatRow(c: Conv, snip: String?, selected: Boolean, running: Boolean, onClick: () -> Unit, onLongClick: () -> Unit, visible: Boolean = true,
-                    doing: Doing? = null, now: Long = System.currentTimeMillis()) {
-    // Dash on a chat while it works, and for half a day after it asked you something or couldn't finish
-    val outcome = remember(c.messages, running) { lastOutcome(c.messages, running) }
-    val mood = remember(c.messages) { lastMood(c.messages) }
-    val asking = remember(c.messages, running) { waitingPage(c.messages, running) != null }
-    val waiting = (!running && now - c.updatedAt < WAITS_FOR && (outcome == Outcome.ASKS || outcome == Outcome.FAILED)) || asking
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = 8.dp).clip(RoundedCornerShape(12.dp))
-            .background(if (selected) P.raised else Color.Transparent)
-            .combinedClickable(onLongClick = onLongClick, onClick = onClick)
-            .padding(start = 16.dp, end = 12.dp, top = 10.dp, bottom = 10.dp).testTag("conv_item"),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(c.title, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (snip != null) Text(snip, style = MaterialTheme.typography.bodySmall, color = P.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            else if (waiting) Text(if (asking) "Your turn" else turnLabel(outcome, mood).orEmpty(), style = MaterialTheme.typography.bodySmall,
-                color = if (outcome == Outcome.ASKS || asking) P.call else P.danger, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-        if (running || waiting) DashMini(chatFeel(running, doing, outcome, mood, asking), 28.dp, Modifier.padding(start = 10.dp), active = visible, doing = doing,
-            label = when { asking || outcome == Outcome.ASKS -> "Your turn"; running -> "Working"; else -> "Couldn't finish" })
-    }
 }

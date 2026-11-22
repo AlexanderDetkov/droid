@@ -129,27 +129,30 @@ fun TurnScreen(
     val status = remember(messages, start) {
         (start until messages.size).lastOrNull { messages[it].kind == Kind.STATUS }?.takeIf { answerAt == null || it > answerAt }
     }
+    // a turn that failed: what it means, in Dash's words, and what fixes it (a stop is the owner's own doing)
+    val failed = remember(messages, start, status) { status?.let { messages[it].text }?.takeIf { !live && it != "Stopped" }?.let { plainStatus(it, conv.engine) ?: Plain("That didn't work. " + it.removePrefix("Error: ")) } }
     val big = waiting == null && live && appAt < 0
     AnimatedContent(big, modifier, label = "turn", transitionSpec = { fadeIn(tween(240, 60)) togetherWith fadeOut(tween(140)) }) { isBig ->
         if (isBig) { Working(conv, start, steps, feed, taps, doing, onWatch); return@AnimatedContent }
         Column(Modifier.fillMaxSize()) {
             val info = waiting?.let { w -> remember(w.data) { PageInfo.of(w) } }
             Headline(conv, running, live && waiting == null, steps, feed, taps, doing, held, closesAt, typing, listening, level,
-                onWatch, onSpeak, page = info?.title, said = words.takeIf { appAt >= 0 && !live })
-            if (!live && status != null) Box(Modifier.padding(start = 20.dp, end = 20.dp, bottom = 12.dp)) {
-                StatusRow(messages[status].text, conv.engine, retry = onRetry, onSetup = onSetup)
-            }
+                onWatch, onSpeak, page = info?.title, said = words.takeIf { appAt >= 0 && !live }, failed = failed)
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 when {
                     waiting != null && info != null -> WaitingPage(conv.id, waiting, info, onTakeOver, onFooter, Modifier.fillMaxSize())
                     // the same app keeps its view (what's typed and picked in it) from turn to turn
                     appAt >= 0 -> key(conv.id, appAt) { AppPage(conv, appAt, onTakeOver, onFooter, Modifier.fillMaxSize()) }
+                    failed != null -> {}
                     else -> WordsBody(words, onSpeak, onFooter, Modifier.fillMaxSize())
                 }
             }
+            if (failed != null) FailedActions(failed.setup, onSetup, onRetry)
         }
     }
     LaunchedEffect(big) { if (big) onFooter(false) }
+    // what fixes a failure takes the talk bar's place
+    LaunchedEffect(failed) { if (failed != null) onFooter(true) }
 }
 
 /**
@@ -166,6 +169,8 @@ private fun Headline(
     page: String? = null,
     /** The turn's answer in words, beside an app. */
     said: String? = null,
+    /** How the turn failed, plainly: its first sentence is what Dash says. */
+    failed: Plain? = null,
 ) {
     if (working) { WorkingHeadline(conv, steps, feed, taps, doing, onWatch); return }
     val messages = conv.messages
@@ -173,14 +178,15 @@ private fun Headline(
     val outcome = remember(messages, running) { lastOutcome(messages, running) }
     val calls = page != null || outcome == Outcome.ASKS || mood?.calls == true
     val short = said?.let { stripMarkdown(it).replace(Regex("\\s+"), " ").trim() }?.takeIf { it.length <= 110 }
-    val words = mood?.words?.takeIf { it.isNotBlank() } ?: short ?: when {
+    val (failWords, failRest) = failed?.text?.let { t -> t.indexOf(". ").takeIf { it > 0 }?.let { t.substring(0, it + 1) to t.substring(it + 2) } ?: (t to null) } ?: (null to null)
+    val words = failWords ?: mood?.words?.takeIf { it.isNotBlank() } ?: short ?: when {
         page != null -> page.ifBlank { "Your turn" }
         outcome == Outcome.FAILED -> "That didn't work"
         outcome == Outcome.STOPPED -> "Stopped"
         outcome == Outcome.ASKS -> "Your turn"
         else -> "Here you go"
     }
-    val note = said?.takeIf { short == null || words != short }?.let { stripMarkdown(it).trim() }
+    val note = failRest ?: said?.takeIf { short == null || words != short }?.let { stripMarkdown(it).trim() }
     val rig = rememberDash(conv.id)
     rig.level = level
     val feel = when {
@@ -296,6 +302,21 @@ private fun AppPage(conv: Conv, at: Int, onTakeOver: () -> Unit, onFooter: (Bool
             FillPage("screen:${conv.id}:$at:${m.text.hashCode()}:$dark", "answer:${conv.id}:$at",
                 { cx -> answerDocument(cx, m.text, dark, PageMode.SCREEN) }, namedPaths(m.text), actions,
                 modifier.testTag("answer_page"), live = pageLive(app, conv, at), onFooter = onFooter, screenOf = conv.id)
+        }
+    }
+}
+
+/** What fixes a failed turn, big, at the bottom: Setup when that's where it's fixed, and trying again. */
+@Composable
+private fun FailedActions(setup: Boolean, onSetup: () -> Unit, onRetry: () -> Unit) {
+    val onCall = if (P.dark) Color(0xFF0D0D0D) else Color.White
+    Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        if (setup) Box(Modifier.fillMaxWidth().height(60.dp).clip(RoundedCornerShape(30.dp)).background(P.call).clickable(onClick = onSetup).testTag("status_setup"),
+            contentAlignment = Alignment.Center) { Text("Open Setup", style = MaterialTheme.typography.titleMedium.copy(fontSize = 19.sp, fontWeight = FontWeight.Bold), color = onCall) }
+        Box(Modifier.fillMaxWidth().height(if (setup) 54.dp else 60.dp).clip(RoundedCornerShape(30.dp)).background(if (setup) P.surface else P.call)
+            .clickable(onClick = onRetry).testTag("retry"), contentAlignment = Alignment.Center) {
+            Text("Try again", style = MaterialTheme.typography.titleMedium.copy(fontSize = if (setup) 17.sp else 19.sp, fontWeight = FontWeight.Bold),
+                color = if (setup) P.text else onCall)
         }
     }
 }
