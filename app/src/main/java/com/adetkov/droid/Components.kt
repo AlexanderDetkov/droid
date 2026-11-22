@@ -68,6 +68,7 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -110,7 +111,7 @@ fun ShimmerText(text: String, style: TextStyle, modifier: Modifier = Modifier) {
     )))
 }
 
-/** A bottom sheet in Droid's style; [title] heads it when given. */
+/** A sheet in Droid's style: everything that goes deeper (a menu, his steps, what to attach) is one. [title] heads it quietly. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ActionSheet(onDismiss: () -> Unit, title: String? = null, content: @Composable ColumnScope.(close: () -> Unit) -> Unit) {
@@ -118,32 +119,25 @@ fun ActionSheet(onDismiss: () -> Unit, title: String? = null, content: @Composab
     val scope = rememberCoroutineScope()
     val close: () -> Unit = { scope.launch { state.hide() }.invokeOnCompletion { if (!state.isVisible) onDismiss() } }
     ModalBottomSheet(
-        onDismissRequest = onDismiss, sheetState = state, containerColor = P.sheet, contentColor = P.text,
+        onDismissRequest = onDismiss, sheetState = state, containerColor = P.bg, contentColor = P.text,
         shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-        dragHandle = { BottomSheetDefaults.DragHandle(color = P.faint.copy(alpha = .5f), width = 36.dp, height = 4.dp) },
+        dragHandle = { BottomSheetDefaults.DragHandle(color = P.hairline, width = 36.dp, height = 4.dp) },
     ) {
         Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(bottom = 12.dp)) {
-            if (title != null) {
-                Text(title, Modifier.padding(horizontal = 24.dp).padding(bottom = 12.dp), style = MaterialTheme.typography.titleMedium,
-                    maxLines = 2, overflow = TextOverflow.Ellipsis)
-                HorizontalDivider(Modifier.padding(bottom = 6.dp), color = P.hairline)
-            }
+            if (title != null) Text(title, Modifier.padding(horizontal = 24.dp).padding(bottom = 6.dp),
+                style = MaterialTheme.typography.titleSmall.copy(fontSize = 15.sp, fontWeight = FontWeight.SemiBold), color = P.muted,
+                maxLines = 2, overflow = TextOverflow.Ellipsis)
             content(close)
         }
     }
 }
 
-/** One row in an [ActionSheet]. */
+/** One row in an [ActionSheet]: a row of the kit, its icon on a grey tile. [line]: a hairline above it. */
 @Composable
-fun SheetRow(icon: Int, label: String, onClick: () -> Unit, danger: Boolean = false, tag: String? = null) {
-    val color = if (danger) P.danger else P.text
-    Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).let { if (tag != null) it.testTag(tag) else it }
-            .padding(horizontal = 24.dp, vertical = 15.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(painterResource(icon), null, Modifier.size(22.dp), tint = color)
-        Text(label, Modifier.padding(start = 18.dp), style = MaterialTheme.typography.bodyLarge, color = color)
+fun SheetRow(icon: Int, label: String, onClick: () -> Unit, danger: Boolean = false, tag: String? = null, line: Boolean = false) {
+    Box(Modifier.padding(horizontal = 20.dp)) {
+        KitRow(label, if (tag != null) Modifier.testTag(tag) else Modifier, lead = { IconTile(icon, if (danger) P.danger else P.text) },
+            titleColor = if (danger) P.danger else P.text, line = line, onClick = onClick)
     }
 }
 

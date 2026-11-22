@@ -143,6 +143,7 @@ private fun Root(request: Request?, modifier: Modifier) {
     val screens by app.runner.screens.collectAsState()
     val doingMap by app.runner.doing.collectAsState()
     val setup by app.setup.state.collectAsState()
+    val notNow by app.prefs.notNow.collectAsState()
 
     var convId by rememberSaveable { mutableStateOf<String?>(null) }
     var screen by rememberSaveable { mutableStateOf(Screen.CHAT) }
@@ -150,7 +151,6 @@ private fun Root(request: Request?, modifier: Modifier) {
     fun go(to: Screen) { returnTo = screen; screen = to }
     var watching by rememberSaveable { mutableStateOf(false) }
     var wholeChat by rememberSaveable { mutableStateOf(false) }  // the chat turn by turn, rather than its latest turn's screen
-    var footer by remember { mutableStateOf(false) }  // the answer's page ends with its next step, which the talk bar makes way for
     var typing by rememberSaveable { mutableStateOf(false) }  // the message box is open to type in
     var handoff by rememberSaveable { mutableStateOf(false) }  // watching because the answer handed over its screen
     var draft by rememberSaveable { mutableStateOf("") }
@@ -163,10 +163,10 @@ private fun Root(request: Request?, modifier: Modifier) {
     var toDelete by remember { mutableStateOf<Conv?>(null) }
     var toRename by remember { mutableStateOf<Conv?>(null) }
     var needVoice by remember { mutableStateOf(false) }
-    var listenMode by remember { mutableStateOf<Listen?>(null) }
     val (voice, speaker) = rememberVoice()
     val withMic = rememberWithMic()
     val haptic = rememberHaptic()
+    val copyText = rememberCopy()
     val focus = androidx.compose.ui.platform.LocalFocusManager.current
     val pickers = rememberPickers { files = files + it }
 
@@ -231,34 +231,31 @@ private fun Root(request: Request?, modifier: Modifier) {
         if (shooting || saving == false) takePhoto(send = true) { send(text, via)?.let(after) } else send(text, via)?.let(after)
     }
 
-    // Voice: dictation fills the box; voice mode sends when the user stops talking and reads the answer aloud.
-    var typed by remember { mutableStateOf("") }  // the draft from before listening started, kept in front of the transcript
+    // Voice: it sends when the owner stops talking (what they'd typed goes first), and reads the answer aloud. Typing
+    // instead keeps what it heard, to edit.
+    var typed by remember { mutableStateOf("") }  // the draft from before listening started, kept in front of what's heard
     fun withTyped(t: String) = if (typed.isEmpty()) t else "$typed $t"
-    fun listen(mode: Listen) {
+    fun listen() {
         speaker.stop()
-        focus.clearFocus()  // the keyboard goes while you talk (the box fills in as it hears you)
+        focus.clearFocus()  // the keyboard goes while you talk
+        typing = false
         typed = draft.trim()
-        listenMode = mode
-        if (mode == Listen.VOICE) app.runner.prewarm(convId)  // the agent starts up while the user talks
-        fun dropWarm() { if (mode == Listen.VOICE) app.runner.dropWarm() }
+        app.runner.prewarm(convId)  // the agent starts up while the user talks
         voice.start(null,
             onPartial = { draft = withTyped(it) },
             onFinal = { text, _ ->
-                if (mode == Listen.DICTATE) draft = withTyped(text)
-                else {
-                    val aloud = app.prefs.speakReplies.value
-                    sendNow(withTyped(text), if (aloud) "I said this aloud, and your answer is read aloud to me" else "I said this aloud") { id ->
-                        if (aloud) { speakAfter += id; speaker.prepare() }
-                    }
+                val aloud = app.prefs.speakReplies.value
+                sendNow(withTyped(text), if (aloud) "I said this aloud, and your answer is read aloud to me" else "I said this aloud") { id ->
+                    if (aloud) { speakAfter += id; speaker.prepare() }
                 }
             },
-            onNothing = { draft = typed; dropWarm(); toast("Didn't catch that") },
-            onError = { draft = typed; dropWarm(); toast(it) },
+            onNothing = { draft = typed; app.runner.dropWarm(); toast("Didn't catch that") },
+            onError = { draft = typed; app.runner.dropWarm(); toast(it) },
             onPause = { if (shooting) camera.mark() },
         )
     }
     /** Listens, once the voice is set up and the microphone is allowed. */
-    fun talk(mode: Listen) { if (!app.speech.installed) needVoice = true else withMic { listen(mode) } }
+    fun talk() { if (!app.speech.installed) needVoice = true else withMic { listen() } }
     val notifPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
     var askedNotif by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(Unit) {
@@ -268,8 +265,14 @@ private fun Root(request: Request?, modifier: Modifier) {
     LaunchedEffect(info?.port == null, watching) { if (info?.port == null) watching = false }
     LaunchedEffect(watching) { if (!watching) handoff = false }
 
+    /** Not now: the chat leaves home (and stops calling the owner) until its next message. */
+    fun setAside(id: String) {
+        haptic()
+        app.store.get(id)?.let { c -> app.prefs.setNotNow(id, c.messages.lastOrNull()?.ts ?: 0L) }
+    }
+
     fun open(id: String?) {
-        if (id != convId) { draft = ""; files.forEach(::discard); files = emptyList(); footer = false }
+        if (id != convId) { draft = ""; files.forEach(::discard); files = emptyList(); watching = false }
         convId = id; voice.cancel(); shooting = false; screen = Screen.CHAT; wholeChat = false; typing = false
         focus.clearFocus()
     }
@@ -319,14 +322,24 @@ private fun Root(request: Request?, modifier: Modifier) {
     }
     toRename?.let { c -> TextDialog("Rename chat", c.title, "Save", { app.store.rename(c.id, it) }) { toRename = null } }
     chatMenu?.let { c ->
-        ActionSheet({ chatMenu = null }, title = c.title) { close ->
-            if (!wholeChat && c.id == convId && c.messages.isNotEmpty())
-                SheetRow(R.drawable.ic_notes, "See what Dash did", { close(); wholeChat = true }, tag = "sheet_whole")
-            SheetRow(R.drawable.ic_edit, "Rename", { close(); toRename = c }, tag = "sheet_rename")
+        ActionSheet({ chatMenu = null }, title = appName(c)) { close ->
+            val here = !wholeChat && c.id == convId
+            val earlier = here && c.messages.isNotEmpty()
+            if (earlier) SheetRow(R.drawable.ic_notes, "Earlier in this chat", { close(); wholeChat = true }, tag = "sheet_whole")
+            // the answer in words on screen: to copy, or to hear
+            val said = if (here) lastTurn(c.messages).lastOrNull { it.kind == Kind.AGENT }?.text?.takeIf { it.isNotBlank() && !hasHtml(it) } else null
+            if (said != null) {
+                SheetRow(R.drawable.ic_copy, "Copy the answer", { copyText(stripMarkdown(said)); haptic(); close() }, tag = "sheet_copy", line = true)
+                SheetRow(R.drawable.ic_speaker, "Read it aloud", { speaker.toggle("answer:${c.id}:${c.messages.size}", said); close() }, tag = "sheet_speak", line = true)
+            }
+            // from a list: set it aside until there's something new
+            val aside = c.id != convId && c.id !in runningMap && !c.setAside(notNow)
+            if (aside) SheetRow(R.drawable.ic_s_dnd, "Not now", { setAside(c.id); close() }, tag = "sheet_not_now")
+            SheetRow(R.drawable.ic_edit, "Rename", { close(); toRename = c }, tag = "sheet_rename", line = earlier || said != null || aside)
             SheetRow(if (c.pinned) R.drawable.ic_unpin else R.drawable.ic_pin, if (c.pinned) "Unpin" else "Pin",
-                { app.store.setPinned(c.id, !c.pinned); close() }, tag = "sheet_pin")
-            SheetRow(R.drawable.ic_share, "Share", { shareText(ctx, transcriptText(c), c.title); close() }, tag = "sheet_share")
-            SheetRow(R.drawable.ic_delete, "Delete", { close(); toDelete = c }, danger = true, tag = "sheet_delete")
+                { app.store.setPinned(c.id, !c.pinned); close() }, tag = "sheet_pin", line = true)
+            SheetRow(R.drawable.ic_share, "Share", { shareText(ctx, transcriptText(c), c.title); close() }, tag = "sheet_share", line = true)
+            SheetRow(R.drawable.ic_delete, "Delete", { close(); toDelete = c }, danger = true, tag = "sheet_delete", line = true)
         }
     }
     if (attaching) AttachSheet(onCamera = { withCamera { camera.reset(); shooting = true } }, pickers) { attaching = false }
@@ -335,7 +348,7 @@ private fun Root(request: Request?, modifier: Modifier) {
 
     // Back from a chat: from the whole chat to its screen, and from there home
     BackHandler(conv != null && screen == Screen.CHAT) { if (wholeChat) wholeChat = false else open(null) }
-    BackHandler(voice.listening) { voice.cancel(); draft = typed }
+    BackHandler(voice.listening) { voice.cancel(); app.runner.dropWarm(); draft = typed }
     BackHandler(shooting && !voice.listening) { shooting = false }
     BackHandler(screen != Screen.CHAT) {
         screen = when (screen) {
@@ -372,20 +385,23 @@ private fun Root(request: Request?, modifier: Modifier) {
             Screen.MEMORY -> MemoryScreen(app.backend) { screen = Screen.ADVANCED }
             Screen.ABOUT -> AboutScreen { screen = Screen.SETTINGS }
             Screen.SETUP -> SetupScreen(app.setup, firstRun = false) { screen = returnTo }
-            Screen.APPS -> AppsScreen(convs, runningMap.keys, app.prefs.homeChat, onOpen = ::open, onLongPress = { chatMenu = it },
-                onBack = { screen = Screen.CHAT })
+            Screen.APPS -> AppsScreen(convs, runningMap.keys, app.prefs.homeChat, notNow, onOpen = ::open, onLongPress = { chatMenu = it },
+                onNotNow = ::setAside, onBack = { screen = Screen.CHAT })
             Screen.CHAT -> {
               // Droid's screen in the chat: small frames, twice a second.
               val feed = if (conv != null && conv.messages.isNotEmpty())
                   rememberScreenFeed(info?.port, info?.token, width = 540, fps = 2, isUp = { conv.id in app.runner.screens.value }) else null
               run {
                 Column(Modifier.fillMaxSize().background(P.bg).imePadding()) {
-                    // the page's next step at the bottom takes the talk bar's place; a microphone up here instead
-                    val pinned = footer && !running && !wholeChat
-                    if (conv == null || conv.messages.isEmpty()) HomeBar(onMenu = { go(Screen.APPS) }, onSettings = { go(Screen.SETTINGS) })
-                    else TurnBar(appName(conv), onBack = { if (wholeChat) wholeChat = false else open(null) }, onMore = { chatMenu = conv },
-                        onTalk = if (pinned) ({ if (app.speech.installed) talk(Listen.VOICE) else typing = true }) else null,
-                        typeOnly = !app.speech.installed)
+                    // Where you are: everything and Settings from home; back, the app's name, and Stop or its menu in a chat
+                    if (conv == null || conv.messages.isEmpty()) Where(R.drawable.ic_menu, "Everything", { go(Screen.APPS) }, leftTag = "menu") {
+                        IconBtn(R.drawable.ic_settings, "Settings", { go(Screen.SETTINGS) }, Modifier.testTag("settings"), size = 48.dp)
+                    }
+                    else Where(R.drawable.ic_back, "Back", { if (watching) watching = false else if (wholeChat) wholeChat = false else open(null) },
+                        if (wholeChat) appName(conv) else chatTitle(conv, running)) {
+                        if (running) StopButton { haptic(); app.runner.stop(conv.id) }
+                        else IconBtn(R.drawable.ic_more, "Chat options", { chatMenu = conv }, Modifier.testTag("overflow"), size = 48.dp)
+                    }
                     Box(Modifier.weight(1f).fillMaxWidth()) {
                         if (conv == null || conv.messages.isEmpty()) {
                             // A starter goes at a tap: nothing to type (the agent asks before it sends anything anywhere).
@@ -395,19 +411,18 @@ private fun Root(request: Request?, modifier: Modifier) {
                             EmptyState({ sendNow(it) }, Modifier.fillMaxSize(), listening = voice.listening, level = { voice.level }, typing = draft.isNotBlank(),
                                 home = homePage?.let { (c, m) -> { HomePage(c, m) { id -> open(id) } } }, greeting = greeting,
                                 made = homePage?.second?.ts?.let { HomeDay.madeWhen(it) }, preparing = preparing,
-                                apps = remember(convs, runningMap.keys) { appTiles(convs, runningMap.keys, app.prefs.homeChat) }, onOpen = ::open)
+                                apps = remember(convs, runningMap.keys, notNow) { appTiles(convs, runningMap.keys, app.prefs.homeChat, notNow = notNow, home = true) },
+                                onOpen = ::open, onNotNow = ::setAside, onMenu = { id -> chatMenu = convs.firstOrNull { it.id == id } })
                         } else {
                             val taps = remember(conv.id) { app.runner.taps.filter { it.first == conv.id }.map { it.second to it.third } }
-                            if (wholeChat) key(conv.id) { Transcript(conv, running, feed, speaker.speakingKey, speaker::toggle, held = watchable && !running, closesAt = info?.closesAt, taps = taps,
-                                doing = doingMap[conv.id], typing = draft.isNotBlank(), listening = voice.listening, level = { voice.level },
-                                onRetry = { haptic(); retryTask(ctx, conv.id) }, onSetup = { go(Screen.SETUP) },
-                                onWatch = { watching = true }, modifier = Modifier.fillMaxSize(),
+                            if (wholeChat) key(conv.id) { Transcript(conv, running, speaker.speakingKey, speaker::toggle,
+                                onRetry = { haptic(); retryTask(ctx, conv.id) }, modifier = Modifier.fillMaxSize(), onSetup = { go(Screen.SETUP) },
                                 onTakeOver = { handoff = true; watching = true }) }
                             else key(conv.id) { TurnScreen(conv, running, feed, Modifier.fillMaxSize(), held = watchable && !running, closesAt = info?.closesAt,
                                 taps = taps, doing = doingMap[conv.id], typing = draft.isNotBlank(), listening = voice.listening, level = { voice.level },
                                 onWatch = { watching = true }, onTakeOver = { handoff = true; watching = true },
-                                onRetry = { haptic(); retryTask(ctx, conv.id) }, onSetup = { go(Screen.SETUP) }, onHistory = { wholeChat = true },
-                                onSpeak = { speaker.toggle("dash:${conv.id}:${conv.messages.size}", it) }, onFooter = { footer = it }) }
+                                onRetry = { haptic(); retryTask(ctx, conv.id) }, onSetup = { go(Screen.SETUP) },
+                                onSpeak = { speaker.toggle("dash:${conv.id}:${conv.messages.size}", it) }) }
                         }
                         // Droid's camera, in Dash's frame over the chat: a tap puts its picture in the message box.
                         // (Spelled out: inside the Column, the short name means ColumnScope's, which can't be used here.)
@@ -421,7 +436,39 @@ private fun Root(request: Request?, modifier: Modifier) {
                                     tint = Color.White, size = 44.dp)
                             }
                         }
+                        // Dash's screen, big, in place of the page: to watch it, or to do something on it yourself.
+                        if (watching && info?.port != null && info.token != null) {
+                            val watched = convId
+                            // A screen held after answering stays open while it's watched.
+                            // Watched only while it's on screen: Watch left open behind Home or the lock screen lets the hold count down
+                            // (else the screen would stay up, keeping the phone awake, until the owner came back).
+                            val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+                            DisposableEffect(watched, lifecycle) {
+                                fun set(on: Boolean) = watched?.let { app.runner.watching(it, on) }
+                                val obs = androidx.lifecycle.LifecycleEventObserver { _, e ->
+                                    if (e == androidx.lifecycle.Lifecycle.Event.ON_START) set(true) else if (e == androidx.lifecycle.Lifecycle.Event.ON_STOP) set(false)
+                                }
+                                lifecycle.addObserver(obs)  // (it's told ON_START at once if already started)
+                                onDispose { lifecycle.removeObserver(obs); set(false) }
+                            }
+                            key(watched) { WatchScreen(info.port, info.token, latestStep(conv.messages) ?: "Getting started", working = running,
+                                isUp = { convId in app.runner.screens.value }, onClose = { watching = false },
+                                onTouched = { convId?.let(app.runner::touched) },
+                                // Handed over by the answer: the owner's touches go to it at once, and Done gives it back to the agent.
+                                // (as the owner's message: it answers the page that handed the screen over, if the agent waits on it)
+                                startInControl = handoff, onHandBack = if (handoff) ({ handoff = false; watching = false; convId?.let { ownerSend(ctx, it, HANDED_BACK) } }) else null,
+                                taps = remember(watched) { app.runner.taps.filter { it.first == watched }.map { it.second to it.third } },
+                                doing = doingMap[conv.id], asks = !running && lastOutcome(conv.messages, false) == Outcome.ASKS,
+                                mood = lastMood(conv.messages), waiting = waitingPage(conv.messages, running) != null, modifier = Modifier.fillMaxSize()) }
+                        }
+                        // Talking to Dash: what he hears comes up big, above the bar, wherever you are.
+                        if (voice.listening && draft.isNotBlank()) Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                            .background(androidx.compose.ui.graphics.Brush.verticalGradient(0f to P.bg.copy(alpha = 0f), .35f to P.bg)).padding(top = 28.dp, bottom = 6.dp)) {
+                            YouBubble(draft, big = true)
+                        }
                     }
+                    // Scrolled back through the chat: the way back to now, where the next step would be
+                    if (wholeChat && conv != null) NextStep("Back to now", { wholeChat = false }, quiet = true, icon = R.drawable.ic_down, tag = "back_to_now")
                     Composer(
                         text = draft, onText = {
                             if (voice.listening) voice.cancel()  // typing takes over from the voice
@@ -429,48 +476,19 @@ private fun Root(request: Request?, modifier: Modifier) {
                             draft = it
                         },
                         files = files, onRemove = { discard(it); files = files - it },
-                        listening = if (voice.listening) listenMode else null, level = { voice.level }, running = running,
-                        onAttach = { attaching = true }, onSend = { voice.cancel(); sendNow(draft) },
-                        onStop = { haptic(); convId?.let(app.runner::stop) },
-                        onDictate = { talk(Listen.DICTATE) }, onVoice = { talk(Listen.VOICE) },
-                        onFinishListening = voice::finish, onCancelListening = { voice.cancel(); draft = typed },
-                        modifier = Modifier.navigationBarsPadding(), typing = typing, onTyping = { typing = it },
-                        hidden = pinned,
+                        listening = voice.listening, level = { voice.level },
+                        onAttach = { focus.clearFocus(); attaching = true }, onSend = { voice.cancel(); sendNow(draft); typing = false; focus.clearFocus() },
+                        onVoice = { talk() },
+                        onFinishListening = voice::finish, onCancelListening = { voice.cancel(); app.runner.dropWarm(); draft = typed },
+                        // typing instead of talking keeps what Dash heard
+                        modifier = Modifier.navigationBarsPadding(), typing = typing, onTyping = { if (it && voice.listening) voice.cancel(); typing = it },
+                        typeOnly = !app.speech.installed,
                     )
                 }
               }
             }
         }
     } }
-    // Watch sits over the chat, so it grows out of the chat's frame and shrinks back into it.
-        if (watching && info?.port != null && info.token != null) {
-            val watched = convId
-            // A screen held after answering stays open while it's watched.
-            // Watched only while it's on screen: Watch left open behind Home or the lock screen lets the hold count down
-            // (else the screen would stay up, keeping the phone awake, until the owner came back).
-            val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
-            DisposableEffect(watched, lifecycle) {
-                fun set(on: Boolean) = watched?.let { app.runner.watching(it, on) }
-                val obs = androidx.lifecycle.LifecycleEventObserver { _, e ->
-                    if (e == androidx.lifecycle.Lifecycle.Event.ON_START) set(true) else if (e == androidx.lifecycle.Lifecycle.Event.ON_STOP) set(false)
-                }
-                lifecycle.addObserver(obs)  // (it's told ON_START at once if already started)
-                onDispose { lifecycle.removeObserver(obs); set(false) }
-            }
-            key(watched) { WatchScreen(info.port, info.token, latestStatus(conv.messages), working = running,
-                isUp = { convId in app.runner.screens.value },
-                onStop = { convId?.let(app.runner::stop); watching = false }, onClose = { watching = false },
-                onTouched = { convId?.let(app.runner::touched) },
-                // Handed over by the answer: the owner's touches go to it at once, and Done gives it back to the agent.
-                // (as the owner's message: it answers the page that handed the screen over, if the agent waits on it)
-                startInControl = handoff, onHandBack = if (handoff) ({ handoff = false; watching = false; convId?.let { ownerSend(ctx, it, HANDED_BACK) } }) else null,
-                taps = remember(watched) { app.runner.taps.filter { it.first == watched }.map { it.second to it.third } },
-                doing = doingMap[conv.id], asks = !running && lastOutcome(conv.messages, false) == Outcome.ASKS,
-                mood = lastMood(conv.messages), waiting = waitingPage(conv.messages, running) != null) }
-        }
-        // Talking to Dash: full screen, his ears up and your words big as he hears them.
-        if (voice.listening && listenMode == Listen.VOICE && screen == Screen.CHAT) ListeningScreen(draft, { voice.level },
-            onCancel = { voice.cancel(); draft = typed }, onDone = voice::finish, onType = { voice.cancel(); draft = typed; typing = true })
     }
 }
 

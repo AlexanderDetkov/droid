@@ -1,25 +1,25 @@
 package com.adetkov.droid
 
-import androidx.compose.animation.AnimatedContent
+import androidx.compose.foundation.Image
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -28,11 +28,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -41,20 +39,18 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.DpSize
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
@@ -65,49 +61,17 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.withContext
 
 /*
- * A chat on the owner's screen is its latest turn, as the app the agent made for it: what was asked at the top, Dash
- * with his words (the headline), and the answer filling the rest; its footer of buttons, the next step, pinned at the
- * bottom. While the agent works, the screen is Dash holding his live screen, with what he's doing in plain words. A tap
- * on the page starts the next turn on this same screen. The whole chat, turn by turn, is a tap away (Transcript).
+ * A chat on the owner's screen is its latest turn, in Droid's four rows (see Kit): where you are (the app's name, or
+ * what you asked while Dash works on it), Dash with his words (the headline) and his steps under them, the page, and the
+ * bar. The page is the app the agent made for this turn; while he works with nothing new drawn, his screen in his ring
+ * if he's on it, else the app he works on, stepped back (and the button you tapped on it, going); an answer in words
+ * when there's no app. Your own words are the history's (Transcript), a tap away.
  */
 
-/** The top of the home screen: the chats on the left, Settings on the right. */
-@Composable
-fun HomeBar(onMenu: () -> Unit, onSettings: () -> Unit) {
-    Row(Modifier.fillMaxWidth().statusBarsPadding().height(56.dp).padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-        IconBtn(R.drawable.ic_menu, "Chats", onMenu, Modifier.testTag("menu"), size = 48.dp)
-        Spacer(Modifier.weight(1f))
-        IconBtn(R.drawable.ic_settings, "Settings", onSettings, Modifier.testTag("settings"), size = 48.dp)
-    }
-}
-
 /**
- * The top of a chat: back home, its name ([title]: the app's, as the agent named it, or what was asked), and the chat's
- * menu. [onTalk]: a microphone here, while the page's own next step takes the talk bar's place at the bottom.
- */
-@Composable
-fun TurnBar(title: String, onBack: () -> Unit, onMore: () -> Unit, onTalk: (() -> Unit)?, typeOnly: Boolean = false) {
-    Row(Modifier.fillMaxWidth().statusBarsPadding().height(60.dp).padding(start = 4.dp, end = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-        IconBtn(R.drawable.ic_back, "Back", onBack, Modifier.testTag("back"), size = 48.dp, iconSize = 24.dp)
-        // quiet: Dash's words below are what to read first
-        Text(title, Modifier.weight(1f).padding(start = 4.dp, end = 8.dp).testTag("title"),
-            style = MaterialTheme.typography.bodyLarge.copy(fontSize = 16.sp), color = P.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        // (a keyboard where the phone has no voice set up)
-        if (onTalk != null) Box(Modifier.size(48.dp).clip(CircleShape).background(P.call.copy(alpha = .14f)).clickable(onClick = onTalk)
-            .testTag("talk_top").semantics { contentDescription = if (typeOnly) "Type to Dash" else "Talk to Dash" }, contentAlignment = Alignment.Center) {
-            Icon(painterResource(if (typeOnly) R.drawable.ic_keyboard else R.drawable.ic_mic), null, Modifier.size(22.dp), tint = P.text)
-        }
-        IconBtn(R.drawable.ic_more, "Chat options", onMore, Modifier.testTag("overflow"), size = 48.dp)
-    }
-}
-
-/**
- * The chat as the owner's screen: its app (the newest page the agent made for it, [currentApp]) under Dash and his
- * words, live across turns, so a tap on it goes to the agent and the app stays while he works on it; a page the agent
- * waits on mid-task in its place; an answer in words when there's no app. Before the agent has drawn anything, while it
- * works: Dash holding his screen, big. [feed]: the run's screen while it is up; [held]: answered, its screen still open
- * for a reply, until [closesAt]. [onHistory]: the whole chat; [onSpeak]: Dash says his words (a tap on him);
- * [onFooter]: whether the page on screen has a footer, its next step, which takes the talk bar's place.
+ * The chat as the owner's screen: see above. The chat's app ([currentApp]) is live across turns, so a tap on it goes to
+ * the agent; a page the agent waits on mid-task takes its place. [feed]: the run's screen while it is up; [held]:
+ * answered, its screen still open for a reply, until [closesAt]. [onSpeak]: Dash says his words (a tap on him).
  */
 @Composable
 fun TurnScreen(
@@ -115,7 +79,7 @@ fun TurnScreen(
     held: Boolean = false, closesAt: Long? = null, taps: Flow<Pair<Int, Int>>? = null, doing: Doing? = null,
     typing: Boolean = false, listening: Boolean = false, level: () -> Float = { 0f },
     onWatch: () -> Unit = {}, onTakeOver: () -> Unit = {}, onRetry: () -> Unit = {}, onSetup: () -> Unit = {},
-    onHistory: () -> Unit = {}, onSpeak: (String) -> Unit = {}, onFooter: (Boolean) -> Unit = {},
+    onSpeak: (String) -> Unit = {},
 ) {
     val messages = conv.messages
     val start = remember(messages) { messages.indexOfLast { it.kind.opensTurn }.coerceAtLeast(0) }
@@ -124,123 +88,175 @@ fun TurnScreen(
     val live = steps?.live ?: running
     val waiting = remember(messages, running) { waitingPage(messages, running) }
     val appAt = remember(messages) { messages.currentApp() }
+    val made = appAt.takeIf { it > start }            // the app this turn made
+    // the app from before, which this turn works on: if it was still on screen when this turn began (no answer in words
+    // or failure came after it)
+    val before = appAt.takeIf { at ->
+        at in 0..start && (at + 1 until start).none { i -> messages[i].let { (it.kind == Kind.AGENT && it.text.isNotBlank() && !hasHtml(it.text)) || (it.kind == Kind.STATUS && it.text != "Stopped") } }
+    }
     val answerAt = remember(messages, start) { (start until messages.size).lastOrNull { messages[it].kind == Kind.AGENT } }
-    val words = answerAt?.let { messages[it].text }?.takeIf { !hasHtml(it) }
+    val words = answerAt?.let { messages[it].text }?.takeIf { !hasHtml(it) && it.isNotBlank() }
     val status = remember(messages, start) {
         (start until messages.size).lastOrNull { messages[it].kind == Kind.STATUS }?.takeIf { answerAt == null || it > answerAt }
     }
     // a turn that failed: what it means, in Dash's words, and what fixes it (a stop is the owner's own doing)
     val failed = remember(messages, start, status) { status?.let { messages[it].text }?.takeIf { !live && it != "Stopped" }?.let { plainStatus(it, conv.engine) ?: Plain("That didn't work. " + it.removePrefix("Error: ")) } }
-    val big = waiting == null && live && appAt < 0
-    AnimatedContent(big, modifier, label = "turn", transitionSpec = { fadeIn(tween(240, 60)) togetherWith fadeOut(tween(140)) }) { isBig ->
-        if (isBig) { Working(conv, start, steps, feed, taps, doing, onTakeOver); return@AnimatedContent }
-        Column(Modifier.fillMaxSize()) {
-            val info = waiting?.let { w -> remember(w.data) { PageInfo.of(w) } }
-            Headline(conv, running, live && waiting == null, steps, feed, taps, doing, held, closesAt, typing, listening, level,
-                onWatch, onSpeak, page = info?.title, said = words.takeIf { appAt >= 0 && !live }, failed = failed)
-            Box(Modifier.weight(1f).fillMaxWidth()) {
-                when {
-                    waiting != null && info != null -> WaitingPage(conv.id, waiting, info, onTakeOver, onFooter, Modifier.fillMaxSize())
-                    // the same app keeps its view (what's typed and picked in it) from turn to turn
-                    appAt >= 0 -> key(conv.id, appAt) { AppPage(conv, appAt, onTakeOver, onFooter, Modifier.fillMaxSize()) }
-                    failed != null -> {}
-                    else -> WordsBody(words, onSpeak, onFooter, Modifier.fillMaxSize())
+    val (failWords, failRest) = remember(failed) {
+        failed?.text?.let { t -> t.indexOf(". ").takeIf { it > 0 }?.let { t.substring(0, it + 1) to t.substring(it + 2) } ?: (t to null) } ?: (null to null)
+    }
+    // the button tapped on the app, which this turn answers: it shows going while the app steps back
+    val tapped = remember(messages, start) { messages.getOrNull(start)?.takeIf { it.kind == Kind.USER && it.data != null }?.let(::requestText) }
+    val mood = remember(messages) { lastMood(messages) }
+    // a short answer is Dash's to say (unless the agent gave him words of his own): nothing more under him
+    val short = words?.let(::shortAnswer)
+    val saysAnswer = short != null && mood?.words.isNullOrBlank()
+    var stepsOpen by remember { mutableStateOf(false) }
+    if (live) SaveStills(conv.id, steps, feed)
+    val used = live && feed?.app != null
+    // the screen's latest picture, kept through a frame that hasn't come yet
+    val liveImage = remember(feed?.frame, used) { feed?.frame?.takeIf { used }?.asImageBitmap() }
+    val shown = remember { arrayOfNulls<ImageBitmap>(1) }
+    val frame = (liveImage ?: shown[0].takeIf { used }).also { if (it != null) shown[0] = it }
+    // the agent at work on his screen, with nothing new drawn: his screen is the page
+    val big = waiting == null && made == null && live && frame != null
+
+    Column(modifier.fillMaxSize()) {
+        Headline(conv, running, live && waiting == null, steps, taps.takeIf { big }, doing, typing, listening, level, onSpeak,
+            onSteps = { stepsOpen = true }, mood = mood, page = waiting?.let { w -> remember(w.data) { PageInfo.of(w) } }?.title,
+            said = short.takeIf { saysAnswer || made != null }, failWords = failWords)
+        Box(Modifier.weight(1f).fillMaxWidth().padding(top = 14.dp)) {
+            when {
+                waiting != null -> {
+                    val info = remember(waiting.data) { PageInfo.of(waiting) }
+                    WaitingPage(conv.id, waiting, info, onTakeOver, Modifier.fillMaxSize())
+                }
+                // the same app keeps its view (what's typed and picked in it) from turn to turn
+                made != null -> key(conv.id, made) { AppPage(conv, made, onTakeOver, Modifier.fillMaxSize()) }
+                // (with the button tapped on the app going under it)
+                big -> Column(Modifier.fillMaxSize()) {
+                    Box(Modifier.weight(1f)) { ScreenBody(frame, onWatch) }
+                    if (tapped != null) NextStep(tapped, {}, busy = true, tag = "tapped")
+                }
+                failed != null -> failRest?.let { FailedBody(it) }
+                live && before == null -> {}
+                words != null && !live -> if (!saysAnswer) WordsBody(words, Modifier.fillMaxSize())
+                before != null -> key(conv.id, before) {
+                    Box(Modifier.fillMaxSize()) {
+                        AppPage(conv, before, onTakeOver, Modifier.fillMaxSize())
+                        SteppedBack(live, if (live) tapped else null)
+                    }
                 }
             }
-            if (failed != null) FailedActions(failed.setup, onSetup, onRetry)
+        }
+        if (failed != null) {
+            if (failed.setup) NextStep("Open Setup", onSetup, tag = "status_setup")
+            else NextStep("Try again", onRetry, tag = "retry")
         }
     }
-    LaunchedEffect(big) { if (big) onFooter(false) }
-    // what fixes a failure takes the talk bar's place
-    LaunchedEffect(failed) { if (failed != null) onFooter(true) }
+    if (stepsOpen && steps != null) StepsSheet(steps, live, if (feed?.app != null) onWatch else null) { stepsOpen = false }
 }
 
 /**
- * Dash and his words, the headline. While the agent works on the app: what he's doing, in plain words, and his live
- * screen small in his frame (a tap watches it). After: what the agent had him say (`droid dash`), else its answer in
- * words when it's short, else what the turn came to; "Your turn" over them when it's the owner's move; the rest of an
- * answer in words ([said]) quietly under them. A tap on him says his words aloud.
+ * Over the app while Dash works on what was asked of it ([on]): it steps back (fades, and takes no taps), and the
+ * button that was [tapped] on it shows going, where its footer was.
  */
 @Composable
-private fun Headline(
-    conv: Conv, running: Boolean, working: Boolean, steps: Item.Steps?, feed: ScreenFeed?, taps: Flow<Pair<Int, Int>>?, doing: Doing?,
-    held: Boolean, closesAt: Long?, typing: Boolean, listening: Boolean, level: () -> Float, onWatch: () -> Unit, onSpeak: (String) -> Unit,
-    /** A page waiting on the owner mid-task: its title, when Dash has no words of his own for it. */
-    page: String? = null,
-    /** The turn's answer in words, beside an app. */
-    said: String? = null,
-    /** How the turn failed, plainly: its first sentence is what Dash says. */
-    failed: Plain? = null,
-) {
-    if (working) { WorkingHeadline(conv, steps, feed, taps, doing, onWatch); return }
-    val messages = conv.messages
-    val mood = remember(messages) { lastMood(messages) }
-    val outcome = remember(messages, running) { lastOutcome(messages, running) }
-    val calls = page != null || outcome == Outcome.ASKS || mood?.calls == true
-    val short = said?.let { stripMarkdown(it).replace(Regex("\\s+"), " ").trim() }?.takeIf { it.length <= 110 }
-    val (failWords, failRest) = failed?.text?.let { t -> t.indexOf(". ").takeIf { it > 0 }?.let { t.substring(0, it + 1) to t.substring(it + 2) } ?: (t to null) } ?: (null to null)
-    val words = failWords ?: mood?.words?.takeIf { it.isNotBlank() } ?: short ?: when {
-        page != null -> page.ifBlank { "Your turn" }
-        outcome == Outcome.FAILED -> "That didn't work"
-        outcome == Outcome.STOPPED -> "Stopped"
-        outcome == Outcome.ASKS -> "Your turn"
-        else -> "Here you go"
-    }
-    val note = failRest ?: said?.takeIf { short == null || words != short }?.let { stripMarkdown(it).trim() }
-    val rig = rememberDash(conv.id)
-    rig.level = level
-    val feel = when {
-        listening -> Feel.LISTENING
-        typing -> Feel.READING
-        mood != null -> mood.feel
-        calls -> Feel.NEEDS_YOU
-        outcome == Outcome.FAILED -> Feel.CONFUSED
-        outcome == Outcome.DONE -> Feel.HAPPY
-        else -> Feel.IDLE
-    }
-    LaunchedEffect(feel) { rig.feel(feel) }
-    Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 20.dp, top = 2.dp, bottom = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-        Dash(rig, Modifier.size(width = 66.dp, height = 74.dp).testTag("dash"), label = "Dash. Tap to hear him",
-            onPoke = { rig.poke(); onSpeak(listOfNotNull(words, note).joinToString(". ")) })
-        // his words alone (he calls you with his look when it's your turn); the rest of an answer in words, briefly
-        Column(Modifier.weight(1f).padding(start = 6.dp)) {
-            SpeechBubble(words)
-            if (note != null) Text(note, Modifier.padding(start = 14.dp, top = 8.dp).testTag("said"),
-                style = MaterialTheme.typography.bodyLarge.copy(fontSize = 16.sp, lineHeight = 22.sp), color = P.muted, maxLines = 2, overflow = TextOverflow.Ellipsis)
+private fun BoxScope.SteppedBack(on: Boolean, tapped: String?) {
+    val fade by animateFloatAsState(if (on) 1f else 0f, tween(if (on) 220 else 320), label = "back")
+    if (fade == 0f) return
+    val bg = P.bg
+    Column(Modifier.matchParentSize().graphicsLayer { alpha = fade }.pointerInput(Unit) {
+        awaitPointerEventScope { while (true) awaitPointerEvent().changes.forEach { it.consume() } }
+    }) {
+        Box(Modifier.weight(1f).fillMaxWidth().background(bg.copy(alpha = .72f)))
+        if (tapped != null) Box(Modifier.fillMaxWidth().background(bg).padding(bottom = 6.dp)) {
+            NextStep(tapped, {}, busy = true, tag = "tapped")
         }
     }
 }
 
-/** The headline while the agent works on an app that's on screen: Dash with his live screen small, and what he's doing. */
+/** What the owner asked, as the history shows it: their words, or what they sent without any. */
+internal fun requestText(m: Msg): String = m.text.trim().ifEmpty {
+    when {
+        m.files.any { it.source == Source.CAMERA } -> "A photo"
+        m.files.any { it.source == Source.SCREEN } -> "My screen"
+        m.files.isNotEmpty() -> m.files.first().name
+        else -> "…"
+    }
+}
+
+/** What the top row calls a chat: what the owner asked while Dash works on it (unless it was a tap on its app), else its app's name. */
+fun chatTitle(c: Conv, running: Boolean): String {
+    val asked = c.messages.lastOrNull { it.kind.opensTurn }?.takeIf { it.kind == Kind.USER && it.data == null }
+    return if (running && asked != null) requestText(asked) else appName(c)
+}
+
+/** A turn's steps, as the grey line under Dash says them when it's over: "9 steps · 41s". */
+internal fun stepsLine(s: Item.Steps): String? {
+    val n = s.lines.count { !it.note }
+    if (n == 0) return null
+    return (if (n == 1) "1 step" else "$n steps") + " · " + duration(s.end - s.start)
+}
+
+/**
+ * Dash and his words, the headline. While the agent works his words hold still ("On it!", or what it had him say), and
+ * the grey line under them is what it's doing and for how long. After: what the agent had him say (`droid dash`), else
+ * its answer when it's short ([said]), else what the turn came to; his steps under them. A tap on him says his words.
+ */
 @Composable
-private fun WorkingHeadline(conv: Conv, steps: Item.Steps?, feed: ScreenFeed?, taps: Flow<Pair<Int, Int>>?, doing: Doing?, onWatch: () -> Unit) {
-    val used = feed?.app != null
-    SaveStills(conv.id, steps, feed)
-    val liveFrame = feed?.frame?.takeIf { used }
-    val frame = remember(liveFrame) { liveFrame?.asImageBitmap() }
-    val rig = rememberDash("hw:${conv.id}:${steps?.turn}") { r -> if (used) r.frame.snap(1f) }
-    LaunchedEffect(used) { rig.present.t = 1f; rig.frame.t = if (used) 1f else 0f }
-    DashAtWork(rig, doing, taps, used)
-    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(Unit) { while (true) { now = System.currentTimeMillis(); delay(1000) } }
+private fun Headline(
+    conv: Conv, running: Boolean, working: Boolean, steps: Item.Steps?, taps: Flow<Pair<Int, Int>>?, doing: Doing?,
+    typing: Boolean, listening: Boolean, level: () -> Float, onSpeak: (String) -> Unit, onSteps: () -> Unit, mood: Mood?,
+    /** A page waiting on the owner mid-task: its title, when Dash has no words of his own for it. */
+    page: String? = null,
+    /** The turn's answer, short enough for him to say. */
+    said: String? = null,
+    /** How the turn failed, in a sentence. */
+    failWords: String? = null,
+) {
     val messages = conv.messages
-    val caption = remember(messages) { latestStatus(messages).takeIf { it != "Working…" } } ?: "On it…"
-    val ratio = frame?.let { it.height.toFloat() / it.width } ?: screenRatio()
-    Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 20.dp, top = 2.dp, bottom = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-        DashSlot(rig, frame, DpSize(66.dp, 74.dp), 46.dp, ratio, Modifier.testTag(if (used) "window" else "dash"),
-            label = if (used) "Droid's screen, live. Tap to watch" else "Dash, working", origin = used, onClick = if (used) onWatch else null)
-        Column(Modifier.weight(1f).padding(start = 6.dp)) {
-            SpeechBubble(caption)
-            val since = steps?.start?.takeIf { it > 0 } ?: now
-            Text(if (used) "Working · tap my screen to watch" else "Working · ${duration(now - since)}", Modifier.padding(start = 14.dp, top = 6.dp),
-                style = MaterialTheme.typography.bodySmall, color = P.faint)
+    val outcome = remember(messages, running) { lastOutcome(messages, running) }
+    val calls = page != null || outcome == Outcome.ASKS || mood?.calls == true
+    val own = mood?.words?.takeIf { it.isNotBlank() }
+    val words = when {
+        listening -> "I'm listening…"
+        working -> own ?: "On it!"
+        else -> failWords ?: own ?: said ?: when {
+            page != null -> page.ifBlank { "Your turn" }
+            outcome == Outcome.FAILED -> "That didn't work"
+            outcome == Outcome.STOPPED -> "Stopped"
+            outcome == Outcome.ASKS -> "Your turn"
+            else -> "Here you go"
         }
     }
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    if (working) LaunchedEffect(Unit) { while (true) { now = System.currentTimeMillis(); delay(1000) } }
+    val step = remember(messages) { latestStep(messages) }
+    val sub = if (working) step ?: "Getting started" else steps?.let(::stepsLine)
+    val time = if (working) duration(now - (steps?.start?.takeIf { it > 0 } ?: now)) else null
+    val rig = rememberDash("line:${conv.id}")
+    rig.level = level
+    LaunchedEffect(Unit) { rig.present.t = 1f; rig.frame.t = 0f }
+    if (working && !listening) DashAtWork(rig, doing, taps)
+    else {
+        val feel = when {
+            listening -> Feel.LISTENING
+            typing -> Feel.READING
+            mood != null -> mood.feel
+            calls -> Feel.NEEDS_YOU
+            outcome == Outcome.FAILED -> Feel.CONFUSED
+            outcome == Outcome.DONE -> Feel.HAPPY
+            else -> Feel.IDLE
+        }
+        LaunchedEffect(feel) { rig.feel(feel) }
+    }
+    DashLine(words, sub = sub, subTail = time, onSub = if (steps != null && (working || steps.lines.isNotEmpty())) onSteps else null, rig = rig,
+        onPoke = { onSpeak(words) })
 }
 
 /** Dash's pose while the agent works: for what it does, a reaction to each thing, his eyes to where it taps. */
 @Composable
-private fun DashAtWork(rig: DashRig, doing: Doing?, taps: Flow<Pair<Int, Int>>?, used: Boolean) {
+private fun DashAtWork(rig: DashRig, doing: Doing?, taps: Flow<Pair<Int, Int>>?) {
     LaunchedEffect(doing) {
         val d = doing ?: Doing(Work.THINK)
         if (d.n > 0) rig.react(d)
@@ -249,7 +265,7 @@ private fun DashAtWork(rig: DashRig, doing: Doing?, taps: Flow<Pair<Int, Int>>?,
         if (d.work != Work.WAIT) rig.feel(Feel.THINKING)
     }
     val display = rememberDisplaySize()
-    LaunchedEffect(taps, used) { if (used && taps != null) taps.collect { (x, y) -> rig.tap(x / display.width, y / display.height) } }
+    LaunchedEffect(taps) { taps?.collect { (x, y) -> rig.tap(x / display.width, y / display.height) } }
 }
 
 /** Keeps the run's screen as the turn's still (at most every 2 s) while an app is on it, for the chat's history. */
@@ -265,24 +281,70 @@ private fun SaveStills(conv: String, steps: Item.Steps?, feed: ScreenFeed?) {
     }
 }
 
-/** Dash's words in a speech bubble whose tail points left, at him. */
+/** The agent's screen as the page while it works and has drawn nothing yet: as big as it fits, in Dash's ring. */
 @Composable
-internal fun SpeechBubble(text: String) {
-    // solid, so the tail and the bubble are one shape where they overlap
-    val bg = P.call.copy(alpha = if (P.dark) .22f else .12f).compositeOver(P.bg)
-    Box(Modifier.padding(start = 6.dp)) {
-        Box(Modifier.align(Alignment.CenterStart).offset(x = (-6).dp).size(16.dp).rotate(45f).clip(RoundedCornerShape(3.dp)).background(bg))
-        AnimatedContent(text, label = "words", transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(120)) }) { t ->
-            Text(t, Modifier.clip(RoundedCornerShape(22.dp)).background(bg).padding(horizontal = 16.dp, vertical = 11.dp).testTag("dash_says"),
-                style = MaterialTheme.typography.titleLarge.copy(fontSize = 20.sp, lineHeight = 26.sp, fontWeight = FontWeight.Bold),
-                color = P.text, maxLines = 4, overflow = TextOverflow.Ellipsis)
+private fun ScreenBody(frame: ImageBitmap?, onWatch: () -> Unit) {
+    if (frame == null) return
+    BoxWithConstraints(Modifier.fillMaxSize().padding(start = 20.dp, end = 20.dp, bottom = 8.dp), contentAlignment = Alignment.Center) {
+        val ratio = frame.height.toFloat() / frame.width
+        val w = minOf(maxWidth, maxHeight / ratio)
+        RingedScreen(frame, w, Modifier.testTag("window"), onClick = onWatch)
+    }
+}
+
+/** Droid's screen, [width] wide, in Dash's ring: what he sees. */
+@Composable
+fun RingedScreen(frame: ImageBitmap, width: Dp, modifier: Modifier = Modifier, onClick: (() -> Unit)? = null) {
+    val density = LocalDensity.current
+    val ratio = frame.height.toFloat() / frame.width
+    val shape = RoundedCornerShape(with(density) { screenCorner(width.toPx(), density.density).toDp() })
+    Box(modifier.size(width, width * ratio).clip(shape).background(P.surface)
+        .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+        .semantics { contentDescription = "Droid's screen, live" }) {
+        Image(frame, null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+        Box(Modifier.matchParentSize().border(4.dp, Ring, shape))
+    }
+}
+
+/** His steps, in a sheet: what he did and said on the way, and his screen while it's up. */
+@Composable
+private fun StepsSheet(steps: Item.Steps, live: Boolean, onWatch: (() -> Unit)?, onDismiss: () -> Unit) {
+    ActionSheet(onDismiss, title = if (live) "What I'm doing" else stepsLine(steps) ?: "What I did") { close ->
+        Box(Modifier.padding(horizontal = 24.dp).heightIn(max = 420.dp).verticalScroll(rememberScrollState())) { StepsList(steps.lines, live) }
+        if (onWatch != null) Box(Modifier.padding(horizontal = 20.dp)) {
+            KitRow("See my screen", lead = { IconTile(R.drawable.ic_screen) }, line = true, onClick = { close(); onWatch() }, trailing = { Chevron() })
+        }
+    }
+}
+
+/** His steps, one a line: done ones checked, his thoughts quieter, and (while he works) the one he's on, lit. */
+@Composable
+private fun StepsList(lines: List<Line>, live: Boolean) {
+    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        lines.forEachIndexed { i, l ->
+            val now = live && i == lines.lastIndex
+            Row(Modifier.fillMaxWidth().padding(vertical = 7.dp), verticalAlignment = Alignment.Top) {
+                Box(Modifier.padding(top = 2.dp).size(22.dp), contentAlignment = Alignment.Center) {
+                    when {
+                        now -> Box(Modifier.size(22.dp).clip(CircleShape).background(Lavender), contentAlignment = Alignment.Center) {
+                            Box(Modifier.size(8.dp).clip(CircleShape).background(P.call))
+                        }
+                        l.note -> Text("···", style = MaterialTheme.typography.bodyMedium, color = P.muted)
+                        else -> Icon(painterResource(R.drawable.ic_check), null, Modifier.size(20.dp), tint = P.text)
+                    }
+                }
+                Text(l.text, Modifier.padding(start = 14.dp),
+                    style = MaterialTheme.typography.bodyLarge.copy(fontSize = if (l.note) 16.sp else 17.sp, lineHeight = 23.sp,
+                        fontWeight = if (now) FontWeight.Bold else FontWeight.Normal),
+                    color = if (l.note && !now) P.muted else P.text, maxLines = 4, overflow = TextOverflow.Ellipsis)
+            }
         }
     }
 }
 
 /** The chat's app filling the screen under Dash: a page the agent showed, or an answer with HTML; it scrolls itself, its footer pinned. */
 @Composable
-private fun AppPage(conv: Conv, at: Int, onTakeOver: () -> Unit, onFooter: (Boolean) -> Unit, modifier: Modifier) {
+private fun AppPage(conv: Conv, at: Int, onTakeOver: () -> Unit, modifier: Modifier) {
     val ctx = LocalContext.current
     val app = ctx.applicationContext as DroidApp
     val m = conv.messages[at]
@@ -294,160 +356,50 @@ private fun AppPage(conv: Conv, at: Int, onTakeOver: () -> Unit, onFooter: (Bool
         key(m.text, dark) {
             FillPage("screen:${conv.id}:${info.id}:${m.text.hashCode()}:$dark", "page:${conv.id}:${info.id}",
                 { cx -> pageDocument(cx, m.text, dark, PageMode.SCREEN) }, namedPaths(m.text), actions,
-                modifier.testTag("app_page"), live = pageLive(app, conv, at), onFooter = onFooter, screenOf = conv.id)
+                modifier.testTag("app_page"), live = pageLive(app, conv, at), screenOf = conv.id)
         }
     } else {
         val actions = remember(conv.id, at) { ChatPageActions(ctx, conv.id, null, isLive = { pageLiveNow(app, conv.id, null, at) }, onScreen = onTakeOver) }
         key(m.text, dark) {
             FillPage("screen:${conv.id}:$at:${m.text.hashCode()}:$dark", "answer:${conv.id}:$at",
                 { cx -> answerDocument(cx, m.text, dark, PageMode.SCREEN) }, namedPaths(m.text), actions,
-                modifier.testTag("answer_page"), live = pageLive(app, conv, at), onFooter = onFooter, screenOf = conv.id)
+                modifier.testTag("answer_page"), live = pageLive(app, conv, at), screenOf = conv.id)
         }
     }
 }
 
-/** What fixes a failed turn, big, at the bottom: Setup when that's where it's fixed, and trying again. */
+/** What a failure means beyond Dash's first sentence, quietly, under his words. */
 @Composable
-private fun FailedActions(setup: Boolean, onSetup: () -> Unit, onRetry: () -> Unit) {
-    val onCall = if (P.dark) Color(0xFF0D0D0D) else Color.White
-    Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        if (setup) Box(Modifier.fillMaxWidth().height(60.dp).clip(RoundedCornerShape(30.dp)).background(P.call).clickable(onClick = onSetup).testTag("status_setup"),
-            contentAlignment = Alignment.Center) { Text("Open Setup", style = MaterialTheme.typography.titleMedium.copy(fontSize = 19.sp, fontWeight = FontWeight.Bold), color = onCall) }
-        Box(Modifier.fillMaxWidth().height(if (setup) 54.dp else 60.dp).clip(RoundedCornerShape(30.dp)).background(if (setup) P.surface else P.call)
-            .clickable(onClick = onRetry).testTag("retry"), contentAlignment = Alignment.Center) {
-            Text("Try again", style = MaterialTheme.typography.titleMedium.copy(fontSize = if (setup) 17.sp else 19.sp, fontWeight = FontWeight.Bold),
-                color = if (setup) P.text else onCall)
-        }
-    }
+private fun FailedBody(text: String) {
+    Text(text, Modifier.padding(start = 98.dp, end = 24.dp).testTag("said"),
+        style = MaterialTheme.typography.bodyLarge.copy(fontSize = 17.sp, lineHeight = 25.sp), color = P.muted)
 }
 
-/** A chat without an app: its answer in words, big, under Dash. */
+/**
+ * A chat without an app: its answer in words, under Dash; a few sentences big, as he'd say them. (Copy and read aloud
+ * are in the chat's menu.)
+ */
 @Composable
-private fun WordsBody(text: String?, onSpeak: (String) -> Unit, onFooter: (Boolean) -> Unit, modifier: Modifier) {
-    LaunchedEffect(Unit) { onFooter(false) }
-    if (text == null) return
-    Column(modifier.verticalScroll(rememberScrollState()).padding(start = 20.dp, end = 20.dp, bottom = 24.dp)) { WordsAnswer(text, onSpeak) }
-}
-
-/** An answer in words: big, plain, and copy, read aloud and share under it. */
-@Composable
-private fun WordsAnswer(text: String, onSpeak: (String) -> Unit) {
-    val ctx = LocalContext.current
-    val copy = rememberCopy()
-    val haptic = rememberHaptic()
+private fun WordsBody(text: String, modifier: Modifier) {
     val shown = remember(text) { answerText(text) }
-    // a few sentences read big, as Dash would say them; a long answer at its usual size
     val type = MaterialTheme.typography
     val big = shown.length < 320
-    Column(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
+    Column(modifier.verticalScroll(rememberScrollState()).padding(start = 20.dp, end = 20.dp, bottom = 24.dp)) {
         MaterialTheme(typography = if (big) type.copy(bodyLarge = type.bodyLarge.copy(fontSize = 20.sp, lineHeight = 29.sp)) else type) {
-            Markdown(shown, Modifier.fillMaxWidth().testTag("answer"))
-        }
-        Row(Modifier.offset(x = (-10).dp).padding(top = 4.dp)) {
-            IconBtn(R.drawable.ic_copy, "Copy", { copy(stripMarkdown(text)); haptic() }, Modifier.testTag("copy"), tint = P.muted, size = 40.dp, iconSize = 18.dp)
-            IconBtn(R.drawable.ic_speaker, "Read aloud", { onSpeak(text) }, Modifier.testTag("speak"),
-                tint = P.muted, size = 40.dp, iconSize = 18.dp)
-            IconBtn(R.drawable.ic_share, "Share", { shareText(ctx, stripMarkdown(text)) }, Modifier.testTag("share"), tint = P.muted, size = 40.dp, iconSize = 18.dp)
+            SelectionContainer { Markdown(shown, Modifier.fillMaxWidth().testTag("answer")) }
         }
     }
 }
 
 /** A page the agent waits on mid-task (`droid show --wait`), filling the screen: the owner's turn, then it goes on. */
 @Composable
-private fun WaitingPage(conv: String, m: Msg, info: PageInfo, onTakeOver: () -> Unit, onFooter: (Boolean) -> Unit, modifier: Modifier) {
+private fun WaitingPage(conv: String, m: Msg, info: PageInfo, onTakeOver: () -> Unit, modifier: Modifier) {
     val ctx = LocalContext.current
     val dark = P.dark
     val actions = remember(conv, info.id) { ChatPageActions(ctx, conv, info.id, onScreen = onTakeOver) }
     key(info.id, m.text, dark) {
         FillPage("screen:$conv:${info.id}:${m.text.hashCode()}:$dark", "page:$conv:${info.id}",
             { cx -> pageDocument(cx, m.text, dark, PageMode.SCREEN) }, namedPaths(m.text), actions,
-            modifier.fillMaxWidth().testTag("waiting_page"), onFooter = onFooter, screenOf = conv)
+            modifier.fillMaxWidth().testTag("waiting_page"), screenOf = conv)
     }
 }
-
-/**
- * Dash at work: holding his live screen, as big as it fits, while an app is on it (so there's nothing to zoom into:
- * Let me do it takes over); the creature, thinking, while there's none. Under him, what he's doing now in plain words.
- * He poses for what the agent does, and his eyes go where it taps. The screen's frames are also kept as the turn's still
- * (at most every 2 s), for its history.
- */
-@Composable
-private fun Working(conv: Conv, start: Int, steps: Item.Steps?, feed: ScreenFeed?, taps: Flow<Pair<Int, Int>>?, doing: Doing?, onTakeOver: () -> Unit) {
-    val used = feed?.app != null
-    SaveStills(conv.id, steps, feed)
-    val liveFrame = feed?.frame?.takeIf { used }
-    val liveImage = remember(liveFrame) { liveFrame?.asImageBitmap() }
-    val shown = remember { arrayOfNulls<ImageBitmap>(1) }
-    val frame = (liveImage ?: shown[0].takeIf { used }).also { if (it != null) shown[0] = it }
-    val rig = rememberDash("work:${conv.id}:$start") { r -> if (used) r.frame.snap(1f) }
-    LaunchedEffect(used) { rig.present.t = 1f; rig.frame.t = if (used) 1f else 0f }
-    DashAtWork(rig, doing, taps, used)
-    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(Unit) { while (true) { now = System.currentTimeMillis(); delay(1000) } }
-    val messages = conv.messages
-    val caption = remember(messages) { latestStatus(messages).takeIf { it != "Working…" } } ?: "Getting started…"
-    val ratio = frame?.let { it.height.toFloat() / it.width } ?: screenRatio()
-    val app = rememberAppInfo(feed?.app)?.label
-    androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize()) {
-    // the screen as big as the room under it for his words and Let me do it allows
-    val width = minOf(maxWidth - 48.dp, (maxHeight - 230.dp) / ratio).coerceAtLeast(120.dp)
-    Column(Modifier.fillMaxSize().padding(horizontal = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Spacer(Modifier.weight(.35f))
-        DashSlot(rig, frame, DpSize(132.dp, 146.dp), width, ratio, Modifier.testTag(if (used) "window" else "dash"),
-            label = if (used) "Droid's screen, live" else "Dash, working", origin = used)
-        AnimatedContent(caption, Modifier.padding(top = 22.dp), label = "doing",
-            transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(120)) }) { t ->
-            Text(t, Modifier.fillMaxWidth().testTag("doing"), style = MaterialTheme.typography.titleLarge.copy(fontSize = 21.sp, lineHeight = 28.sp,
-                fontWeight = FontWeight.Bold), textAlign = TextAlign.Center, maxLines = 3, overflow = TextOverflow.Ellipsis)
-        }
-        val since = steps?.start?.takeIf { it > 0 } ?: messages.getOrNull(start)?.ts ?: now
-        if (used) Box(Modifier.padding(top = 12.dp).height(48.dp).clip(RoundedCornerShape(24.dp)).background(P.surface).clickable(onClick = onTakeOver)
-            .padding(horizontal = 20.dp).testTag("take_over"), contentAlignment = Alignment.Center) {
-            Text(if (app != null) "Let me do it in $app" else "Let me do it", style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp, fontWeight = FontWeight.SemiBold))
-        }
-        else Text("Working · ${duration(now - since)}", Modifier.padding(top = 8.dp),
-            style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp), color = P.muted, textAlign = TextAlign.Center)
-        Spacer(Modifier.weight(.65f))
-    }
-    }
-}
-
-/**
- * Listening, full screen: Dash listens, and what he hears comes up in big words. It goes when the owner stops talking
- * ([onDone] sends it now); [onType] is for typing instead.
- */
-@Composable
-fun ListeningScreen(words: String, level: () -> Float, onCancel: () -> Unit, onDone: () -> Unit, onType: () -> Unit) {
-    val rig = rememberDash("listening")
-    rig.level = level
-    LaunchedEffect(Unit) { rig.feel(Feel.LISTENING) }
-    val onCall = if (P.dark) Color(0xFF0D0D0D) else Color.White
-    Column(Modifier.fillMaxSize().background(P.bg).statusBarsPadding().navigationBarsPadding().testTag("listening"),
-        horizontalAlignment = Alignment.CenterHorizontally) {
-        Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconBtn(R.drawable.ic_close, "Cancel", onCancel, Modifier.testTag("cancel_listen"), size = 48.dp, iconSize = 24.dp)
-            Spacer(Modifier.weight(1f))
-            IconBtn(R.drawable.ic_keyboard, "Type instead", onType, Modifier.testTag("type_instead"), size = 48.dp, iconSize = 24.dp, tint = P.muted)
-        }
-        Spacer(Modifier.weight(.3f))
-        Dash(rig, Modifier.size(width = 170.dp, height = 188.dp).testTag("dash"), label = null)
-        Text("I'm listening…", Modifier.padding(top = 18.dp), style = MaterialTheme.typography.titleMedium.copy(fontSize = 18.sp),
-            color = P.call, fontWeight = FontWeight.SemiBold)
-        Text(words, Modifier.padding(start = 28.dp, end = 28.dp, top = 14.dp).testTag("heard"),
-            style = MaterialTheme.typography.headlineSmall.copy(fontSize = 28.sp, lineHeight = 36.sp, fontWeight = FontWeight.Bold),
-            textAlign = TextAlign.Center, maxLines = 5, overflow = TextOverflow.Ellipsis)
-        Spacer(Modifier.weight(.7f))
-        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Box(Modifier.weight(1f).height(60.dp).clip(RoundedCornerShape(30.dp)).background(P.surface).clickable(onClick = onCancel),
-                contentAlignment = Alignment.Center) { Text("Cancel", style = MaterialTheme.typography.titleMedium.copy(fontSize = 18.sp)) }
-            Row(Modifier.weight(1f).height(60.dp).clip(RoundedCornerShape(30.dp)).background(P.call).clickable(onClick = onDone).testTag("done_listen"),
-                horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-                Icon(painterResource(R.drawable.ic_check), null, Modifier.size(22.dp), tint = onCall)
-                Text("Done", Modifier.padding(start = 8.dp), style = MaterialTheme.typography.titleMedium.copy(fontSize = 18.sp, fontWeight = FontWeight.Bold), color = onCall)
-            }
-        }
-        Text("Or just stop talking. I'll start by myself.", Modifier.padding(top = 12.dp, bottom = 12.dp),
-            style = MaterialTheme.typography.bodySmall.copy(fontSize = 14.sp), color = P.muted)
-    }
-}
-

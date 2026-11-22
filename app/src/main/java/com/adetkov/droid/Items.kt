@@ -136,28 +136,35 @@ object HomeDay {
  * A chat on the home screen, as one of Dash's apps: its [name], his [words] about it, how he looks ([feel]), whether
  * it's the owner's turn ([calls]) or he's at it ([working]), and when it last changed ([at]).
  */
-data class AppTile(val conv: String, val name: String, val words: String, val feel: Feel, val calls: Boolean, val working: Boolean, val at: Long)
+/** A chat on the home screen and in Everything. [aside]: the owner said Not now to it, since its last message. */
+data class AppTile(val conv: String, val name: String, val words: String, val feel: Feel, val calls: Boolean, val working: Boolean, val at: Long,
+                   val aside: Boolean = false)
+
+/** Whether the owner set this chat aside (Not now, in [notNow]) since its last message. */
+fun Conv.setAside(notNow: Map<String, Long>): Boolean = notNow[id]?.let { at -> (messages.lastOrNull()?.ts ?: 0L) <= at } == true
 
 /**
  * The home screen's apps: the chats of the last week (not [hidden], Dash's own home page), the owner's turn first, then
- * what he's at, then the latest; at most [max].
+ * what he's at, then the latest; at most [max]. One set aside ([notNow]) doesn't call the owner; [home] leaves it out.
  */
 fun appTiles(convs: List<Conv>, running: Set<String>, hidden: String?, now: Long = System.currentTimeMillis(), max: Int = 6,
-             within: Long = 7 * 86_400_000L): List<AppTile> =
-    convs.filter { it.id != hidden && it.messages.isNotEmpty() && now - it.updatedAt < within }.map { c ->
+             within: Long = 7 * 86_400_000L, notNow: Map<String, Long> = emptyMap(), home: Boolean = false): List<AppTile> =
+    convs.filter { it.id != hidden && it.messages.isNotEmpty() && now - it.updatedAt < within }.mapNotNull { c ->
         val working = c.id in running
+        val aside = !working && c.setAside(notNow)
+        if (home && aside) return@mapNotNull null
         val outcome = lastOutcome(c.messages, working)
         val mood = lastMood(c.messages)
-        val calls = !working && (outcome == Outcome.ASKS || mood?.calls == true)
+        val calls = !working && !aside && (outcome == Outcome.ASKS || mood?.calls == true)
         val failed = outcome == Outcome.FAILED
         val words = when {
-            working -> latestStatus(c.messages)
+            working -> latestStep(c.messages) ?: "Getting started"
             mood != null && mood.words.isNotBlank() -> mood.words
             failed -> "Couldn't finish"
             else -> ""
         }
         val feel = when { working -> Feel.THINKING; mood != null -> mood.feel; calls -> Feel.NEEDS_YOU; failed -> Feel.CONFUSED; else -> Feel.CONTENT }
-        AppTile(c.id, appName(c), words, feel, calls, working, c.updatedAt)
+        AppTile(c.id, appName(c), words, feel, calls, working, c.updatedAt, aside)
     }.sortedWith(compareByDescending<AppTile> { it.calls }.thenByDescending { it.working }.thenByDescending { it.at }).take(max)
 
 /** How the agent last set Dash in the last turn, if it did. */
@@ -212,6 +219,15 @@ fun spokenAnswer(conv: Conv?, answer: String): String =
 fun latestStatus(messages: List<Msg>): String =
     lastTurn(messages).lastOrNull { it.kind == Kind.STEP || it.kind == Kind.NOTE || (it.kind == Kind.DASH && moodOf(it.text)?.words?.isNotEmpty() == true) }
         ?.let { when (it.kind) { Kind.NOTE -> plainLine(it.text); Kind.DASH -> moodOf(it.text)!!.words; else -> it.text } } ?: "Working…"
+
+/** An answer short enough for Dash to say: one line of words (no page, no list), at most 110 characters; else null. */
+fun shortAnswer(text: String): String? = text.takeIf { !hasHtml(it) && !it.trim().contains('\n') }
+    ?.let { stripMarkdown(it).replace(Regex("\\s+"), " ").trim() }?.takeIf { it.isNotEmpty() && it.length <= 110 }
+
+/** What the agent is doing now, in its last turn: its latest step or narration, in a line; null before any. */
+fun latestStep(messages: List<Msg>): String? =
+    lastTurn(messages).lastOrNull { it.kind == Kind.STEP || it.kind == Kind.NOTE }?.let { if (it.kind == Kind.NOTE) plainLine(it.text) else it.text }
+        ?.takeIf { it.isNotBlank() }
 
 /** The drawer's date group for a chat last active at [ts]: Today, Yesterday, Previous 7 / 30 days, then by month. */
 fun dayGroup(ts: Long, now: Long = System.currentTimeMillis()): String {

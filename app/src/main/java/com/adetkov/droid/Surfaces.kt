@@ -50,11 +50,12 @@ fun pageSend(ctx: Context, conv: String, pageId: String?, text: String, data: St
     val c = app.store.get(conv)
     val i = if (c == null || pageId == null) -1 else c.pageIndex(pageId)
     if (pageId != null) Notify.cancel(ctx, conv, pageNote(pageId))
-    if (c == null || i < 0 || !pageLive(app, c, i)) { startTask(ctx, conv, text, data = data); return }
+    // (marked as from the page even without data, so the agent, and the owner's bubble, know it was a tap)
+    if (c == null || i < 0 || !pageLive(app, c, i)) { startTask(ctx, conv, text, data = data ?: "{}"); return }
     val page = PageInfo.of(c.messages[i])
     val answered = awaited(app, c, i) && if (page.note.isNotEmpty()) Notify.answer(ctx, conv, page.note, pageReply(text, data).put("button", "page"))
         else { app.runner.answerPage(conv, page.id, text, data); true }
-    if (!answered) startTask(ctx, conv, text, data = data)
+    if (!answered) startTask(ctx, conv, text, data = data ?: "{}")
     // a question the agent waited on is answered; the chat's app goes on, live (see currentApp)
     if (answered || i != c.messages.currentApp()) app.store.update(conv) { it.answered(page.id, if (answered) text else "") }
 }

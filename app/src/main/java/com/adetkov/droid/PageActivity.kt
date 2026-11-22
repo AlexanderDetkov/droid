@@ -7,6 +7,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -122,16 +123,16 @@ internal fun CloseWhenAnswered(answered: Boolean, onClose: () -> Unit) {
 fun PageComposer(hint: String, onSend: (String) -> Unit) {
     var text by remember { mutableStateOf("") }
     val send = { text.trim().takeIf { it.isNotEmpty() }?.let { onSend(it); text = "" } }
-    Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 6.dp, bottom = 14.dp).clip(RoundedCornerShape(28.dp))
-        .background(P.surface).height(56.dp).padding(start = 20.dp, end = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 12.dp).clip(RoundedCornerShape(30.dp))
+        .border(2.dp, P.call, RoundedCornerShape(30.dp)).height(60.dp).padding(start = 20.dp, end = 6.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.weight(1f)) {
             if (text.isEmpty()) Text(hint, style = MaterialTheme.typography.bodyLarge, color = P.muted)
             BasicTextField(text, { text = it }, Modifier.fillMaxWidth(), singleLine = true,
-                textStyle = MaterialTheme.typography.bodyLarge.copy(color = P.text), cursorBrush = SolidColor(P.text),
+                textStyle = MaterialTheme.typography.bodyLarge.copy(color = P.text), cursorBrush = SolidColor(P.call),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send), keyboardActions = KeyboardActions(onSend = { send() }))
         }
-        IconBtn(R.drawable.ic_send, "Send", { send() }, Modifier.clip(RoundedCornerShape(22.dp)).background(if (text.isBlank()) P.raised else P.ink),
-            tint = if (text.isBlank()) P.muted else P.onInk, size = 44.dp, iconSize = 20.dp, enabled = text.isNotBlank())
+        IconBtn(R.drawable.ic_send, "Send", { send() }, Modifier.clip(RoundedCornerShape(24.dp)).background(if (text.isBlank()) P.raised else P.call),
+            tint = if (text.isBlank()) P.muted else OnCall, size = 48.dp, iconSize = 22.dp, enabled = text.isNotBlank())
     }
 }
 

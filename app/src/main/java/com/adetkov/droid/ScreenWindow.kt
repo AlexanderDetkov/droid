@@ -60,16 +60,6 @@ fun ScreenWindow(frame: ImageBitmap, width: Dp, modifier: Modifier = Modifier, o
     }
 }
 
-/** Height over width of the phone's screen, which the hidden screen copies. */
-@Composable
-fun screenRatio(): Float {
-    val ctx = LocalContext.current
-    return remember {
-        val b = ctx.getSystemService(WindowManager::class.java).maximumWindowMetrics.bounds
-        maxOf(b.width(), b.height()).toFloat() / minOf(b.width(), b.height()).coerceAtLeast(1)
-    }
-}
-
 /** The phone's screen in pixels, portrait: the hidden screen has the same size, so the agent's taps are in it. */
 @Composable
 fun rememberDisplaySize(): androidx.compose.ui.geometry.Size {
@@ -77,37 +67,6 @@ fun rememberDisplaySize(): androidx.compose.ui.geometry.Size {
     return remember {
         val b = ctx.getSystemService(WindowManager::class.java).maximumWindowMetrics.bounds
         androidx.compose.ui.geometry.Size(minOf(b.width(), b.height()).coerceAtLeast(1).toFloat(), maxOf(b.width(), b.height()).coerceAtLeast(1).toFloat())
-    }
-}
-
-/** An app's name and launcher icon, as the app on Droid's screen. */
-class AppInfo(val label: String, val icon: ImageBitmap?)
-
-private val apps = LruCache<String, AppInfo>(64)
-
-@Composable
-fun rememberAppInfo(pkg: String?): AppInfo? {
-    val ctx = LocalContext.current
-    val info by produceState(pkg?.let(apps::get), pkg) {
-        value = pkg?.let(apps::get)
-        if (pkg != null && value == null) value = withContext(Dispatchers.IO) { loadApp(ctx, pkg) }?.also { apps.put(pkg, it) }
-    }
-    return info
-}
-
-private fun loadApp(ctx: Context, pkg: String): AppInfo? = try {
-    val pm = ctx.packageManager
-    val ai = pm.getApplicationInfo(pkg, 0)
-    AppInfo(pm.getApplicationLabel(ai).toString(), runCatching { pm.getApplicationIcon(ai).toBitmap(96, 96).asImageBitmap() }.getOrNull())
-} catch (_: Exception) { null }  // not visible to Droid, or gone
-
-/** "[icon] Gmail": the app on Droid's screen. Nothing until the app is known. */
-@Composable
-fun AppLabel(pkg: String?, modifier: Modifier = Modifier, iconSize: Dp = 20.dp, style: TextStyle = MaterialTheme.typography.bodyMedium) {
-    val info = rememberAppInfo(pkg) ?: return
-    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
-        info.icon?.let { Image(it, null, Modifier.size(iconSize)) }
-        Text(info.label, Modifier.padding(start = 8.dp), style = style, color = P.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 

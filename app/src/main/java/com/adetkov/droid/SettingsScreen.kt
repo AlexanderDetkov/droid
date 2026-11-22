@@ -28,6 +28,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -43,18 +44,14 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
-/** A screen with a back arrow, a title and optional actions. */
+/** One of Droid's own screens: back and its [title] at the top, then its content (Dash speaks where he has something to say, not here). */
 @Composable
 fun SubScreen(
     title: String, onBack: () -> Unit, backIcon: Int = R.drawable.ic_back, backTag: String = "back",
     actions: @Composable RowScope.() -> Unit = {}, content: @Composable ColumnScope.() -> Unit,
 ) {
     Column(Modifier.fillMaxSize().background(P.bg)) {
-        Row(Modifier.fillMaxWidth().statusBarsPadding().height(56.dp).padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconBtn(backIcon, "Back", onBack, Modifier.testTag(backTag), size = 44.dp)
-            Text(title, Modifier.weight(1f).padding(start = 6.dp), style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            actions()
-        }
+        Where(backIcon, "Back", onBack, title, leftTag = backTag, right = actions)
         content()
     }
 }
@@ -76,22 +73,14 @@ fun SettingsScreen(onBack: () -> Unit, onInstructions: () -> Unit, onSetup: () -
     val update by Updates.newer.collectAsState()
 
     SubScreen("Settings", onBack) {
-        Column(
-            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).navigationBarsPadding().padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).navigationBarsPadding().padding(start = 20.dp, end = 20.dp, bottom = 16.dp)) {
             // Who Droid works as; a tap goes to Setup, where signing in happens
-            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).clickable(onClick = onSetup).padding(horizontal = 4.dp, vertical = 12.dp)
-                .testTag("settings_account"), verticalAlignment = Alignment.CenterVertically) {
-                Avatar(setup.email, 48.dp)
-                Column(Modifier.padding(start = 14.dp)) {
-                    val other = setup.others[engine]
-                    Text(if (engine == Engine.CLAUDE) setup.email ?: "Not signed in" else engine.label,
-                        style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(if (engine == Engine.CLAUDE) planLabel(setup.plan) ?: if (setup.signedIn) "Claude account" else "Tap to sign in"
+            Group("Account") {
+                val other = setup.others[engine]
+                KitRow(if (engine == Engine.CLAUDE) setup.email ?: "Not signed in" else engine.label, Modifier.testTag("settings_account"),
+                    sub = if (engine == Engine.CLAUDE) planLabel(setup.plan) ?: if (setup.signedIn) "Claude account" else "Tap to sign in"
                         else other?.detail ?: "Tap to set it up",
-                        style = MaterialTheme.typography.bodyMedium, color = P.muted)
-                }
+                    lead = { Avatar(setup.email, 42.dp) }, onClick = onSetup, trailing = { Chevron() })
             }
 
             update?.let { u ->
@@ -101,33 +90,30 @@ fun SettingsScreen(onBack: () -> Unit, onInstructions: () -> Unit, onSetup: () -
                 }
             }
 
-            Group(null) {
+            Group("You and me") {
                 NavItem(R.drawable.ic_notes, "Instructions", "What Droid should know about you, and how you like things done", onInstructions, "settings_instructions")
             }
 
-            Group(null) {
+            Group("Talking") {
                 ToggleItem(R.drawable.ic_speaker, "Talk out loud", "I read my answers to you when you talk to me", speak, prefs::setSpeakReplies, "settings_speak")
                 Divider()
                 ToggleItem(R.drawable.ic_sparkle, "Your day from me", "Each morning, on your home screen",
                     home, prefs::setHomePage, "settings_home_page")
             }
 
-            Group(null) {
-                Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(painterResource(R.drawable.ic_theme), null, Modifier.size(22.dp), tint = P.text)
-                    Text("Theme", Modifier.weight(1f).padding(start = 16.dp), style = MaterialTheme.typography.bodyLarge)
+            Group("Looks") {
+                KitRow("Theme", lead = { IconTile(R.drawable.ic_theme) }) {
                     Segmented(ThemeMode.entries.map { it.label }, theme.ordinal) { prefs.setTheme(ThemeMode.entries[it]) }
                 }
                 Divider()
                 ToggleItem(R.drawable.ic_haptics, "Haptic feedback", null, haptics, prefs::setHaptics, "settings_haptics")
             }
 
-            Group(null) {
+            Group("Droid") {
                 NavItem(R.drawable.ic_info, "About", "Droid ${remember { Updates.version(app) }}, source and licenses", onAbout, "settings_about")
                 Divider()
                 NavItem(R.drawable.ic_settings, "Advanced", "Agent and model, memory, voice match, setup", onAdvanced, "settings_advanced")
             }
-            Spacer(Modifier.height(16.dp))
         }
     }
 }
@@ -151,10 +137,7 @@ fun AdvancedScreen(onBack: () -> Unit, onMemory: () -> Unit, onSetup: () -> Unit
     )
 
     SubScreen("Advanced", onBack, backTag = "advanced_close") {
-        Column(
-            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).navigationBarsPadding().padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).navigationBarsPadding().padding(start = 20.dp, end = 20.dp, bottom = 16.dp)) {
             Group("Agent") {
                 EngineItem(engine, setup.others, prefs::setEngine)
                 Divider()
@@ -183,16 +166,10 @@ fun AdvancedScreen(onBack: () -> Unit, onMemory: () -> Unit, onSetup: () -> Unit
             }
 
             Group(null) {
-                Row(
-                    Modifier.fillMaxWidth().clickable(enabled = convs.isNotEmpty()) { confirmDeleteAll = true }.padding(16.dp).testTag("delete_all"),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    val tint = if (convs.isNotEmpty()) P.danger else P.faint  // nothing to delete
-                    Icon(painterResource(R.drawable.ic_delete_all), null, Modifier.size(22.dp), tint = tint)
-                    Text("Delete all chats", Modifier.padding(start = 16.dp), style = MaterialTheme.typography.bodyLarge, color = tint)
-                }
+                val tint = if (convs.isNotEmpty()) P.danger else P.faint  // nothing to delete
+                KitRow("Delete all chats", Modifier.testTag("delete_all"), lead = { IconTile(R.drawable.ic_delete_all, tint) }, titleColor = tint,
+                    onClick = if (convs.isNotEmpty()) ({ confirmDeleteAll = true }) else null)
             }
-            Spacer(Modifier.height(16.dp))
         }
     }
 }
@@ -211,59 +188,33 @@ fun AboutScreen(onBack: () -> Unit) {
     }
 }
 
+/** A section of rows, under its [label] (a little room instead, for none). */
 @Composable
 internal fun Group(label: String?, content: @Composable ColumnScope.() -> Unit) {
     Column {
-        if (label != null) SectionLabel(label, Modifier.padding(start = 16.dp, top = 12.dp, bottom = 8.dp))
-        Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(P.surface), content = content)
+        if (label != null) KitLabel(label) else Spacer(Modifier.height(20.dp))
+        Column(Modifier.fillMaxWidth(), content = content)
     }
 }
 
+/** Between two rows of a [Group]. */
 @Composable
-internal fun Divider() = HorizontalDivider(Modifier.padding(start = 54.dp), color = P.hairline.copy(alpha = .7f))
+internal fun Divider() = HorizontalDivider(Modifier.padding(start = 60.dp), color = P.hairline)
 
 @Composable
-internal fun NavItem(icon: Int, title: String, detail: String?, onClick: () -> Unit, tag: String? = null) {
-    Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).let { if (tag != null) it.testTag(tag) else it }.padding(16.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(painterResource(icon), null, Modifier.size(22.dp), tint = P.text)
-        Column(Modifier.weight(1f).padding(start = 16.dp)) {
-            Text(title, style = MaterialTheme.typography.bodyLarge)
-            if (detail != null) Text(detail, style = MaterialTheme.typography.bodySmall, color = P.muted)
-        }
-        Icon(painterResource(R.drawable.ic_chevron), null, Modifier.size(20.dp), tint = P.faint)
-    }
-}
+internal fun NavItem(icon: Int, title: String, detail: String?, onClick: () -> Unit, tag: String? = null) =
+    KitRow(title, if (tag != null) Modifier.testTag(tag) else Modifier, sub = detail, lead = { IconTile(icon) }, onClick = onClick, trailing = { Chevron() })
 
 @Composable
-internal fun ToggleItem(icon: Int, title: String, detail: String?, on: Boolean, set: (Boolean) -> Unit, tag: String) {
-    Row(Modifier.fillMaxWidth().clickable { set(!on) }.padding(horizontal = 16.dp, vertical = 12.dp).testTag(tag), verticalAlignment = Alignment.CenterVertically) {
-        Icon(painterResource(icon), null, Modifier.size(22.dp), tint = P.text)
-        Column(Modifier.weight(1f).padding(start = 16.dp)) {
-            Text(title, style = MaterialTheme.typography.bodyLarge)
-            if (detail != null) Text(detail, style = MaterialTheme.typography.bodySmall, color = P.muted)
-        }
-        Switch(on, set, colors = SwitchDefaults.colors(
-            checkedThumbColor = P.onInk, checkedTrackColor = P.ink, uncheckedThumbColor = P.muted,
-            uncheckedTrackColor = P.raised, uncheckedBorderColor = Color.Transparent, checkedBorderColor = Color.Transparent,
-        ))
-    }
-}
+internal fun ToggleItem(icon: Int, title: String, detail: String?, on: Boolean, set: (Boolean) -> Unit, tag: String) =
+    KitRow(title, Modifier.testTag(tag), sub = detail, lead = { IconTile(icon) }, onClick = { set(!on) }) { KitSwitch(on, set) }
 
 @Composable
 private fun EngineItem(engine: Engine, status: Map<Engine, EngineStatus>, set: (Engine) -> Unit) {
     Box {
         var open by remember { mutableStateOf(false) }
-        Row(Modifier.fillMaxWidth().clickable { open = true }.padding(16.dp).testTag("settings_engine"), verticalAlignment = Alignment.CenterVertically) {
-            Icon(painterResource(R.drawable.ic_bolt), null, Modifier.size(22.dp), tint = P.text)
-            Column(Modifier.weight(1f).padding(start = 16.dp)) {
-                Text("Agent", style = MaterialTheme.typography.bodyLarge)
-                Text(engine.label + " · for new chats", style = MaterialTheme.typography.bodySmall, color = P.muted)
-            }
-            Icon(painterResource(R.drawable.ic_expand), null, Modifier.size(20.dp), tint = P.faint)
-        }
+        KitRow("Agent", Modifier.testTag("settings_engine"), sub = engine.label + " · for new chats", lead = { IconTile(R.drawable.ic_bolt) },
+            onClick = { open = true }) { Icon(painterResource(R.drawable.ic_expand), null, Modifier.size(20.dp), tint = P.faint) }
         DropdownMenu(open, { open = false }, shape = RoundedCornerShape(18.dp), containerColor = P.sheet) {
             Engine.entries.forEach { e ->
                 // New chats would fail on an agent that isn't installed and signed in (Setup does that).
@@ -288,13 +239,8 @@ private fun ModelItem(engine: Engine, model: String, set: (String) -> Unit) {
         var open by remember { mutableStateOf(false) }
         var typing by remember { mutableStateOf(false) }
         if (typing) TextDialog("Model name", model, "Use", { set(it.trim()) }, { typing = false })
-        Row(Modifier.fillMaxWidth().clickable { open = true }.padding(16.dp).testTag("settings_model"), verticalAlignment = Alignment.CenterVertically) {
-            Icon(painterResource(R.drawable.ic_sparkle), null, Modifier.size(22.dp), tint = P.text)
-            Column(Modifier.weight(1f).padding(start = 16.dp)) {
-                Text("Model", style = MaterialTheme.typography.bodyLarge)
-                Text(engine.model(model).let { if (it.alias.isEmpty()) it.detail else "${it.label} · ${it.detail}" },
-                    style = MaterialTheme.typography.bodySmall, color = P.muted)
-            }
+        KitRow("Model", Modifier.testTag("settings_model"), sub = engine.model(model).let { if (it.alias.isEmpty()) it.detail else "${it.label} · ${it.detail}" },
+            lead = { IconTile(R.drawable.ic_sparkle) }, onClick = { open = true }) {
             Icon(painterResource(R.drawable.ic_expand), null, Modifier.size(20.dp), tint = P.faint)
         }
         DropdownMenu(open, { open = false }, shape = RoundedCornerShape(18.dp), containerColor = P.sheet) {

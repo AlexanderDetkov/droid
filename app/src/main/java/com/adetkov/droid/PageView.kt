@@ -56,6 +56,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
@@ -122,7 +123,8 @@ private fun themeVars(dark: Boolean): String = palette(dark).let { p ->
     ":root{--bg:${hex(p.bg)};--surface:${hex(p.surface)};--raised:${hex(p.raised)};--sheet:${hex(p.sheet)};--hairline:${hex(p.hairline)};" +
         "--text:${hex(p.text)};--muted:${hex(p.muted)};--faint:${hex(p.faint)};--ink:${hex(p.ink)};--on-ink:${hex(p.onInk)};" +
         "--code-bg:${hex(p.codeBg)};--code-header:${hex(p.codeHeader)};--danger:${hex(p.danger)};--success:${hex(p.success)};--call:${hex(p.call)};" +
-        "--on-call:${if (p.dark) "#0D0D0D" else "#FFFFFF"}}"
+        "--on-call:${if (p.dark) "#0D0D0D" else "#FFFFFF"};--pick:${hex(p.call.copy(alpha = if (p.dark) .22f else .12f).compositeOver(p.bg))};" +
+        "--pick-text:${if (p.dark) "#C7CBFF" else "#3F44B8"};--ring:${hex(DashColors.Accent)}}"
 }
 
 /** What every page gets first: the viewport, the theme and mode on <html>, Droid's stylesheet and `droid`. */

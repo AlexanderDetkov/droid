@@ -239,4 +239,36 @@ class ItemsTest {
         // the same still's name, though: retrying deletes the stills from there on
         assertEquals(failed.stillKey, retried.stillKey)
     }
+
+    @Test fun notNowSetsAChatAsideUntilItsNextMessage() {
+        val asks = Conv("a", "Dentist", createdAt = 0, updatedAt = 10, messages = listOf(
+            Msg(Kind.USER, "move my dentist", 1), Msg(Kind.DASH, """{"feel":"needs_you","words":"Friday at 3?"}""", 5), Msg(Kind.AGENT, "Friday at 3?", 6)))
+        val now = 100L
+        val tiles = appTiles(listOf(asks), emptySet(), null, now = now)
+        assertTrue(tiles.single().calls)
+        val aside = mapOf("a" to 6L)
+        assertTrue(appTiles(listOf(asks), emptySet(), null, now = now, notNow = aside, home = true).isEmpty())
+        // in Everything it stays, without calling
+        val all = appTiles(listOf(asks), emptySet(), null, now = now, notNow = aside).single()
+        assertFalse(all.calls)
+        assertTrue(all.aside)
+        // a new message brings it back
+        val again = asks.copy(messages = asks.messages + Msg(Kind.USER, "or Monday?", 20))
+        assertFalse(again.setAside(aside))
+    }
+
+    @Test fun dashSaysOnlyShortOneLineAnswers() {
+        assertEquals("Sent! I'll tell you when he pays.", shortAnswer("Sent! I'll tell you when he **pays**."))
+        assertEquals(null, shortAnswer("- one\n- two"))
+        assertEquals(null, shortAnswer("x".repeat(111)))
+        assertEquals(null, shortAnswer("<div class=\"big\">7:00</div>"))
+    }
+
+    @Test fun theLatestStepLeavesOutDashsWords() {
+        val c = conv(step("Open Messages"))
+        assertEquals("Open Messages", latestStep(c.messages))
+        val withWords = c.messages + Msg(Kind.DASH, """{"feel":"happy","words":"Found it"}""", 3)
+        assertEquals("Open Messages", latestStep(withWords))
+        assertEquals(null, latestStep(listOf(Msg(Kind.USER, "hi", 1))))
+    }
 }

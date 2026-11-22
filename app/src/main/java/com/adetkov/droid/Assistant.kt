@@ -84,6 +84,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -198,8 +199,6 @@ internal class PanelPageActions(
         if (locked()) { unlocked {}; "The phone is locked. Unlock it, then try again." to 1 } else actions.run(command)
 }
 
-private enum class Orb { LISTENING, WORKING, SPEAKING, SEND, IDLE }
-
 @Composable
 private fun AssistActivity.Panel(invocation: Int, testWav: String?, modifier: Modifier) {
     val app = application as DroidApp
@@ -219,13 +218,6 @@ private fun AssistActivity.Panel(invocation: Int, testWav: String?, modifier: Mo
     val answer = conv?.messages?.takeLastWhile { !it.kind.opensTurn }?.lastOrNull { it.kind == Kind.AGENT }?.text
     // a page the agent waits on, mid-task: answered right here
     val waiting = conv?.let { waitingPage(it.messages, isRunning) }
-    val orb = when {
-        voice.listening -> Orb.LISTENING
-        speaker.speakingKey != null -> Orb.SPEAKING
-        isRunning && answer == null -> Orb.WORKING
-        typing && draft.isNotBlank() -> Orb.SEND
-        else -> Orb.IDLE
-    }
 
     fun close() { pending = null; voice.cancel(); speaker.stop(); app.runner.dropWarm(); shown.targetState = false }
     LaunchedEffect(shown.currentState, shown.targetState) { if (!shown.targetState && shown.isIdle) finish() }
@@ -330,14 +322,6 @@ private fun AssistActivity.Panel(invocation: Int, testWav: String?, modifier: Mo
     fun openCamera() = allowing(Manifest.permission.CAMERA, withCamera, "camera") {
         camera.reset(); camOn = true; withShot = false; if (!voice.listening && !typing && pending == null) talk()
     }
-    fun onOrb() = when {
-        orb == Orb.SEND -> submit()
-        pending != null -> unlockAndSend()
-        orb == Orb.LISTENING -> voice.finish()
-        orb == Orb.SPEAKING -> speaker.stop()
-        orb == Orb.WORKING -> Unit
-        else -> talk()
-    }
     fun openChat() = unlocked({
         startActivity(Intent(this, MainActivity::class.java).putExtra(EXTRA_CONV, convId).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP))
         voice.cancel(); speaker.stop(); finish()
@@ -402,54 +386,69 @@ private fun AssistActivity.Panel(invocation: Int, testWav: String?, modifier: Mo
             exit = slideOutVertically(tween(200)) { it } + fadeOut(tween(200))) {
           Column(horizontalAlignment = Alignment.CenterHorizontally) {
           if (camOn) CameraHint(camera, Modifier.padding(bottom = 10.dp))
-          Box(Modifier.fillMaxWidth()) {
+            // Droid's four rows, in a sheet over the app you're in: Dash's line, what goes with the request, the page or
+            // answer, and the bar.
             Column(
-                Modifier.padding(top = 44.dp).fillMaxWidth()
-                    .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)).background(P.sheet)
-                    .drawBehind { dashEdge(28.dp.toPx(), 3.dp.toPx()) }  // the sheet's top edge is Dash's, his notch rising from it
+                Modifier.fillMaxWidth()
+                    .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)).background(P.bg)
                     .clickable(remember { MutableInteractionSource() }, indication = null) {}  // taps inside don't close it
-                    .navigationBarsPadding().imePadding().padding(start = 24.dp, end = 24.dp, top = 28.dp, bottom = 12.dp)
+                    .navigationBarsPadding().imePadding().padding(top = 10.dp)
                     .animateContentSize(spring(stiffness = Spring.StiffnessMediumLow))
                     .testTag("assistant"),
             ) {
                 val sent = convId != null && pending == null && !voice.listening && !typing
+                val working = isRunning && answer == null
+                // the sheet's top: its grabber, and on the right what takes you on: Stop while he works, else the chat
+                Box(Modifier.fillMaxWidth().height(40.dp).padding(horizontal = 12.dp)) {
+                    Box(Modifier.align(Alignment.TopCenter).size(36.dp, 4.dp).clip(CircleShape).background(P.hairline))
+                    Row(Modifier.align(Alignment.CenterEnd)) {
+                        if (working) StopButton { convId?.let(app.runner::stop) }
+                        else if (convId != null) Text("Open", Modifier.clip(RoundedCornerShape(20.dp)).clickable(onClick = ::openChat)
+                            .padding(horizontal = 14.dp, vertical = 10.dp).testTag("open_chat"), style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp),
+                            color = P.muted)
+                    }
+                }
+                val words = when {
+                    voice.listening -> "I'm listening…"
+                    notice != null && heard.isEmpty() && !typing -> notice!!
+                    pending != null -> "Unlock, and I'll start."
+                    waiting != null -> mood?.words?.takeIf { it.isNotBlank() } ?: "Your turn"
+                    working -> mood?.words?.takeIf { it.isNotBlank() } ?: "On it!"
+                    sent && answer != null -> mood?.words?.takeIf { it.isNotBlank() } ?: if (outcome == Outcome.FAILED) "That didn't work" else "Here you go"
+                    else -> "What should I do?"
+                }
+                // while he works his words hold still; what he's doing is the grey line under them
+                DashLine(words, rig = rig, modifier = Modifier.testTag("dash"),
+                    sub = if (working && waiting == null) conv?.let { latestStep(it.messages) } ?: "Getting started" else null)
                 // What goes with the request: before it goes, the screen (over an app) or the camera; then what went.
-                val canTalk = !(isRunning && answer == null)
+                val canTalk = !working
                 val went = sentShot
-                if (went != null) SentChip(went, Modifier.padding(bottom = 16.dp))
-                else if (shot != null || canTalk) Row(Modifier.padding(bottom = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (went != null) Row(Modifier.padding(start = 20.dp, end = 20.dp, top = 14.dp)) { SentChip(went, Modifier) }
+                else if (shot != null || canTalk) Row(Modifier.padding(start = 20.dp, end = 20.dp, top = 14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     shot?.let { ScreenChip(it, on = withShot, onToggle = { withShot = !withShot; if (withShot) camOn = false }) }
                     if (canTalk) CameraChip(on = camOn, onToggle = { if (camOn) camOn = false else openCamera() })
                 }
-                when {
-                    typing -> TypedRequest(draft, { draft = it }, ::submit)
-                    heard.isNotEmpty() -> Text(heard, Modifier.testTag("heard"),
-                        color = if (sent) P.muted else P.text, fontSize = if (sent) 16.sp else 22.sp,
-                        lineHeight = if (sent) 22.sp else 30.sp, maxLines = if (sent) 2 else 6, overflow = TextOverflow.Ellipsis,
-                        style = MaterialTheme.typography.bodyLarge)
-                    voice.listening -> Text("Listening…", color = P.muted, fontSize = 22.sp, lineHeight = 30.sp, style = MaterialTheme.typography.bodyLarge)
+                // what Dash hears, big, until it goes (then it's the chat's)
+                if (heard.isNotEmpty() && !typing && !sent) YouBubble(heard, Modifier.padding(top = 8.dp).testTag("heard"), big = true)
+                notice?.takeIf { heard.isNotEmpty() || typing }?.let {
+                    Text(it, Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 8.dp).testTag("notice"),
+                        color = P.muted, style = MaterialTheme.typography.bodyMedium, textAlign = if (heard.isNotEmpty()) TextAlign.End else TextAlign.Start)
                 }
-                notice?.let { val alone = heard.isEmpty() && !typing
-                    Text(it, Modifier.padding(top = if (alone) 0.dp else 10.dp).testTag("notice"),
-                    color = P.muted, fontSize = if (alone) 22.sp else 15.sp, style = MaterialTheme.typography.bodyLarge) }
                 val cid = convId
                 if (waiting != null && cid != null) {
                     val info = PageInfo.of(waiting)
                     val dark = P.dark
                     val actions = remember(cid, info.id) { pageActions(cid, info.id) }
-                    Box(Modifier.padding(top = 16.dp)) {
+                    Box(Modifier.padding(start = 20.dp, end = 20.dp, top = 16.dp)) {
                         InlinePage("assist:${info.id}:${waiting.text.hashCode()}", "page:$cid:${info.id}", dark,
                             { cx -> pageDocument(cx, waiting.text, dark, PageMode.FLOAT) }, namedPaths(waiting.text), actions,
                             Modifier.testTag("page"), mode = PageMode.FLOAT, maxHeight = 420.dp)
                     }
-                } else if (isRunning && answer == null) Row(Modifier.padding(top = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(conv?.let { latestStatus(it.messages) } ?: "Working…", Modifier.testTag("status"),
-                        color = P.muted, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 if (sent && answer != null) {
                     val scroll = rememberScrollState()
                     val drag = rememberListDrag(scroll)
-                    Box(Modifier.padding(top = 16.dp).heightIn(max = 340.dp).verticalScroll(scroll).testTag("answer")) {
+                    Box(Modifier.padding(start = 20.dp, end = 20.dp, top = 16.dp).heightIn(max = 340.dp).verticalScroll(scroll).testTag("answer")) {
                         if (hasHtml(answer) && cid != null && conv != null) {
                             // an answer with a page: the page, as in the chat
                             val dark = P.dark
@@ -462,112 +461,72 @@ private fun AssistActivity.Panel(invocation: Int, testWav: String?, modifier: Mo
                         } else CompositionLocalProvider(LocalContentColor provides P.text) { Markdown(answerText(answer)) }
                     }
                 }
-                Spacer(Modifier.size(20.dp))
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.weight(1f)) {
-                        if (convId != null) TextButton(::openChat, Modifier.testTag("open_chat")) { Text("Open chat", color = P.muted) }
-                    }
-                    OrbButton(orb, { voice.level }, ::onOrb)
-                    Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
-                        if (isRunning && answer == null) TextButton({ convId?.let(app.runner::stop) }, Modifier.testTag("stop")) { Text("Stop", color = P.muted) }
-                        else if (!typing) IconBtn(R.drawable.ic_keyboard, "Type", ::startTyping, Modifier.testTag("type"), tint = P.muted, size = 48.dp)
-                    }
+                Spacer(Modifier.size(14.dp))
+                if (pending != null && !voice.listening) NextStep("Unlock to send", { unlockAndSend() }, tag = "orb")
+                when {
+                    voice.listening -> ListenBar({ voice.level }, onDone = voice::finish, onCancel = { voice.cancel(); heard = ""; app.runner.dropWarm() },
+                        onType = ::startTyping)
+                    typing -> TypedRequest(draft, { draft = it }, ::submit, onTalk = if (app.speech.installed) ({ talk() }) else null)
+                    else -> TalkBar({ if (speaker.speakingKey != null) speaker.stop(); talk() }, ::startTyping, typeOnly = !app.speech.installed)
                 }
             }
-            DashNotch(rig, Modifier.align(Alignment.TopCenter).testTag("dash"), label = null)
-          }
           }
         }
     }
 }
 
-/** The request, typed: where and as large as a spoken one, with the keyboard up at once and its cursor after what's kept. */
+/**
+ * The request, typed: the bar's typing mode, as in the app (talk instead on the left, send on the right), with the
+ * keyboard up at once and its cursor after what's kept.
+ */
 @Composable
-private fun TypedRequest(text: String, onText: (String) -> Unit, onSend: () -> Unit) {
+private fun TypedRequest(text: String, onText: (String) -> Unit, onSend: () -> Unit, onTalk: (() -> Unit)? = null) {
     val focus = remember { FocusRequester() }
     var field by remember { mutableStateOf(TextFieldValue(text, TextRange(text.length))) }
     LaunchedEffect(Unit) { focus.requestFocus() }
-    val style = MaterialTheme.typography.bodyLarge.copy(color = P.text, fontSize = 22.sp, lineHeight = 30.sp)
-    Box(Modifier.fillMaxWidth()) {
-        if (field.text.isEmpty()) Text("Message Droid", style = style.copy(color = P.muted))
-        BasicTextField(field, { field = it; onText(it.text) }, Modifier.fillMaxWidth().focusRequester(focus).testTag("typed"),
-            textStyle = style, cursorBrush = SolidColor(P.text), maxLines = 6,
-            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Send),
-            keyboardActions = KeyboardActions(onSend = { onSend() }))
+    val style = MaterialTheme.typography.bodyLarge.copy(color = P.text, fontSize = 18.sp, lineHeight = 25.sp)
+    Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 12.dp).heightIn(min = 64.dp).clip(RoundedCornerShape(30.dp))
+        .border(2.dp, P.call, RoundedCornerShape(30.dp)).padding(start = if (onTalk != null) 0.dp else 20.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        if (onTalk != null) IconBtn(R.drawable.ic_mic, "Talk instead", onTalk, Modifier.testTag("mic"), tint = CallText, size = 56.dp, iconSize = 22.dp)
+        Box(Modifier.weight(1f).padding(vertical = 8.dp)) {
+            if (field.text.isEmpty()) Text("Message Droid", style = style.copy(color = P.muted))
+            BasicTextField(field, { field = it; onText(it.text) }, Modifier.fillMaxWidth().focusRequester(focus).testTag("typed"),
+                textStyle = style, cursorBrush = SolidColor(P.call), maxLines = 6,
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Send),
+                keyboardActions = KeyboardActions(onSend = { onSend() }))
+        }
+        Box(Modifier.padding(start = 6.dp).size(48.dp).clip(CircleShape).background(if (field.text.isBlank()) P.raised else P.call)
+            .clickable(enabled = field.text.isNotBlank(), onClick = onSend).testTag("send"), contentAlignment = Alignment.Center) {
+            Icon(painterResource(R.drawable.ic_send), "Send", Modifier.size(22.dp), tint = if (field.text.isBlank()) P.faint else OnCall)
+        }
     }
-}
-
-/** A chip for what goes with the request: filled while it goes, outlined while it doesn't; a tap toggles it. */
-@Composable
-private fun Chip(on: Boolean, label: String?, onToggle: (() -> Unit)?, modifier: Modifier, content: @Composable RowScope.() -> Unit) {
-    val shape = RoundedCornerShape(22.dp)
-    Row(
-        modifier.height(44.dp).clip(shape)
-            .background(if (on) P.surface else Color.Transparent)
-            .border(1.dp, if (on) Color.Transparent else P.hairline, shape)
-            .then(if (onToggle != null) Modifier.clickable(onClickLabel = label, onClick = onToggle) else Modifier),
-        verticalAlignment = Alignment.CenterVertically, content = content,
-    )
 }
 
 /** The phone-shaped picture of a screenshot, or of a photo from the full-screen camera. */
 @Composable
-private fun ChipThumb(path: String, on: Boolean = true) = Thumb(path, 64, Modifier.padding(start = 7.dp).size(width = 17.dp, height = 32.dp)
+private fun ChipThumb(path: String, on: Boolean = true) = Thumb(path, 64, Modifier.padding(end = 8.dp).size(width = 15.dp, height = 28.dp)
     .clip(RoundedCornerShape(4.dp)).border(1.dp, P.hairline, RoundedCornerShape(4.dp)).graphicsLayer { alpha = if (on) 1f else .35f })
 
-/** The screenshot of the app the panel opened over: tap to take it off, or to put it back. */
+/** The screenshot of the app the panel opened over, a pick: tap to take it off, or to put it back. */
 @Composable
 private fun ScreenChip(shot: Attachment, on: Boolean, onToggle: () -> Unit) =
-    Chip(on, if (on) "Don't send the screen" else "Send the screen", onToggle, Modifier.testTag("screen_chip")) {
+    Pick(on, onToggle, Modifier.testTag("screen_chip"), if (on) "Don't send the screen" else "Send the screen") {
         ChipThumb(shot.path, on)
-        Text(if (on) "Your screen" else "Add your screen", Modifier.padding(start = 10.dp),
-            style = MaterialTheme.typography.labelLarge, color = if (on) P.text else P.muted)
-        Icon(painterResource(if (on) R.drawable.ic_close else R.drawable.ic_add), null,
-            Modifier.padding(start = 8.dp, end = 12.dp).size(18.dp), tint = P.muted)
+        PickText("Your screen", on)
     }
 
-/** Droid's camera: on, it fills the screen behind the panel, in Dash's frame, and its picture goes with the request. */
+/** Droid's camera, a pick: on, it fills the screen behind the panel, in Dash's ring, and its picture goes with the request. */
 @Composable
 private fun CameraChip(on: Boolean, onToggle: () -> Unit) =
-    Chip(on, if (on) "Don't send the camera" else "Show Droid your camera", onToggle, Modifier.testTag("camera_chip")) {
-        Icon(painterResource(R.drawable.ic_camera), null, Modifier.padding(start = 12.dp).size(20.dp), tint = P.text)
-        Text("Camera", Modifier.padding(start = 8.dp, end = if (on) 0.dp else 16.dp), style = MaterialTheme.typography.labelLarge, color = P.text)
-        if (on) Icon(painterResource(R.drawable.ic_close), null, Modifier.padding(start = 8.dp, end = 12.dp).size(18.dp), tint = P.muted)
+    Pick(on, onToggle, Modifier.testTag("camera_chip"), if (on) "Don't send the camera" else "Show Droid your camera") {
+        Icon(painterResource(R.drawable.ic_camera), null, Modifier.padding(end = 8.dp).size(20.dp), tint = if (on) CallText else P.text)
+        PickText("Camera", on)
     }
 
 /** What went with the request: the screenshot or the photo. */
 @Composable
-private fun SentChip(a: Attachment, modifier: Modifier) = Chip(true, null, null, modifier.testTag("sent_chip")) {
+private fun SentChip(a: Attachment, modifier: Modifier) = Pick(true, {}, modifier.testTag("sent_chip")) {
     ChipThumb(a.path)
-    Text(if (a.source == Source.CAMERA) "Photo" else "Your screen", Modifier.padding(start = 10.dp, end = 16.dp),
-        style = MaterialTheme.typography.labelLarge, color = P.text)
-}
-
-/** The round button in the middle: white and breathing with the voice while listening, a spinner while working. */
-@Composable
-private fun OrbButton(state: Orb, level: () -> Float, onClick: () -> Unit) {
-    val lit = state == Orb.LISTENING || state == Orb.SPEAKING || state == Orb.SEND
-    val bg by animateColorAsState(if (lit) P.ink else P.raised, label = "orbColor")
-    Box(Modifier.size(84.dp), contentAlignment = Alignment.Center) {
-        Box(Modifier.size(64.dp).graphicsLayer { val s = if (state == Orb.LISTENING) 1f + level() * .28f else 1f; scaleX = s; scaleY = s }.clip(CircleShape).background(bg)
-            .clickable(onClick = onClick).testTag("orb"), contentAlignment = Alignment.Center) {
-            when (state) {
-                Orb.WORKING -> Icon(painterResource(R.drawable.ic_mic), "Speak", Modifier.size(28.dp), tint = P.muted)
-                Orb.SPEAKING -> Icon(painterResource(R.drawable.ic_stop), "Stop reading", Modifier.size(22.dp), tint = P.onInk)
-                Orb.SEND -> Icon(painterResource(R.drawable.ic_send), "Send", Modifier.size(26.dp), tint = P.onInk)
-                else -> Icon(painterResource(R.drawable.ic_mic), if (lit) "Send now" else "Speak", Modifier.size(28.dp),
-                    tint = if (lit) P.onInk else P.text)
-            }
-        }
-    }
-}
-
-/** Dash's edge along the top of a sheet with [corner]-radius top corners: a [width] line, inside it. */
-private fun androidx.compose.ui.graphics.drawscope.DrawScope.dashEdge(corner: Float, width: Float) {
-    val i = width / 2; val r = corner - i; val k = .5523f * r
-    val p = androidx.compose.ui.graphics.Path().apply {
-        moveTo(i, corner); cubicTo(i, corner - k, i + r - k, i, i + r, i)
-        lineTo(size.width - i - r, i); cubicTo(size.width - i - r + k, i, size.width - i, corner - k, size.width - i, corner)
-    }
-    drawPath(p, DashColors.Body, style = Stroke(width, cap = androidx.compose.ui.graphics.StrokeCap.Round))
+    PickText(if (a.source == Source.CAMERA) "Photo" else "Your screen", true)
 }

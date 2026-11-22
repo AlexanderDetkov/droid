@@ -31,6 +31,19 @@ class Prefs(private val ctx: Context) {
         get() = sp.getLong("home_asked", 0)
         set(v) = sp.edit { putLong("home_asked", v) }
 
+    /**
+     * Chats the owner set aside from home ("Not now"), each with the time of its last message then: a new message
+     * brings it back.
+     */
+    val notNow = MutableStateFlow(sp.getStringSet("not_now", emptySet()).orEmpty().mapNotNull { e ->
+        e.substringBeforeLast(':', "").takeIf { it.isNotEmpty() }?.let { it to (e.substringAfterLast(':').toLongOrNull() ?: 0L) }
+    }.toMap())
+    fun setNotNow(conv: String, lastAt: Long) {
+        val m = (notNow.value + (conv to lastAt)).entries.sortedByDescending { it.value }.take(200).associate { it.key to it.value }
+        notNow.value = m
+        sp.edit { putStringSet("not_now", m.map { "${it.key}:${it.value}" }.toSet()) }
+    }
+
     fun setTheme(v: ThemeMode) { theme.value = v; sp.edit { putString("theme", v.name) }; applyTheme() }
     /** Tells Android too, so its splash and window behind Droid match from the first frame. */
     fun applyTheme() = ctx.getSystemService(UiModeManager::class.java).setApplicationNightMode(when (theme.value) {

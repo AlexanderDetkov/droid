@@ -88,14 +88,11 @@ fun SetupScreen(setup: Setup, firstRun: Boolean, onClose: () -> Unit) {
     )
 
     Column(Modifier.fillMaxSize().background(P.bg).imePadding()) {
-        Row(Modifier.fillMaxWidth().statusBarsPadding().height(56.dp).padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconBtn(R.drawable.ic_back, "Back", onClose, Modifier.testTag("setup_close"), size = 44.dp)
-            Text("Setup", Modifier.padding(start = 6.dp), style = MaterialTheme.typography.titleMedium)
-        }
+        Where(R.drawable.ic_back, "Back", onClose, "Setup", leftTag = "setup_close")
         Column(
-            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).navigationBarsPadding().padding(horizontal = 16.dp),
+            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).navigationBarsPadding().padding(horizontal = 20.dp),
         ) {
-            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(P.surface)) {
+            Column(Modifier.fillMaxWidth()) {
                 if (s.access == Access.ROOT) {
                     Step(1, "Root access", if (s.root) "Granted" else "Needs Magisk, KernelSU or APatch. Allow Droid when asked.", s.root) {
                         if (!s.root) Action("Check", idle, primary = true) { setup.refresh() }
@@ -292,34 +289,29 @@ private fun FirstRun(setup: Setup, onClose: () -> Unit) {
     }
     val dot = when (page) { Page.CONNECT -> 0; Page.PICK, Page.WAIT -> 1; Page.CHATGPT, Page.CLAUDE -> 2; else -> -1 }
 
-    BoxWithConstraints(Modifier.fillMaxSize().background(P.bg).statusBarsPadding().navigationBarsPadding().imePadding()) {
-        val dashH = (maxHeight - BUTTONS - 200.dp).coerceIn(120.dp, 256.dp)
-        Column(Modifier.fillMaxSize().padding(start = 24.dp, end = 24.dp, top = 20.dp, bottom = 20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Dots(dot)
-            Column(Modifier.weight(1f).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                val rig = rememberDash(feel = feel)
-                LaunchedEffect(feel) { rig.feel(feel) }
-                Dash(rig, Modifier.size(dashH * .78f, dashH), label = "Dash")
-                // in a space of one size (a headline, a code and a line fit), so Dash stays put however much it says
-                AnimatedContent(words, Modifier.fillMaxWidth().height(168.dp), transitionSpec = { fadeIn() togetherWith fadeOut() },
-                    contentAlignment = Alignment.TopCenter, label = "words") { w ->
-                    Column(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text(w.headline, Modifier.testTag("setup_headline"), style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Medium),
-                            textAlign = TextAlign.Center)
-                        w.code?.let {
-                            Text(it, Modifier.testTag("setup_device_code"), style = MaterialTheme.typography.headlineMedium.copy(fontFamily = FontFamily.Monospace,
-                                fontWeight = FontWeight.Medium, letterSpacing = 1.sp))
-                        }
-                        w.line?.let {
-                            Text(it, Modifier.testTag("setup_line"), style = MaterialTheme.typography.bodyLarge, color = P.muted, textAlign = TextAlign.Center,
-                                maxLines = 4, overflow = TextOverflow.Ellipsis)
-                        }
-                        if (w.progress) LinearProgressIndicator(Modifier.padding(top = 4.dp).width(160.dp).clip(RoundedCornerShape(2.dp)), color = P.call, trackColor = P.raised)
+    // Droid's four rows, as everywhere: Dash's words are the headline, a line or a code under them, and the next step
+    // at the bottom, always in the same place (there's no talking to him yet, so it sits where the bar will be).
+    Column(Modifier.fillMaxSize().background(P.bg).statusBarsPadding().navigationBarsPadding().imePadding()) {
+            Box(Modifier.fillMaxWidth().height(24.dp), contentAlignment = Alignment.Center) { Dots(dot) }
+            val rig = rememberDash(feel = feel)
+            LaunchedEffect(feel) { rig.feel(feel) }
+            DashLine(words.headline, size = DashSize.BIG, rig = rig, modifier = Modifier.testTag("setup_headline"))
+            AnimatedContent(words, Modifier.weight(1f).fillMaxWidth(), transitionSpec = { fadeIn() togetherWith fadeOut() },
+                contentAlignment = Alignment.TopStart, label = "words") { w ->
+                Column(Modifier.fillMaxWidth().padding(start = 102.dp, end = 24.dp, top = 14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    w.code?.let {
+                        Text(it, Modifier.testTag("setup_device_code"), style = MaterialTheme.typography.headlineMedium.copy(fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Medium, letterSpacing = 1.sp))
                     }
+                    w.line?.let {
+                        Text(it, Modifier.testTag("setup_line"), style = MaterialTheme.typography.bodyLarge.copy(fontSize = 17.sp, lineHeight = 25.sp), color = P.muted,
+                            maxLines = 5, overflow = TextOverflow.Ellipsis)
+                    }
+                    if (w.progress) LinearProgressIndicator(Modifier.padding(top = 4.dp).width(160.dp).clip(RoundedCornerShape(2.dp)), color = P.call, trackColor = P.raised)
                 }
             }
             // The buttons, at the bottom of a space of one size, so Dash and the main button stay put from page to page
-            Box(Modifier.fillMaxWidth().height(BUTTONS), contentAlignment = Alignment.BottomCenter) {
+            Box(Modifier.fillMaxWidth().height(BUTTONS).padding(bottom = 6.dp), contentAlignment = Alignment.BottomCenter) {
                 AnimatedContent(page, Modifier.fillMaxWidth(), transitionSpec = { fadeIn() togetherWith fadeOut() }, label = "buttons") { p ->
                     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         when (p) {
@@ -339,7 +331,7 @@ private fun FirstRun(setup: Setup, onClose: () -> Unit) {
                             Page.WAIT -> Big("", "setup_wait", enabled = false, hidden = true) {}
                             Page.CHATGPT -> Big("Open ChatGPT", "setup_open_chatgpt") { s.deviceCode?.let(copy); open(s.signInUrl) }
                             Page.CLAUDE -> if (paste && s.signInUrl != null) {
-                                Box(Modifier.fillMaxWidth().height(56.dp).clip(RoundedCornerShape(28.dp)).border(1.5.dp, P.faint.copy(alpha = .5f), RoundedCornerShape(28.dp))
+                                Box(Modifier.padding(horizontal = 20.dp).fillMaxWidth().height(56.dp).clip(RoundedCornerShape(28.dp)).border(1.5.dp, P.hairline, RoundedCornerShape(28.dp))
                                     .padding(horizontal = 20.dp), contentAlignment = Alignment.CenterStart) {
                                     if (code.isEmpty()) Text("Code", style = MaterialTheme.typography.bodyLarge, color = P.muted)
                                     BasicTextField(code, { code = it }, Modifier.fillMaxWidth().testTag("setup_code"), singleLine = true,
@@ -386,7 +378,6 @@ private fun FirstRun(setup: Setup, onClose: () -> Unit) {
                     }
                 }
             }
-        }
     }
 }
 
@@ -403,15 +394,11 @@ private fun Dots(at: Int) {
     }
 }
 
-/** First run's main button: big, at the bottom, always in the same place ([hidden] keeps its place empty). */
+/** First run's next step: big, at the bottom, always in the same place ([hidden] keeps its place empty). */
 @Composable
 private fun Big(label: String, tag: String, enabled: Boolean = true, hidden: Boolean = false, onClick: () -> Unit) {
-    if (hidden) return Spacer(Modifier.height(56.dp))
-    Box(
-        Modifier.fillMaxWidth().height(56.dp).clip(RoundedCornerShape(28.dp)).background(if (enabled) P.ink else P.raised)
-            .clickable(enabled = enabled, onClick = onClick).testTag(tag),
-        contentAlignment = Alignment.Center,
-    ) { Text(label, style = MaterialTheme.typography.titleMedium, color = if (enabled) P.onInk else P.faint) }
+    if (hidden) return Spacer(Modifier.height(72.dp))
+    NextStep(label, onClick, enabled = enabled, tag = tag)
 }
 
 /** One of the brains to pick: its name and a few words on what it's for. */
@@ -419,13 +406,13 @@ private fun Big(label: String, tag: String, enabled: Boolean = true, hidden: Boo
 private fun Choice(label: String, detail: String, tag: String, primary: Boolean = false, onClick: () -> Unit) {
     val shape = RoundedCornerShape(32.dp)
     Column(
-        Modifier.fillMaxWidth().height(64.dp).clip(shape)
-            .then(if (primary) Modifier.background(P.ink) else Modifier.border(1.5.dp, P.faint.copy(alpha = .5f), shape))
+        Modifier.padding(horizontal = 20.dp).fillMaxWidth().height(64.dp).clip(shape)
+            .then(if (primary) Modifier.background(P.call) else Modifier.border(1.5.dp, P.hairline, shape))
             .clickable(onClick = onClick).testTag(tag),
         horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center,
     ) {
-        Text(label, style = MaterialTheme.typography.titleMedium, color = if (primary) P.onInk else P.text)
-        Text(detail, style = MaterialTheme.typography.bodySmall, color = if (primary) P.onInk.copy(alpha = .72f) else P.muted)
+        Text(label, style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold), color = if (primary) OnCall else P.text)
+        Text(detail, style = MaterialTheme.typography.bodySmall, color = if (primary) OnCall.copy(alpha = .8f) else P.muted)
     }
 }
 
@@ -506,7 +493,7 @@ private fun Step(
 ) {
     Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 12.dp, top = 14.dp, bottom = 14.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(24.dp), contentAlignment = Alignment.Center) {
-            if (done) Icon(painterResource(R.drawable.ic_done_circle), "Done", Modifier.size(24.dp), tint = P.success)
+            if (done) Icon(painterResource(R.drawable.ic_done_circle), "Done", Modifier.size(24.dp), tint = P.text)
             else Box(Modifier.size(22.dp).clip(CircleShape).border(1.5.dp, P.faint, CircleShape), contentAlignment = Alignment.Center) {
                 Text("$n", style = MaterialTheme.typography.labelSmall, color = P.muted)
             }
@@ -517,7 +504,7 @@ private fun Step(
                 if (optional && !done) Text("  Optional", style = MaterialTheme.typography.labelSmall, color = P.faint)
             }
             Text(detail, style = MaterialTheme.typography.bodySmall, color = if (upcoming) P.faint else P.muted, maxLines = 3, overflow = TextOverflow.Ellipsis)
-            if (progress) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 8.dp).clip(RoundedCornerShape(2.dp)), color = P.ink, trackColor = P.raised)
+            if (progress) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 8.dp).clip(RoundedCornerShape(2.dp)), color = P.call, trackColor = P.raised)
         }
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp), content = actions)
     }
@@ -528,11 +515,11 @@ private fun Action(label: String, enabled: Boolean, primary: Boolean = false, on
     val shape = RoundedCornerShape(50)
     Text(
         label,
-        Modifier.clip(shape).then(if (primary) Modifier.background(if (enabled) P.ink else P.raised) else Modifier.border(1.dp, P.hairline, shape))
+        Modifier.clip(shape).then(if (primary) Modifier.background(if (enabled) P.call else P.raised) else Modifier.border(1.5.dp, P.hairline, shape))
             .clickable(enabled = enabled, onClick = onClick).padding(horizontal = 16.dp, vertical = 8.dp)
             .testTag("setup_" + label.lowercase().replace(' ', '_')),
         style = MaterialTheme.typography.labelLarge,
-        color = when { !enabled -> P.faint; primary -> P.onInk; else -> P.text },
+        color = when { !enabled -> P.faint; primary -> OnCall; else -> P.text },
     )
 }
 

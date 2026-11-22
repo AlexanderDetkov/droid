@@ -246,10 +246,10 @@ private fun Listening(voice: Voice, heard: String, working: Boolean, result: Str
     Box(Modifier.fillMaxWidth().padding(top = 16.dp), contentAlignment = Alignment.Center) {
         val lit = voice.listening
         Box(Modifier.size(64.dp).graphicsLayer { val s = if (lit) 1f + voice.level * .28f else 1f; scaleX = s; scaleY = s }
-            .clip(CircleShape).background(if (lit) P.ink else P.raised).clickable(enabled = !working, onClick = onMic).testTag("vm_mic"),
+            .clip(CircleShape).background(if (lit) P.call else Lavender).clickable(enabled = !working, onClick = onMic).testTag("vm_mic"),
             contentAlignment = Alignment.Center) {
             if (working) Spinner(size = 22.dp, color = P.text, stroke = 2.dp)
-            else Icon(painterResource(R.drawable.ic_mic), if (lit) "Done" else "Speak", Modifier.size(26.dp), tint = if (lit) P.onInk else P.text)
+            else Icon(painterResource(R.drawable.ic_mic), if (lit) "Done" else "Speak", Modifier.size(26.dp), tint = if (lit) OnCall else CallText)
         }
     }
 }

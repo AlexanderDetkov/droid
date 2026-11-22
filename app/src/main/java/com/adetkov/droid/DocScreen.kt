@@ -76,7 +76,7 @@ fun DocScreen(backend: Backend, doc: Doc, title: String, about: String?, tag: St
         if (onDelete != null && saved != null) IconBtn(R.drawable.ic_delete, "Delete", { confirmDelete = true }, Modifier.testTag("${tag}_delete"))
         Text(
             "Save",
-            Modifier.padding(end = 8.dp).clip(RoundedCornerShape(50)).background(if (dirty) P.ink else P.raised)
+            Modifier.padding(end = 8.dp).clip(RoundedCornerShape(50)).background(if (dirty) P.call else P.raised)
                 .clickable(enabled = dirty) {
                     val t = text
                     scope.launch {
@@ -85,7 +85,7 @@ fun DocScreen(backend: Backend, doc: Doc, title: String, about: String?, tag: St
                     }
                 }
                 .padding(horizontal = 16.dp, vertical = 8.dp).testTag("${tag}_save"),
-            style = MaterialTheme.typography.labelLarge, color = if (dirty) P.onInk else P.faint,
+            style = MaterialTheme.typography.labelLarge, color = if (dirty) OnCall else P.faint,
         )
     }) {
         Box(Modifier.fillMaxSize().imePadding(), contentAlignment = Alignment.TopStart) {
