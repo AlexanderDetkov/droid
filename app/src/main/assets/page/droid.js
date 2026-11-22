@@ -71,6 +71,7 @@
     async _render(segs) {
       const root = document.getElementById("droid");
       root.innerHTML = segs.map(([html, t]) => html ? t : window.marked.parse(t, { gfm: true, breaks: true })).join("");
+      tidy();
       if (document.readyState === "loading") {
         await new Promise((parsed) => document.addEventListener("DOMContentLoaded", parsed, { once: true }));
       }
@@ -106,7 +107,32 @@
     if (pad !== room) { room = pad; document.body.style.paddingBottom = pad; }
     if (has !== had) { had = has; post({ op: "footer", on: has }); }
   };
+  // Buttons written one after another (as `<button>A</button><button>B</button>`, or one per line) go in a row that
+  // spaces them (droid.css .row), so they never touch, however the page lays them out around them.
+  const isButton = (n) => n && n.nodeType === 1 && (n.tagName === "BUTTON" || n.classList.contains("button"));
+  const blank = (n) => n && n.nodeType === 3 && !n.textContent.trim();
+  const tidy = () => {
+    for (const b of document.querySelectorAll("button, .button")) {
+      const p = b.parentElement;
+      if (!p || p.classList.contains("droid-buttons")) continue;
+      const shown = getComputedStyle(p).display;
+      if (shown.includes("flex") || shown.includes("grid")) continue;  // the page spaces them itself
+      let before = b.previousSibling;
+      while (blank(before)) before = before.previousSibling;
+      if (isButton(before)) continue;  // not the first of its run
+      const run = [b];
+      for (let n = b.nextSibling; n; n = n.nextSibling) { if (blank(n)) continue; if (!isButton(n)) break; run.push(n); }
+      if (run.length < 2) continue;
+      const row = document.createElement("div");
+      row.className = "row droid-buttons";
+      p.insertBefore(row, b);
+      run.forEach((x) => row.appendChild(x));
+    }
+  };
   new ResizeObserver(report).observe(document.documentElement);
   addEventListener("load", report);
-  addEventListener("DOMContentLoaded", () => new MutationObserver(footer).observe(document.body, { childList: true, subtree: true }));
+  addEventListener("DOMContentLoaded", () => {
+    tidy();
+    new MutationObserver(() => { tidy(); footer(); }).observe(document.body, { childList: true, subtree: true });
+  });
 })();

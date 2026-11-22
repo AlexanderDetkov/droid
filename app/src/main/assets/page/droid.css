@@ -70,6 +70,10 @@ button, .button {
   transition: background .15s, opacity .15s;
 }
 button:active, .button:active { background: var(--raised); }
+/* Buttons never touch: ones written side by side are put in a row (droid.js) that spaces them, wrapping when they
+   don't fit, a wide one on a line of its own; in a row that spaces its own (a footer, tiles, chips, an item), its gap does. */
+.droid-buttons { margin: 12px 0; }
+:is(footer, .tiles, .chips, .row, .stack, .item, .more) > :is(button, .button) { margin: 0; }
 /* The main thing to do, in Dash's color */
 button.primary, .button.primary { background: var(--call); border-color: var(--call); color: var(--on-call); font-weight: 700; }
 button.quiet, .button.quiet { border-color: transparent; color: var(--muted); font-weight: 500; padding: 15.5px 14px; }

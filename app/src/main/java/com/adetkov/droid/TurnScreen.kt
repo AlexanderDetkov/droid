@@ -133,7 +133,7 @@ fun TurnScreen(
     val failed = remember(messages, start, status) { status?.let { messages[it].text }?.takeIf { !live && it != "Stopped" }?.let { plainStatus(it, conv.engine) ?: Plain("That didn't work. " + it.removePrefix("Error: ")) } }
     val big = waiting == null && live && appAt < 0
     AnimatedContent(big, modifier, label = "turn", transitionSpec = { fadeIn(tween(240, 60)) togetherWith fadeOut(tween(140)) }) { isBig ->
-        if (isBig) { Working(conv, start, steps, feed, taps, doing, onWatch); return@AnimatedContent }
+        if (isBig) { Working(conv, start, steps, feed, taps, doing, onTakeOver); return@AnimatedContent }
         Column(Modifier.fillMaxSize()) {
             val info = waiting?.let { w -> remember(w.data) { PageInfo.of(w) } }
             Headline(conv, running, live && waiting == null, steps, feed, taps, doing, held, closesAt, typing, listening, level,
@@ -366,12 +366,13 @@ private fun WaitingPage(conv: String, m: Msg, info: PageInfo, onTakeOver: () -> 
 }
 
 /**
- * Dash at work: holding his live screen, big, while an app is on it (a tap watches, or takes over); the creature, thinking,
- * while there's none. Under him, what he's doing now in plain words. He poses for what the agent does, and his eyes go
- * where it taps. The screen's frames are also kept as the turn's still (at most every 2 s), for its history.
+ * Dash at work: holding his live screen, as big as it fits, while an app is on it (so there's nothing to zoom into:
+ * Let me do it takes over); the creature, thinking, while there's none. Under him, what he's doing now in plain words.
+ * He poses for what the agent does, and his eyes go where it taps. The screen's frames are also kept as the turn's still
+ * (at most every 2 s), for its history.
  */
 @Composable
-private fun Working(conv: Conv, start: Int, steps: Item.Steps?, feed: ScreenFeed?, taps: Flow<Pair<Int, Int>>?, doing: Doing?, onWatch: () -> Unit) {
+private fun Working(conv: Conv, start: Int, steps: Item.Steps?, feed: ScreenFeed?, taps: Flow<Pair<Int, Int>>?, doing: Doing?, onTakeOver: () -> Unit) {
     val used = feed?.app != null
     SaveStills(conv.id, steps, feed)
     val liveFrame = feed?.frame?.takeIf { used }
@@ -386,19 +387,28 @@ private fun Working(conv: Conv, start: Int, steps: Item.Steps?, feed: ScreenFeed
     val messages = conv.messages
     val caption = remember(messages) { latestStatus(messages).takeIf { it != "Working…" } } ?: "Getting started…"
     val ratio = frame?.let { it.height.toFloat() / it.width } ?: screenRatio()
-    Column(Modifier.fillMaxSize().padding(horizontal = 28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+    val app = rememberAppInfo(feed?.app)?.label
+    androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize()) {
+    // the screen as big as the room under it for his words and Let me do it allows
+    val width = minOf(maxWidth - 48.dp, (maxHeight - 230.dp) / ratio).coerceAtLeast(120.dp)
+    Column(Modifier.fillMaxSize().padding(horizontal = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Spacer(Modifier.weight(.35f))
-        DashSlot(rig, frame, DpSize(132.dp, 146.dp), 196.dp, ratio, Modifier.testTag(if (used) "window" else "dash"),
-            label = if (used) "Droid's screen, live. Tap to watch" else "Dash, working", origin = used, onClick = if (used) onWatch else null)
+        DashSlot(rig, frame, DpSize(132.dp, 146.dp), width, ratio, Modifier.testTag(if (used) "window" else "dash"),
+            label = if (used) "Droid's screen, live" else "Dash, working", origin = used)
         AnimatedContent(caption, Modifier.padding(top = 22.dp), label = "doing",
             transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(120)) }) { t ->
             Text(t, Modifier.fillMaxWidth().testTag("doing"), style = MaterialTheme.typography.titleLarge.copy(fontSize = 21.sp, lineHeight = 28.sp,
                 fontWeight = FontWeight.Bold), textAlign = TextAlign.Center, maxLines = 3, overflow = TextOverflow.Ellipsis)
         }
         val since = steps?.start?.takeIf { it > 0 } ?: messages.getOrNull(start)?.ts ?: now
-        Text(if (used) "Tap my screen to watch me work" else "Working · ${duration(now - since)}", Modifier.padding(top = 8.dp),
+        if (used) Box(Modifier.padding(top = 12.dp).height(48.dp).clip(RoundedCornerShape(24.dp)).background(P.surface).clickable(onClick = onTakeOver)
+            .padding(horizontal = 20.dp).testTag("take_over"), contentAlignment = Alignment.Center) {
+            Text(if (app != null) "Let me do it in $app" else "Let me do it", style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp, fontWeight = FontWeight.SemiBold))
+        }
+        else Text("Working · ${duration(now - since)}", Modifier.padding(top = 8.dp),
             style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp), color = P.muted, textAlign = TextAlign.Center)
         Spacer(Modifier.weight(.65f))
+    }
     }
 }
 
