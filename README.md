@@ -1,30 +1,32 @@
-<p align="center"><img src="docs/readme/icon.png" width="88" alt=""></p>
+<p align="center"><img src="docs/readme/icon.png" width="80" alt=""></p>
 
 <h1 align="center">Droid</h1>
 
-<p align="center"><b>Put your phone to work.</b><br>An AI that uses your apps for you.</p>
+<p align="center">An AI that uses your apps for you.<br>
+Say what you need, and it does the job on your Android phone while you keep using it.</p>
 
 <p align="center">
-  <a href="https://github.com/AlexanderDetkov/droid/releases/latest/download/droid-arm64.apk"><img src="docs/readme/download.png" height="52" alt="Download for Android"></a>&nbsp;
-  <a href="https://alexanderdetkov.github.io/droid/"><img src="docs/readme/website.png" height="52" alt="Website"></a>
+  <a href="https://github.com/AlexanderDetkov/droid/releases/latest/download/droid-arm64.apk"><b>Download</b></a> ·
+  <a href="https://alexanderdetkov.github.io/droid/">Website</a> ·
+  <a href="#install">Install</a> ·
+  <a href="docs/how-it-works.md">How it works</a>
 </p>
 
-<p align="center">
-  <a href="https://github.com/AlexanderDetkov/droid/releases/latest"><img src="https://img.shields.io/github/v/release/AlexanderDetkov/droid?color=5a5fd6&label=release" alt="Latest release"></a>
-  <img src="https://img.shields.io/badge/Android-14%2B-5a5fd6" alt="Android 14 or later">
-  <img src="https://img.shields.io/badge/price-free-5a5fd6" alt="Free">
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/AlexanderDetkov/droid?color=5a5fd6" alt="Apache-2.0"></a>
-</p>
+<br>
 
-<p align="center"><img src="docs/readme/hero.webp" width="820" alt="Ask Droid for anything. It works on its own screen while you keep using your phone, or put it away. It finds what it needs, fills in the form, and asks you before it sends."></p>
+<p align="center"><img src="docs/readme/screens.png" width="760" alt="Droid's home screen; Dash reading the Tahoe group chat on his own screen; the app he made: Sam owes you $206.62, with Ask Sam to pay"></p>
 
-<p align="center"><img src="docs/readme/job.webp" width="820" alt="Hand it the whole job: asked to find a dinner spot for four, Droid checks everyone's chats and calendars on its own screen, step by step"></p>
+<br>
 
-<p align="center"><img src="docs/readme/answers.webp" width="820" alt="No walls of text: another assistant asks for every expense and answers in paragraphs; Droid answers with a small app, who owes what and a Venmo button for each"></p>
+## What it does
 
-<p align="center"><img src="docs/readme/glance.webp" width="820" alt="Never ties up your phone. Several tasks at once. Ask in a second: hold the power button and talk. No Droid servers: your logins stay on your phone."></p>
-
-<p align="center">Start with free AI models and no account, or use your ChatGPT account or a Claude plan.</p>
+- **Uses your apps.** It taps and types the way you do, on a screen of its own, so it works with almost any app.
+- **Does the whole job.** It finds what it needs across your apps and acts in them.
+- **Answers you can use.** Not a wall of text, but a small app made for the task, with the next step a tap away.
+- **Several tasks at once,** while you keep using your phone or put it away.
+- **Ask in a second.** Hold the power button and talk.
+- **Your choice of AI.** Free models with no account, your ChatGPT account, or a Claude plan.
+- **No Droid servers.** Your logins stay on your phone, and the code is open.
 
 ## Install
 
