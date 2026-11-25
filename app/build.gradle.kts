@@ -43,7 +43,7 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     // libturn.so (src/main/cpp): Smart Turn on sherpa-onnx's own onnxruntime
-    ndkVersion = "30.0.14904198"
+    ndkVersion = "30.0.16248370"  // r30, as on GitHub's runners
     externalNativeBuild { ndkBuild { path = file("src/main/cpp/Android.mk") } }
     packaging {
         jniLibs.excludes += listOf("**/libsherpa-onnx-c-api.so", "**/libsherpa-onnx-cxx-api.so")  // the JNI library doesn't use them
