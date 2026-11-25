@@ -1,24 +1,30 @@
-# Droid
+<p align="center"><img src="docs/readme/icon.png" width="88" alt=""></p>
 
-<p align="center"><img src="docs/droid.jpg" width="680" alt="Droid's home screen, and the app Dash made when asked to split a trip"></p>
+<h1 align="center">Droid</h1>
 
-<p align="center"><b><a href="https://github.com/AlexanderDetkov/droid/releases/latest/download/droid-arm64.apk">Download for Android</a></b> · <a href="https://alexanderdetkov.github.io/droid/">Website</a></p>
+<p align="center"><b>Put your phone to work.</b><br>An AI that uses your apps for you.</p>
 
-**Put your phone to work.** Droid is an AI that uses your apps for you. Say what you need, and it does the job on a
-screen of its own while you keep using your phone, or lock it and walk away.
+<p align="center">
+  <a href="https://github.com/AlexanderDetkov/droid/releases/latest/download/droid-arm64.apk"><img src="docs/readme/download.png" height="52" alt="Download for Android"></a>&nbsp;
+  <a href="https://alexanderdetkov.github.io/droid/"><img src="docs/readme/website.png" height="52" alt="Website"></a>
+</p>
 
-## What it does
+<p align="center">
+  <a href="https://github.com/AlexanderDetkov/droid/releases/latest"><img src="https://img.shields.io/github/v/release/AlexanderDetkov/droid?color=5a5fd6&label=release" alt="Latest release"></a>
+  <img src="https://img.shields.io/badge/Android-14%2B-5a5fd6" alt="Android 14 or later">
+  <img src="https://img.shields.io/badge/price-free-5a5fd6" alt="Free">
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/AlexanderDetkov/droid?color=5a5fd6" alt="Apache-2.0"></a>
+</p>
 
-- **Uses any app on your phone.** It taps and types the way you do, so it works with almost any app, not just websites.
-- **Does the whole job.** Find a table for four, order your usual, split a trip: it goes through every app it needs and comes back
-  with the result.
-- **No walls of text.** Each answer is a small app made for the task: choices to tap, a draft ready to send, one big
-  number. You answer with a tap.
-- **Never ties up your phone.** You can watch it work, or take over to sign in or pay yourself.
-- **Several tasks at once.** Hand it your whole to-do list.
-- **Ask in a second.** Hold the power button and talk, from any app or the lock screen. Speech recognition runs on the phone.
-- **Your choice of AI.** Free models with no account, your ChatGPT account, or a Claude plan.
-- **No Droid servers.** Your logins stay on your phone, and the code is open.
+<p align="center"><img src="docs/readme/hero.webp" width="820" alt="Ask Droid for anything. It works on its own screen while you keep using your phone, or put it away. It finds what it needs, fills in the form, and asks you before it sends."></p>
+
+<p align="center"><img src="docs/readme/job.webp" width="820" alt="Hand it the whole job: asked to find a dinner spot for four, Droid checks everyone's chats and calendars on its own screen, step by step"></p>
+
+<p align="center"><img src="docs/readme/answers.webp" width="820" alt="No walls of text: another assistant asks for every expense and answers in paragraphs; Droid answers with a small app, who owes what and a Venmo button for each"></p>
+
+<p align="center"><img src="docs/readme/glance.webp" width="820" alt="Never ties up your phone. Several tasks at once. Ask in a second: hold the power button and talk. No Droid servers: your logins stay on your phone."></p>
+
+<p align="center">Start with free AI models and no account, or use your ChatGPT account or a Claude plan.</p>
 
 ## Install
 
