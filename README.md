@@ -22,7 +22,7 @@ screen of its own while you keep using your phone, or lock it and walk away.
 
 ## Install
 
-You need Android 14 or later, rooted or not.
+You need Android 14 or later.
 
 1. On your phone, download [droid-arm64.apk](https://github.com/AlexanderDetkov/droid/releases/latest/download/droid-arm64.apk)
    and open it. When Android asks, allow installing apps from your browser, then tap Install.
