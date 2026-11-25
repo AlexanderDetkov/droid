@@ -1,8 +1,9 @@
 name: Release
 
 # Pushing a tag such as v0.9 builds the release APKs and drafts a GitHub release with them and proot's exact source.
-# The APKs are signed when the repository has these secrets: KEYSTORE_BASE64 (the keystore file, base64), and
-# KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD. Every release must use the same key, or users can't update.
+# The tag must be the app's versionName with a v. The APKs are signed with these secrets, and without them there's no
+# release: KEYSTORE_BASE64 (the keystore file, base64), KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD. Every release must
+# use the same key, or users can't update.
 on:
   push:
     tags: ["v*"]
@@ -20,6 +21,12 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: gradle/actions/setup-gradle@v4
+      - name: The tag is the app's version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          v=$(sed -n 's/^ *versionName = "\(.*\)"/\1/p' app/build.gradle.kts)
+          if [ "v$v" != "$TAG" ]; then echo "::error::Tag $TAG but versionName is $v (and raise versionCode too)"; exit 1; fi
       - name: Signing key
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
@@ -27,7 +34,7 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          if [ -z "$KEYSTORE_BASE64" ]; then echo "::warning::No signing key: the APKs are unsigned and won't install"; exit 0; fi
+          if [ -z "$KEYSTORE_BASE64" ]; then echo "::error::No signing key: unsigned APKs won't install, so there's no release"; exit 1; fi
           echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
           printf 'storeFile=%s\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
             "$RUNNER_TEMP/release.jks" "$KEYSTORE_PASSWORD" "$KEY_ALIAS" "$KEY_PASSWORD" > keystore.properties
@@ -41,7 +48,7 @@ jobs:
           mkdir out
           for abi in arm64-v8a x86_64; do
             f=$(ls app/build/outputs/apk/release/app-$abi-release*.apk)
-            cp "$f" "out/droid-${TAG#v}-${abi%%-*}.apk"
+            cp "$f" "out/droid-${abi%%-*}.apk"  # the same names each release: releases/latest/download/droid-arm64.apk
           done
           tools/proot/build.sh --source "out/proot-source.tar.gz"
           gh release create "$TAG" out/* --draft --title "Droid ${TAG#v}" --generate-notes

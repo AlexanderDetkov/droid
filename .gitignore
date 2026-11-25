@@ -8,3 +8,5 @@ keystore.properties
 .idea/
 *.iml
 app/libs/
+__pycache__/
+.pytest_cache/

@@ -47,8 +47,18 @@ class ErrorsTest {
 
     @Test fun helperTroubleKeepsItsWordsAndGetsSetup() {
         // AdbHelper's own messages, without root
-        assertEquals(Plain("Pair Droid with Wireless debugging first", setup = true), plainStatus("Failed: Pair Droid with Wireless debugging first", Engine.CLAUDE))
+        // (helper: once it runs again, the turn is worth trying again)
+        assertEquals(Plain("Pair Droid with Wireless debugging first", setup = true, helper = true), plainStatus("Failed: Pair Droid with Wireless debugging first", Engine.CLAUDE))
         assertTrue(plainStatus("Failed: Droid's helper stopped right after it started. Check that USB debugging is on", Engine.OPENCODE)!!.setup)
         assertNull(plainStatus("Failed", Engine.OPENCODE))
+    }
+
+    /** An install the network failed says so in plain words, not its exit code; any other failure keeps its own words. */
+    @Test fun aDownloadThatFailedSaysCheckTheInternet() {
+        assertEquals("I couldn't download what I need. Check your internet connection, then try again.",
+            installFailed("Could not install OpenCode (exit 56).", 56, "").message!!.lineSequence().first())
+        assertEquals("I couldn't download what I need. Check your internet connection, then try again.",
+            installFailed("Setup failed (exit 1).", 1, "curl: (56) Recv failure: Connection reset by peer\nDownload failed").message!!.lineSequence().first())
+        assertEquals("Setup failed (exit 1).", installFailed("Setup failed (exit 1).", 1, "apk: no space left").message!!.lineSequence().first())
     }
 }

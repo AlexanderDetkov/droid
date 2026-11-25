@@ -136,7 +136,7 @@ class MainActivity : ComponentActivity() {
     )
 }
 
-private enum class Screen { CHAT, HISTORY, SETTINGS, ACCOUNT, KNOW, INSTRUCTIONS, VOICE_MATCH, SETUP, ABOUT }
+private enum class Screen { CHAT, HISTORY, SETTINGS, ACCOUNT, KNOW, INSTRUCTIONS, VOICE_MATCH, SETUP, ABOUT, LICENSES }
 
 /** A word over the bottom of the screen that goes by itself, with [undo] when what was done can be taken back. */
 private class Snack(val text: String, val undo: (() -> Unit)? = null, val at: Long = System.nanoTime())
@@ -370,6 +370,7 @@ private fun Root(request: Request?, modifier: Modifier) {
         screen = when (screen) {
             Screen.SETTINGS, Screen.HISTORY -> Screen.CHAT
             Screen.ACCOUNT, Screen.KNOW, Screen.ABOUT, Screen.VOICE_MATCH -> Screen.SETTINGS
+            Screen.LICENSES -> Screen.ABOUT
             else -> returnTo
         }
     }
@@ -405,7 +406,8 @@ private fun Root(request: Request?, modifier: Modifier) {
             Screen.INSTRUCTIONS -> DocScreen(app.backend, Doc.INSTRUCTIONS, "What you told me",
                 "I read this before every task. Tell me about yourself, the people and apps you use, and how you like things done.",
                 "instructions", onClose = { screen = returnTo })
-            Screen.ABOUT -> AboutScreen { screen = Screen.SETTINGS }
+            Screen.ABOUT -> AboutScreen(onBack = { screen = Screen.SETTINGS }, onLicenses = { screen = Screen.LICENSES })
+            Screen.LICENSES -> LicensesScreen { screen = Screen.ABOUT }
             Screen.SETUP -> SetupScreen(app.setup, firstRun = false) { screen = returnTo }
             Screen.HISTORY -> if (conv != null) HistoryScreen(conv, running, onBack = { screen = Screen.CHAT }, onSetup = { go(Screen.SETUP) })
                 else LaunchedEffect(Unit) { screen = Screen.CHAT }
@@ -451,7 +453,7 @@ private fun Root(request: Request?, modifier: Modifier) {
                                         onSpeak = { speaker.toggle("dash:${conv.id}:${conv.messages.size}", it) },
                                         // up past the top: the turns before this one (none: nothing to go to)
                                         onHistory = if (turns > 1) ({ toHistory() }) else null,
-                                        onShown = { shownNow = conv.id to it })
+                                        onShown = { shownNow = conv.id to it }, helperUp = setup.access != Access.ADB || setup.helper)
                                     DisposableEffect(Unit) { onDispose { if (shownNow?.first == conv.id) shownNow = null } }
                                 }
                             }

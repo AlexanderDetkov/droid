@@ -24,6 +24,8 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -36,6 +38,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -47,6 +50,8 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /** One of Droid's own screens: back and its [title] at the top, then its content (Dash speaks where he has something to say, not here). */
 @Composable
@@ -151,8 +156,15 @@ fun AccountScreen(onBack: () -> Unit, onSetup: () -> Unit) {
     val models by prefs.models.collectAsState()
     SubScreen("Account", onBack, backTag = "account_close") {
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).navigationBarsPadding().padding(start = 20.dp, end = 20.dp, bottom = 16.dp)) {
-            KitRow(setup.email ?: "Not signed in to Claude", sub = planLabel(setup.plan)?.let { "Signed in to $it" } ?: if (setup.signedIn) "Signed in" else null,
-                lead = { Avatar(setup.email, 42.dp) })
+            // who's signed in to Claude; with no Claude account, the AI that new chats use
+            val (who, whoSub) = when {
+                setup.email != null -> setup.email!! to (planLabel(setup.plan)?.let { "Signed in to $it" } ?: if (setup.signedIn) "Signed in" else null)
+                setup.signedIn -> "Signed in to Claude" to planLabel(setup.plan)
+                engine == Engine.OPENCODE -> "Free AI" to "No account needed"
+                engine == Engine.CODEX && setup.others[engine]?.signedIn == true -> "ChatGPT" to setup.others[engine]?.detail
+                else -> "Not signed in" to null
+            }
+            KitRow(who, sub = whoSub, lead = { Avatar(setup.email, 42.dp) })
             KitLabel("AI for new chats")
             Column(Modifier.padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Engine.entries.forEach { e ->
@@ -179,9 +191,9 @@ fun AccountScreen(onBack: () -> Unit, onSetup: () -> Unit) {
             } else if (engine.custom) {
                 Box(Modifier.padding(top = 14.dp)) { ModelItem(engine, models[engine].orEmpty()) { prefs.setModel(engine, it) } }
             }
-            Text("Other ways to sign in", Modifier.padding(top = 22.dp).clip(RoundedCornerShape(10.dp)).clickable(onClick = onSetup)
-                .padding(horizontal = 4.dp, vertical = 10.dp).testTag("other_sign_in"),
-                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp, fontWeight = FontWeight.SemiBold), color = P.muted)
+            Spacer(Modifier.height(18.dp))
+            KitRow("Other ways to sign in", Modifier.testTag("other_sign_in"), sub = "API keys, a Console account", line = true,
+                onClick = onSetup) { Chevron() }
         }
     }
 }
@@ -208,17 +220,61 @@ private fun AiOption(name: String, sub: String, picked: Boolean, usable: Boolean
 
 /** Droid's version, its source and the licenses of what it's built with and downloads ([about.md](assets/about.md)). */
 @Composable
-fun AboutScreen(onBack: () -> Unit) {
+fun AboutScreen(onBack: () -> Unit, onLicenses: () -> Unit) {
     val ctx = LocalContext.current
     val text = remember { runCatching { ctx.assets.open("about.md").bufferedReader().use { it.readText() } }.getOrDefault("") }
     SubScreen("About", onBack, backTag = "about_close") {
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).navigationBarsPadding().padding(horizontal = 20.dp)) {
             Text("Droid ${remember { Updates.version(ctx) }}", Modifier.padding(top = 8.dp, bottom = 12.dp), style = MaterialTheme.typography.headlineSmall)
             Markdown(text)
+            KitRow("Licenses", Modifier.testTag("about_licenses"), sub = "Their full texts", line = true, onClick = onLicenses) { Chevron() }
             Spacer(Modifier.height(32.dp))
         }
     }
 }
+
+/**
+ * The full license texts of what's built into Droid (assets/licenses, one file each: its title line, then the text), as
+ * their licenses ask. Their hard-wrapped lines are joined into paragraphs that fit the screen; indented lines stay.
+ */
+@Composable
+fun LicensesScreen(onBack: () -> Unit) {
+    val ctx = LocalContext.current
+    val parts by produceState(emptyList<Pair<Boolean, String>>()) {
+        value = withContext(Dispatchers.IO) {
+            val files = ctx.assets.list("licenses").orEmpty().sorted()
+            files.flatMap { f ->
+                val text = runCatching { ctx.assets.open("licenses/$f").bufferedReader().use { it.readText() } }.getOrDefault("")
+                val title = text.substringBefore('\n')
+                listOf(true to title) + paragraphs(text.substringAfter('\n', "")).map { false to it }
+            }
+        }
+    }
+    SubScreen("Licenses", onBack, backTag = "licenses_close") {
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 32.dp)) {
+            items(parts.size) { i ->
+                val (title, text) = parts[i]
+                if (title) Text(text, Modifier.padding(top = if (i == 0) 8.dp else 28.dp, bottom = 8.dp), style = MaterialTheme.typography.titleMedium)
+                else Text(text, Modifier.padding(bottom = 10.dp), style = MaterialTheme.typography.bodySmall, color = P.muted)
+            }
+        }
+    }
+}
+
+/**
+ * [text]'s paragraphs (split at blank lines), less their common indent, each line joined to the one before unless it's
+ * indented further or a list item.
+ */
+internal fun paragraphs(text: String): List<String> =
+    text.split(Regex("\n\\s*\n")).map { p ->
+        p.trimIndent().lines().fold("") { acc, line ->
+            when {
+                acc.isEmpty() -> line.trimEnd()
+                line.startsWith(" ") || line.startsWith("\t") || Regex("^([-*•]|\\d+[.)]|\\([a-z0-9]+\\))\\s").containsMatchIn(line) -> acc + "\n" + line.trimEnd()
+                else -> acc + " " + line.trim()
+            }
+        }
+    }.filter { it.isNotBlank() }
 
 /** A section of rows, under its [label] (a little room instead, for none). */
 @Composable

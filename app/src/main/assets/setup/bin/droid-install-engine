@@ -13,7 +13,7 @@ esac
 case "$ENGINE" in
   codex)    REPO=openai/codex;  ASSET="codex-$TRIPLE-unknown-linux-musl.tar.gz"; BIN="codex-$TRIPLE-unknown-linux-musl"; NAME=codex ;;
   # x64: the baseline build, which doesn't need AVX2 (emulators often lack it); phones are arm64
-  opencode) REPO=sst/opencode;  NAME=opencode; BIN=opencode
+  opencode) REPO=anomalyco/opencode;  NAME=opencode; BIN=opencode
             if [ "$CPU" = x64 ]; then ASSET=opencode-linux-x64-baseline-musl.tar.gz; else ASSET=opencode-linux-arm64-musl.tar.gz; fi ;;
   *) echo "Unknown engine $ENGINE" >&2; exit 1 ;;
 esac

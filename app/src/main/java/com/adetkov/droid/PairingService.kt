@@ -55,8 +55,8 @@ class PairingService : Service() {
 
     private fun begin() {
         nm.createNotificationChannel(NotificationChannel(CHANNEL, "Pairing", NotificationManager.IMPORTANCE_HIGH))
-        shown = -1
-        val (title, text) = STEPS[step()]
+        shown = step()
+        val (title, text) = STEPS[shown]
         startForeground(ID, note(title, text, ask = false), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         if (discovery != null) return
         if (!app.adb.canDiscover) return finish(null, AdbHelper.NO_LOCAL_NETWORK)
@@ -80,13 +80,16 @@ class PairingService : Service() {
         else -> 2
     }
 
-    /** Says the next step in the notification and on the setup screen, when it changes. */
+    /**
+     * Says the next step in the notification and on the setup screen, when it changes; a step done pops the next one up
+     * over Settings, where the owner is.
+     */
     private fun guide() {
         val step = step()
         if (step == shown) return
         shown = step
         val (title, text) = STEPS[step]
-        nm.notify(ID, note(title, text, ask = false))
+        nm.notify(ID, note(title, text, ask = false, alert = true))
         app.setup.pairingStatus(title, step)
     }
 
@@ -124,8 +127,7 @@ class PairingService : Service() {
         stopForeground(STOP_FOREGROUND_REMOVE)
         if (done != null) {
             // Droid has turned USB debugging on: adbd runs while it's on, and the helper ends when adbd does.
-            val text = "Leave Developer options and USB debugging on: they keep Droid's helper running. Wireless debugging " +
-                "can go off; Droid turns it on when it needs it."
+            val text = "Leave Developer options and USB debugging on: Droid needs them."
             nm.notify(ID + 1, Notification.Builder(this, CHANNEL).setSmallIcon(R.drawable.ic_notify)
                 .setContentTitle(done).setContentText(text).setStyle(Notification.BigTextStyle().bigText(text))
                 .setContentIntent(openApp()).setAutoCancel(true).setTimeoutAfter(60_000).build())
@@ -135,15 +137,15 @@ class PairingService : Service() {
     }
 
     /** While a step in Settings is next, a tap opens Settings there; otherwise Droid. */
-    private fun note(title: String, text: String?, ask: Boolean): Notification {
+    private fun note(title: String, text: String?, ask: Boolean, alert: Boolean = ask): Notification {
         val open = if (!ask && !working && port == 0) PendingIntent.getActivity(this, 1, pairingSettings(this),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE) else openApp()
         val d = resources.displayMetrics.density
         val b = Notification.Builder(this, CHANNEL).setSmallIcon(R.drawable.ic_notify).setContentTitle(title)
             .setLargeIcon(dashPortrait(Feel.NEEDS_YOU, (64 * d).toInt(), d, lightShade(this)))  // Dash, waiting on you, as in setup
-            .setOngoing(true).setOnlyAlertOnce(!ask).setContentIntent(open)
+            .setOngoing(true).setOnlyAlertOnce(!alert).setContentIntent(open)
             .addAction(Notification.Action.Builder(null, "Cancel", service(CANCEL, mutable = false)).build())
-        if (text != null) b.setContentText(text)
+        if (text != null) b.setContentText(text).setStyle(Notification.BigTextStyle().bigText(text))  // all of it, pulled down
         if (ask) {
             val input = RemoteInput.Builder(KEY_CODE).setLabel("Pairing code").build()
             b.addAction(Notification.Action.Builder(null, "Enter code", service(CODE, mutable = true)).addRemoteInput(input).build())
@@ -175,10 +177,13 @@ class PairingService : Service() {
         private const val CANCEL = "cancel"
         private const val ADB_WIFI = "adb_wifi_enabled"  // Settings.Global.ADB_WIFI_ENABLED, hidden
 
-        /** What to do in Settings, by [SetupState.pairStep]; then the code goes in the notification ([CODE_STEP]). */
+        /**
+         * What to do in Settings, by [SetupState.pairStep]; then the code goes in the notification ([CODE_STEP]). Settings
+         * opens where each is, so a line says only what to tap, its start short enough for a pop-up's one line.
+         */
         val STEPS = listOf(
-            "Turn on Developer options" to "In About phone, tap Build number seven times.",
-            "Turn on Wireless debugging" to "In Developer options. Allow it on this Wi-Fi.",
+            "Turn on Developer options" to "Tap Build number seven times.",
+            "Turn on Wireless debugging" to "Tick Always allow, then Allow. That's \"Always allow on this network\", so it stays on after a restart.",
             "Get a pairing code" to "Tap Wireless debugging's name, then Pair device with pairing code.",
         )
         const val CODE_STEP = 3

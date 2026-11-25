@@ -88,8 +88,12 @@ class AdbHelper(private val app: Context) {
             if (!ask && wifiConnection() == prefs.getString(UNTRUSTED, null)) throw IOException(UNTRUSTED_WIFI)
             Settings.Global.putInt(cr, ADB_WIFI, 1)
         }
+        // Every port announced: after Wireless debugging restarts, mDNS can still announce its old port beside the new
+        // one, and the old one refuses
+        val found = java.util.concurrent.LinkedBlockingQueue<Int>()
+        val discovery = Discovery(app, Discovery.CONNECT) { found.offer(it) }.also { it.start() }
         val client = try {
-            val port = Discovery.find(app, Discovery.CONNECT, 20_000)
+            var port = found.poll(20, java.util.concurrent.TimeUnit.SECONDS)
             if (port == null) {
                 if (!onWifi()) throw IOException(NO_WIFI)
                 // Android switched it straight back off to ask, and nobody allowed it (yet)
@@ -99,8 +103,21 @@ class AdbHelper(private val app: Context) {
                 }
                 throw IOException("Wireless debugging didn't answer; check that it's on")
             }
-            launch(port)
+            val tried = mutableSetOf<Int>()
+            var started: BridgeClient? = null
+            while (started == null) {
+                try {
+                    started = launch(port!!)
+                } catch (e: java.net.ConnectException) {
+                    Log.i(TAG, "port $port refused, trying another")
+                    tried += port!!
+                    port = generateSequence { found.poll(5, java.util.concurrent.TimeUnit.SECONDS) }.firstOrNull { it !in tried }
+                        ?: throw IOException("Wireless debugging didn't answer. Turn it off and on again in Developer options.")
+                }
+            }
+            started
         } finally {
+            discovery.stop()
             // Leave Wireless debugging as it was: the helper doesn't need it once started, as long as adbd keeps running.
             if (!wasOn) Settings.Global.putInt(cr, ADB_WIFI, 0)
         }
@@ -176,9 +193,10 @@ class AdbHelper(private val app: Context) {
         const val LOCAL_NETWORK = "android.permission.ACCESS_LOCAL_NETWORK"
         const val NO_LOCAL_NETWORK = "Allow Droid to find devices on your local network (Android asks when you tap Pair or Start): " +
             "that's how it finds Wireless debugging on this phone."
-        private const val NO_WIFI = "Connect to Wi-Fi: Droid starts its helper through Wireless debugging, which needs Wi-Fi"
-        private const val UNTRUSTED_WIFI = "Allow Wireless debugging on this Wi-Fi: in Setup, tap Start, and when Android " +
-            "asks, tick Always allow on this network and tap Allow."
+        // (a first sentence short enough for Dash to say; the rest goes under him)
+        private const val NO_WIFI = "I need Wi-Fi to start Wireless debugging. Connect to Wi-Fi and I'll start by myself."
+        private const val UNTRUSTED_WIFI = "Wireless debugging needs your OK on this Wi-Fi. Tap Start in Setup, tick Always " +
+            "allow on this network, then Allow."
         private const val TAG = "DroidAdb"
         private const val SERVER = "server"
         private const val PORT = "port"

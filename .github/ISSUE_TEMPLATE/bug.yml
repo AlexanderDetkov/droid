@@ -13,7 +13,7 @@ body:
     attributes:
       label: Diagnostics
       description: >
-        In Droid, open Setup (Settings → Setup, or the first screen) and tap "Copy diagnostics for a bug report" at the
+        In Droid, open Setup (Settings → Setup and updates, or the first screen) and tap "Copy diagnostics for a bug report" at the
         bottom, then paste here. It holds your phone's model, Android version and how far setup got; no account, chats
         or files.
       render: text

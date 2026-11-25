@@ -1,13 +1,14 @@
-Droid is Claude Code on your phone. It's free and open source, under the Apache License 2.0.
+Droid runs an AI agent on your phone: Claude Code, Codex or OpenCode. It's free and open source, under the Apache License 2.0. It's an independent project, not affiliated with or endorsed by Anthropic or OpenAI.
 
 Source, releases and issues: https://github.com/AlexanderDetkov/droid
 
 ## Built into Droid
 
-- **sherpa-onnx** (Apache-2.0), with ONNX Runtime (MIT): on-device speech. https://github.com/k2-fsa/sherpa-onnx
+- **sherpa-onnx** (Apache-2.0), with **ONNX Runtime** (MIT, with its third-party notices): on-device speech. https://github.com/k2-fsa/sherpa-onnx
 - **proot**, Termux's fork (GPL-2.0), statically linked with **talloc** (LGPL-3.0): runs Droid's Linux without root. Its exact source is attached to each Droid release, and `tools/proot/build.sh` in Droid's source builds it. https://github.com/termux/proot
 - **marked** (MIT): Markdown in the pages the agent makes. https://github.com/markedjs/marked
-- **Android Jetpack** (Compose, CameraX, WebKit and others), **Kotlin** and **Apache Commons Compress** (Apache-2.0).
+- **Android Jetpack** (Compose, WebKit and others), **Kotlin**, and **Apache Commons** Compress, Codec, IO and Lang (Apache-2.0).
+- **Material Symbols** by Google (Apache-2.0): icons.
 
 ## Downloaded at setup
 

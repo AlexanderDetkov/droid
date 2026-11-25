@@ -106,6 +106,8 @@ fun TurnScreen(
     onShown: (OnScreen) -> Unit = {},
     /** Covered by Dash's screen in the owner's hands: Dash holds still. */
     hidden: Boolean = false,
+    /** Droid's helper is running (or there's root): a turn that failed for want of it is worth trying again now. */
+    helperUp: Boolean = false,
 ) {
     val messages = conv.messages
     val start = remember(messages) { messages.indexOfLast { it.kind.opensTurn }.coerceAtLeast(0) }
@@ -238,7 +240,7 @@ fun TurnScreen(
             }
         }
         if (failed != null) {
-            if (failed.setup) NextStep("Open Setup", onSetup, tag = "status_setup")
+            if (failed.setup && !(failed.helper && helperUp)) NextStep("Open Setup", onSetup, tag = "status_setup")
             else NextStep("Try again", onRetry, tag = "retry")
         } else if (stopped) NextStep("Try again", onRetry, tag = "retry")
     }

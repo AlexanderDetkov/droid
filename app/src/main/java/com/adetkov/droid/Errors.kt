@@ -5,8 +5,11 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 
-/** A failed turn's status put for the owner: what happened and what to do, and whether Setup is where to do it. */
-data class Plain(val text: String, val setup: Boolean = false)
+/**
+ * A failed turn's status put for the owner: what happened and what to do, whether Setup is where to do it, and whether
+ * it was Droid's helper not running (without root), which once it runs again makes the turn worth trying again.
+ */
+data class Plain(val text: String, val setup: Boolean = false, val helper: Boolean = false)
 
 private val SIGNED_OUT = Regex("""please run /login|invalid api key|oauth token (?:has expired|revoked)|login expired|session has expired|not logged in""", RegexOption.IGNORE_CASE)
 private val CLAUDE_LIMIT = Regex("""Claude AI usage limit reached\|(\d{9,})""")
@@ -29,7 +32,7 @@ internal fun plainStatus(status: String, engine: Engine, zone: ZoneId = ZoneId.s
             Plain("Claude Code isn't signed in anymore. Sign in again in Setup.", setup = true)
         // Without root: Droid's own words about Wireless debugging and its helper (AdbHelper) already say what to do,
         // and Setup is where it's done
-        "Wireless debugging" in said || "Droid's helper" in said -> Plain(said, setup = true)
+        "Wireless debugging" in said || "Droid's helper" in said -> Plain(said, setup = true, helper = true)
         else -> CLAUDE_LIMIT.find(said)?.let { m ->
             // (a time it can't be: no time said)
             val at = m.groupValues[1].toLongOrNull()?.takeIf { it in 0..253_402_300_799L }

@@ -208,7 +208,7 @@ fun Avatar(name: String?, size: Dp = 32.dp) {
     Box(Modifier.size(size).clip(CircleShape).background(P.raised), contentAlignment = Alignment.Center) {
         val initial = name?.firstOrNull { it.isLetterOrDigit() }?.uppercaseChar()
         if (initial != null) Text(initial.toString(), style = MaterialTheme.typography.titleSmall, color = P.text)
-        else Icon(painterResource(R.drawable.ic_logo), null, Modifier.size(size * .5f), tint = P.text)
+        else Icon(painterResource(R.drawable.ic_logo), null, Modifier.size(size * .5f), tint = P.call)  // Dash, in his color
     }
 }
 

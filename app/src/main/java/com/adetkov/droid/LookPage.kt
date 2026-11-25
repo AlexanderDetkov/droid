@@ -77,8 +77,10 @@ object LookPage {
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            // Touchable: Android draws an app's overlay that lets touches through at 80% at most (so it can't hide what
+            // it lets you tap), and the agent saw its page see-through over the app below. Nothing taps it: the agent
+            // waits on droid look while it's up.
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.OPAQUE,
         ).apply { title = "Droid look" }
         try { wm.addView(root, params) } catch (e: Exception) { return done("Droid can't draw on display $display: ${e.message}") }

@@ -425,7 +425,7 @@ class RunnerTest {
         assertEquals(8708 to true, told[0])
         runner.watching(id, true); runner.watching(id, false)  // held all along: nothing new to tell
         runner.send(id, "two")
-        until("working, and told") { told.size == 2 }
+        until("working, and told") { told.size >= 2 }  // its answer comes at once: held again may follow within a poll
         assertEquals(8708 to false, told[1])
         until("held again") { id !in runner.running.value && told.size == 3 }
         assertEquals(8708 to true, told[2])

@@ -145,6 +145,8 @@ class Setup(private val app: DroidApp) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     @Volatile private var signIn: Process? = null
     @Volatile private var signInCancelled = false
+    /** A pasted code Claude Code didn't take within its time: the sign-in ended for that, and says so. */
+    @Volatile private var codeRefused = false
 
     /**
      * Whether setup still needs doing. While Droid can't reach Android (before the first check, or without root or its
@@ -230,7 +232,7 @@ class Setup(private val app: DroidApp) {
             val r = run("sh ${src.path}/install.sh ${src.path} ${app.packageName} '${app.applicationInfo.sourceDir}' ${tarball?.path.orEmpty()}", onLine = { line ->
                 if (line.startsWith("step: ")) busy(line.removePrefix("step: "))
             })
-            if (r.code != 0) throw IOException("Setup failed (exit ${r.code}).\n\n${r.out.takeLast(1500)}")
+            if (r.code != 0) throw installFailed("Setup failed (exit ${r.code}).", r.code, r.out)
         } finally {
             tarball?.delete()
         }
@@ -263,6 +265,7 @@ class Setup(private val app: DroidApp) {
             signIn = null
             state.update { it.copy(signInUrl = null) }
         }
+        if (codeRefused) { codeRefused = false; throw IOException("That code didn't work. Tap Open Claude for a new one.") }
         if (code != 0 && !signInCancelled) throw IOException(out.lines().lastOrNull { it.isNotBlank() }?.substringAfter("> ") ?: "Sign-in failed")
         check()
         if (code == 0 && state.value.signedIn) comeBack()  // from the browser, where signing in finished
@@ -322,7 +325,7 @@ class Setup(private val app: DroidApp) {
     fun installEngine(e: Engine) = step("Installing ${e.label}") {
         putBin(unpackAssets(), "droid-install-engine")
         val r = run("${host.base}/enter.sh droid-install-engine ${e.id}")
-        if (r.code != 0) throw IOException("Could not install ${e.label} (exit ${r.code}).\n\n${r.out.takeLast(1500)}")
+        if (r.code != 0) throw installFailed("Could not install ${e.label} (exit ${r.code}).", r.code, r.out)
         check()
     }
 
@@ -336,7 +339,12 @@ class Setup(private val app: DroidApp) {
     fun submitCode(code: String) {
         val p = signIn ?: return
         busy("Signing in")
-        scope.launch { try { p.outputStream.use { it.write((code.trim() + "\n").toByteArray()) } } catch (_: IOException) {} }
+        scope.launch {
+            try { p.outputStream.use { it.write((code.trim() + "\n").toByteArray()) } } catch (_: IOException) {}
+            // A code Claude Code takes signs in within seconds; one it doesn't leaves it waiting on and on, so end that
+            delay(30_000)
+            if (signIn === p) { codeRefused = true; cancelSignIn() }
+        }
     }
 
     fun cancelSignIn() {
@@ -806,3 +814,17 @@ with os.fdopen(fd, 'w') as f:
     json.dump(d, f)
 os.replace(p + '.new', p)
 """.trimIndent().replace("'", "\"")
+
+/** curl's exit codes for a network that failed it (couldn't resolve or connect, timed out, TLS, nothing or a broken reply). */
+private val NETWORK_EXITS = setOf(6, 7, 28, 35, 52, 56)
+private val NETWORK_LOG = Regex("""curl: \((?:6|7|28|35|52|56)\)|Download failed|temporary error \(try again later\)|Could not resolve host""")
+
+/**
+ * An install that failed: when its log says a download did (the Wi-Fi went, say), the owner hears that in plain words;
+ * else [said]. The log's end goes under it, for a bug report.
+ */
+internal fun installFailed(said: String, code: Int, out: String): IOException {
+    val network = code in NETWORK_EXITS || NETWORK_LOG.containsMatchIn(out.takeLast(4000))
+    return IOException((if (network) "I couldn't download what I need. Check your internet connection, then try again." else said) +
+        "\n\n" + out.takeLast(1500))
+}

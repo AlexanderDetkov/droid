@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -99,7 +100,7 @@ fun SetupScreen(setup: Setup, firstRun: Boolean, onClose: () -> Unit) {
                     }
                 } else {
                     val detail = when {
-                        s.helper -> "Connected. Leave USB debugging on: it keeps Droid's helper running."
+                        s.helper -> "Connected. Leave Developer options and USB debugging on: Droid needs them."
                         s.paired -> s.helperError ?: "Paired. Droid starts its helper on Wi-Fi."
                         else -> "No root needed: pair Droid with Android's Wireless debugging, once."
                     }
@@ -119,9 +120,13 @@ fun SetupScreen(setup: Setup, firstRun: Boolean, onClose: () -> Unit) {
                     if (s.connected) Action(if (s.installed) "Update" else "Install", idle, primary = !s.installed) { setup.install() }
                 }
                 Line()
-                Step(3, "Claude account", s.email ?: if (s.signedIn) "Signed in" else "Your Claude subscription, or a Console account billed per use", s.signedIn) {
+                // with another AI set up for new chats (Free, ChatGPT), a Claude account is one more choice, not a step left
+                val engine by (ctx.applicationContext as DroidApp).prefs.engine.collectAsState()
+                val otherAi = engine != Engine.CLAUDE && s.others[engine]?.signedIn == true
+                Step(3, "Claude account", s.email ?: if (s.signedIn) "Signed in" else "Your Claude subscription, or a Console account billed per use",
+                    s.signedIn, optional = otherAi) {
                     if (s.installed && s.signInUrl == null) {
-                        Action(if (s.signedIn) "Switch" else "Sign in", idle, primary = !s.signedIn) { setup.signIn(console = false) }
+                        Action(if (s.signedIn) "Switch" else "Sign in", idle, primary = !s.signedIn && !otherAi) { setup.signIn(console = false) }
                     }
                 }
                 if (s.installed && !s.signedIn && s.signInUrl == null) TextButton({ setup.signIn(console = true) },
@@ -189,7 +194,18 @@ fun SetupScreen(setup: Setup, firstRun: Boolean, onClose: () -> Unit) {
 @Composable
 private fun rememberWithPermissions(): (() -> Unit) -> Unit {
     var after by remember { mutableStateOf<(() -> Unit)?>(null) }
-    val permissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+    val ctx = LocalContext.current
+    val permissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
+        val note = android.Manifest.permission.POST_NOTIFICATIONS
+        // Turned down for good (twice, and Android won't ask again): the switch is in Droid's notification settings
+        if (granted[note] == false && (ctx as? android.app.Activity)?.shouldShowRequestPermissionRationale(note) == false) {
+            after = null
+            try {
+                ctx.startActivity(android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                    .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, ctx.packageName))
+            } catch (_: Exception) {}
+            return@rememberLauncherForActivityResult
+        }
         after?.invoke(); after = null
     }
     return { then ->
@@ -230,8 +246,9 @@ private fun FirstRun(setup: Setup, onClose: () -> Unit) {
     val brain = Brain.entries.firstOrNull { it.name == picked }
     val idle = s.busy == null && s.signInUrl == null && s.pairing == null
     // The install starts by itself once Droid is connected, once per visit (Try again allows another).
-    LaunchedEffect(s.connected, s.installed, idle, s.error) {
-        if (!autoInstalled && s.connected && !s.installed && idle && s.error == null && setup.autoInstall) { autoInstalled = true; setup.install() }
+    LaunchedEffect(s.connected, s.installed, idle, s.error, started) {
+        // (after Remove too, once the owner has tapped Start: that's them asking to set it up again)
+        if (!autoInstalled && s.connected && !s.installed && idle && s.error == null && (setup.autoInstall || started)) { autoInstalled = true; setup.install() }
     }
     // Then the brain picked gets what it needs: OpenCode or Codex installed, and Codex's sign-in, whose code shows here.
     // Claude's sign-in opens the browser, so it waits for its button.
@@ -244,6 +261,13 @@ private fun FirstRun(setup: Setup, onClose: () -> Unit) {
     LaunchedEffect(s.deviceCode) { s.deviceCode?.let(copy) }
 
     fun pick(b: Brain) { picked = b.name; setup.useEngine(b.engine) }
+    // the first run's last step: the AI picked, long-press power for Droid, and voice when it's a free download (Wi-Fi)
+    fun letsGo() {
+        (brain?.engine ?: s.readyEngine)?.let(setup::useEngine)
+        val unmetered = !ctx.getSystemService(android.net.ConnectivityManager::class.java).isActiveNetworkMetered
+        setup.finish(assistant = !s.assistant, voice = !s.voice && unmetered)
+        onClose()
+    }
     fun another() { if (s.signInUrl != null) setup.cancelSignIn(); picked = null; paste = false; code = "" }
     fun open(url: String?) { try { url?.let(uri::openUri) } catch (_: Exception) {} }  // no app handles web links
 
@@ -260,6 +284,8 @@ private fun FirstRun(setup: Setup, onClose: () -> Unit) {
         else -> Page.WAIT
     }
     val pairing = s.access == Access.ADB && s.pairing != null
+    // Back on All set! is Let's go: leaving there would skip its last step (long-press power wouldn't be Droid's)
+    BackHandler(page == Page.READY) { letsGo() }
     val words = when (page) {
         Page.HELLO -> Words("Hi, I'm Dash", "I can use your apps for you.")
         Page.CONNECT -> when {
@@ -269,12 +295,12 @@ private fun FirstRun(setup: Setup, onClose: () -> Unit) {
             pairing && s.pairStep == PairingService.CODE_STEP -> Words("Type the code in my notification")
             pairing -> Words("Connecting", progress = true)
             s.paired -> Words("Almost there", s.helperError)
-            else -> Words("A few switches, once", "They let me tap and type in your apps. My notification ticks each one off.")
+            else -> Words("A few switches, once", "They let me tap and type in your apps. My notification shows each step.")
         }
         Page.PICK -> Words("Which AI should I use?", progress = s.busy != null)
         Page.WAIT -> Words("Getting ready", progress = true)
         Page.CHATGPT -> Words("Enter this code", "It's copied for you.", code = s.deviceCode)
-        Page.CLAUDE -> if (paste) Words("Paste the code") else Words("Sign in to Claude", progress = s.busy != null)
+        Page.CLAUDE -> if (paste) Words("Paste the code", progress = s.busy != null) else Words("Sign in to Claude", progress = s.busy != null)
         Page.FIX -> Words("One more switch", makerFix())
         Page.TROUBLE -> Words("Something went wrong", s.error?.trim()?.lineSequence()?.firstOrNull())
         Page.READY -> Words("All set!", "Hold the power button to talk to me from any app.")
@@ -300,8 +326,9 @@ private fun FirstRun(setup: Setup, onClose: () -> Unit) {
                 contentAlignment = Alignment.TopStart, label = "words") { w ->
                 Column(Modifier.fillMaxWidth().padding(start = 102.dp, end = 24.dp, top = 14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     w.code?.let {
-                        Text(it, Modifier.testTag("setup_device_code"), style = MaterialTheme.typography.headlineMedium.copy(fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Medium, letterSpacing = 1.sp))
+                        // (in Droid's own type, not monospace, whose O and 0 look alike: codes have both)
+                        Text(it, Modifier.testTag("setup_device_code"), style = MaterialTheme.typography.headlineMedium.copy(
+                            fontWeight = FontWeight.Medium, letterSpacing = 2.sp))
                     }
                     w.line?.let {
                         Text(it, Modifier.testTag("setup_line"), style = MaterialTheme.typography.bodyLarge.copy(fontSize = 17.sp, lineHeight = 25.sp), color = P.muted,
@@ -311,13 +338,14 @@ private fun FirstRun(setup: Setup, onClose: () -> Unit) {
                 }
             }
             // The buttons, at the bottom of a space of one size, so Dash and the main button stay put from page to page
-            Box(Modifier.fillMaxWidth().height(BUTTONS).padding(bottom = 6.dp), contentAlignment = Alignment.BottomCenter) {
+            Box(Modifier.fillMaxWidth().heightIn(min = BUTTONS).padding(bottom = 6.dp), contentAlignment = Alignment.BottomCenter) {
                 AnimatedContent(page, Modifier.fillMaxWidth(), transitionSpec = { fadeIn() togetherWith fadeOut() }, label = "buttons") { p ->
                     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         when (p) {
                             Page.HELLO -> Big("Start", "setup_start") { started = true }
                             Page.CONNECT -> when {
-                                !s.checked || pairing && s.pairStep > PairingService.CODE_STEP -> Big("", "setup_wait", enabled = false, hidden = true) {}
+                                // (at the code, Settings must stay on it: opening it again would close the code and its port)
+                                !s.checked || pairing && s.pairStep >= PairingService.CODE_STEP -> Big("", "setup_wait", enabled = false, hidden = true) {}
                                 s.access == Access.ROOT -> Big("Try again", "setup_retry", enabled = idle) { setup.refresh() }
                                 pairing -> Big("Open Settings", "setup_open_settings") { openDeveloperOptions(ctx, "toggle_adb_wireless") }
                                 s.paired -> Big("Try again", "setup_retry", enabled = idle) { withPermissions(setup::startHelper) }
@@ -343,13 +371,7 @@ private fun FirstRun(setup: Setup, onClose: () -> Unit) {
                             }
                             Page.FIX -> Big("Open Settings", "setup_fix") { openDeveloperOptions(ctx) }
                             Page.TROUBLE -> Big("Try again", "setup_retry") { autoInstalled = false; setup.dismissError() }
-                            Page.READY -> Big("Let's go", "setup_done") {
-                                (brain?.engine ?: s.readyEngine)?.let(setup::useEngine)
-                                // Long-press power for Droid, and voice when it's a free download (Wi-Fi), as the first run's last step
-                                val unmetered = !ctx.getSystemService(android.net.ConnectivityManager::class.java).isActiveNetworkMetered
-                                setup.finish(assistant = !s.assistant, voice = !s.voice && unmetered)
-                                onClose()
-                            }
+                            Page.READY -> Big("Let's go", "setup_done") { letsGo() }
                         }
                         // A quiet way out, in a place of its own under the main button (empty when there's none)
                         Row(Modifier.height(44.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -406,9 +428,9 @@ private fun Big(label: String, tag: String, enabled: Boolean = true, hidden: Boo
 private fun Choice(label: String, detail: String, tag: String, primary: Boolean = false, onClick: () -> Unit) {
     val shape = RoundedCornerShape(32.dp)
     Column(
-        Modifier.padding(horizontal = 20.dp).fillMaxWidth().height(64.dp).clip(shape)
+        Modifier.padding(horizontal = 20.dp).fillMaxWidth().heightIn(min = 64.dp).clip(shape)
             .then(if (primary) Modifier.background(P.call) else Modifier.border(1.5.dp, P.hairline, shape))
-            .clickable(onClick = onClick).testTag(tag),
+            .clickable(onClick = onClick).padding(vertical = 8.dp).testTag(tag),  // (taller with the phone's largest text)
         horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center,
     ) {
         Text(label, style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold), color = if (primary) OnCall else P.text)
@@ -499,10 +521,12 @@ private fun Step(
             }
         }
         Column(Modifier.weight(1f).padding(start = 14.dp, end = 8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(title, style = MaterialTheme.typography.titleSmall, color = if (upcoming) P.muted else P.text)
-                if (optional && !done) Text("  Optional", style = MaterialTheme.typography.labelSmall, color = P.faint)
-            }
+            // "Optional" goes along in the title's text, so with the phone's largest type it wraps as words do
+            val optionalStyle = MaterialTheme.typography.labelSmall.toSpanStyle().copy(color = P.faint)
+            Text(androidx.compose.ui.text.buildAnnotatedString {
+                append(title)
+                if (optional && !done) { pushStyle(optionalStyle); append("  Optional"); pop() }
+            }, style = MaterialTheme.typography.titleSmall, color = if (upcoming) P.muted else P.text)
             Text(detail, style = MaterialTheme.typography.bodySmall, color = if (upcoming) P.faint else P.muted, maxLines = 3, overflow = TextOverflow.Ellipsis)
             if (progress) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 8.dp).clip(RoundedCornerShape(2.dp)), color = P.call, trackColor = P.raised)
         }
