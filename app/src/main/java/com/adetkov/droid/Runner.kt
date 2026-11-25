@@ -28,7 +28,7 @@ private const val WARM_USABLE = 150_000L
 /**
  * How long a run that answered keeps its process and hidden screen. A reply in that time goes on on the same screen,
  * with whatever the agent left open there, and the user can look at it or take it over in Watch. The screen keeps the
- * phone awake (see the README), so not for long; it stays as long as Watch is open on it.
+ * phone awake (see docs/how-it-works.md), so not for long; it stays as long as Watch is open on it.
  */
 const val HOLD_FOR = 10 * 60_000L
 /** How often a run's lease is renewed while it's wanted, and how long each lasts (see [Proc.lease]). */

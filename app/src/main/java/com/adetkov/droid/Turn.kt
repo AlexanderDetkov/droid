@@ -49,7 +49,7 @@ internal fun readsFinished(text: String, stop: Boolean = true): Boolean {
     return end == '?' || last !in TRAILING
 }
 
-/** Words after which an English speaker is almost never done (from the turn evaluation, see the README). */
+/** Words after which an English speaker is almost never done (from the turn evaluation, see docs/how-it-works.md). */
 private val TRAILING = """and but so or because cause nor then if when while although though unless until since whereas
 um uh er erm ah eh hmm mm uhm like well also plus
 the a an my your his her its our their some any each every

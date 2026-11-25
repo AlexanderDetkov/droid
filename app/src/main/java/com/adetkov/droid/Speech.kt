@@ -80,7 +80,7 @@ class Speech(val dir: File) {
 
     /**
      * Transcribes [samples], by greedy search: beam search (which hotwords would need) is 2.5–4× slower on a Pixel 6a,
-     * and each transcription is on the way to sending (see the README).
+     * and each transcription is on the way to sending (see docs/how-it-works.md).
      */
     fun transcribe(samples: FloatArray): String = synchronized(asrLock) {
         val r = recognizer()
