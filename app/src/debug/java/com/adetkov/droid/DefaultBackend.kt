@@ -36,6 +36,7 @@ class FakeBackend(private val screens: File) : Backend {
     override fun start(sessionId: String?, model: String, engine: Engine): Proc =
         FakeProc(sessionId ?: "a7542358-62cc-4a9a-b240-5554ffd5c592", screens, replies)
     override fun reply(pageId: String, json: String) { replies[pageId] = json }
+    override val apps: String get() = File(screens, "apps").path
     /** droid.run: on the device itself, as the app. */
     override fun run(command: String, timeoutS: Int): Pair<String, Int> {
         val p = ProcessBuilder("sh", "-c", command).redirectErrorStream(true).start()
@@ -92,6 +93,7 @@ private class FakeProc(private val sid: String, private val screens: File, priva
             val msg = inbox.take()
             if (msg === EOF) return
             val text = JSONObject(msg).getJSONObject("message").getString("content")
+            android.util.Log.i("FakeAgent", text)  // what the agent would read: see it with `adb logcat -s FakeAgent`
             val script = FakeScreen.script(screens, ++turn)
             if (script == null) canned(text, onLine) else for (l in script) {
                 // A scripted turn (FakeScreen's script.txt): steps, narration and the answer, each after its delay.

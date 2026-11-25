@@ -165,12 +165,11 @@ fun DroidTheme(content: @Composable () -> Unit) {
     }
 }
 
-/** A light tick for taps that change something (send, stop, copy), unless the user turned haptics off. */
+/** A light tick for taps that change something (send, stop, copy), as the phone's own touch feedback setting allows. */
 @Composable
 fun rememberHaptic(): () -> Unit {
     val view = LocalView.current
-    val prefs = (LocalContext.current.applicationContext as DroidApp).prefs
-    return { if (prefs.haptics.value) view.performHapticFeedback(HapticFeedbackConstants.CONFIRM) }
+    return { view.performHapticFeedback(HapticFeedbackConstants.CONFIRM) }
 }
 
 /** Puts text on the clipboard. */

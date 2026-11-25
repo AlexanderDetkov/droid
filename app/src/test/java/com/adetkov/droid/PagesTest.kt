@@ -11,12 +11,18 @@ import java.io.File
 import java.util.concurrent.LinkedBlockingQueue
 
 class PagesTest {
-    @Test fun theHomeScreenShowsTheNewestHomePage() {
+    @Test fun aPageForTheDayIsItsChatsApp() {
+        // (home is one list now: a page the agent meant for the home screen is its chat's app, like one in the chat)
         fun page(id: String, where: String, ts: Long) = Msg(Kind.PAGE, "<p>$id</p>", ts, data = PageInfo(id, where = where).json())
-        val a = Conv("a", "a", createdAt = 0, messages = listOf(page("h1", "home", 10), page("c1", "chat", 30)))
-        val b = Conv("b", "b", createdAt = 0, messages = listOf(page("h2", "home", 20), page("f1", "full", 40)))
-        assertEquals("b" to "h2", homePageOf(listOf(a, b))?.let { (c, m) -> c to PageInfo.of(m).id })
-        assertEquals(null, homePageOf(listOf(Conv("c", "c", createdAt = 0, messages = listOf(page("c2", "chat", 5))))))
+        assertEquals(1, listOf(page("c1", "chat", 10), page("h1", "home", 20), page("f1", "full", 30)).currentApp())
+        assertEquals(0, listOf(page("c2", "chat", 5), page("f2", "float", 6)).currentApp())
+    }
+
+    @Test fun aChatTheOwnerRenamedKeepsTheirName() {
+        val app = Msg(Kind.AGENT, "<title>Tahoe split</title><p>Sam owes you</p>", 2)
+        val c = Conv("a", "Split the Tahoe trip costs", createdAt = 0, messages = listOf(Msg(Kind.USER, "Split the Tahoe trip costs", 1), app))
+        assertEquals("Tahoe split", appName(c))
+        assertEquals("Tahoe trip", appName(c.copy(title = "Tahoe trip", named = true)))
     }
 
     @Test fun anAnswerWithHtmlIsAPage() {
@@ -240,5 +246,50 @@ class PagesTest {
         assertEquals(5L, again.page("p")!!.ts)
         assertNull(PageInfo.of(again.page("p")!!).reply)
         assertTrue(again.messages.pageLive(again.pageIndex("p"), false) { false })
+    }
+
+    @Test fun aChatsAppKeepsOneOriginAcrossVersionsButOtherPagesKeepTheirOwn() {
+        assertEquals("app:c1", chatOrigin("c1"))
+        assertEquals("app:c1", chatOrigin("c1", PageInfo("app", where = "chat")))
+        assertEquals("app:c1", chatOrigin("c1", PageInfo("pick", where = "chat")))
+        assertEquals("page:c1:ask", chatOrigin("c1", PageInfo("ask", where = "notify")))
+        assertFalse(chatOrigin("c1") == chatOrigin("c2"))
+    }
+
+    @Test fun lookReadsWhatThePageNoticedOfItsLayout() {
+        val problems = listOf("\"Book\" and \"Cancel\" touch", "\"Total\" is cut off")
+        // evaluateJavascript hands back what JSON.stringify made, as a JSON string
+        assertEquals(problems, LookPage.lintProblems(JSONObject.quote(JSONArray(problems).toString())))
+        assertEquals(emptyList<String>(), LookPage.lintProblems(JSONObject.quote("[]")))
+        assertEquals(emptyList<String>(), LookPage.lintProblems("null"))
+        assertEquals(emptyList<String>(), LookPage.lintProblems(null))
+    }
+
+    @Test fun aPageKeepsTheFolderItWasShownFromAndARefreshUpdatesItInPlace() {
+        val info = PageInfo("app", where = "chat", title = "Old", base = "/root/apps/abc", path = "/root/apps/abc/index.html")
+        assertEquals(info, PageInfo.parse(info.json()))
+        assertEquals(PageInfo("x"), PageInfo.parse(PageInfo("x").json()))  // a page from elsewhere has no folder
+        val c = Conv("c", "t", createdAt = 1).add(Kind.USER, "hi", 1).add(Kind.PAGE, "<title>Old</title>", 2, data = info.json())
+            .add(Kind.AGENT, "Here it is.", 3)
+        val r = c.withPageText("app", "<title>New</title><p>fresh</p>")
+        assertEquals(3, r.messages.size)
+        assertEquals("<title>New</title><p>fresh</p>", r.messages[1].text)
+        assertEquals("New", PageInfo.of(r.messages[1]).title)
+        assertEquals("/root/apps/abc", PageInfo.of(r.messages[1]).base)
+        assertEquals(c, c.withPageText("nope", "x"))
+    }
+
+    @Test fun theAppStaysForTheNextTurnUnlessALaterAnswerInWordsDropsIt() {
+        val page = PageInfo("app", where = "chat").json()
+        val shownThenWords = Conv("c", "t", createdAt = 1).add(Kind.USER, "plan it", 1).add(Kind.PAGE, "<p>app</p>", 2, data = page)
+            .add(Kind.AGENT, "Here it is.", 3).add(Kind.USER, "make it shorter", 4).messages
+        assertEquals(1, shownThenWords.appBefore(3))  // the words that ended its own turn keep it
+        val laterWords = Conv("c", "t", createdAt = 1).add(Kind.USER, "plan it", 1).add(Kind.PAGE, "<p>app</p>", 2, data = page)
+            .add(Kind.AGENT, "Here it is.", 3).add(Kind.USER, "what time is it?", 4).add(Kind.AGENT, "It's 3.", 5)
+            .add(Kind.USER, "thanks", 6).messages
+        assertEquals(null, laterWords.appBefore(5))  // an answer in words in a later turn dropped it
+        val failed = Conv("c", "t", createdAt = 1).add(Kind.USER, "plan it", 1).add(Kind.PAGE, "<p>app</p>", 2, data = page)
+            .add(Kind.STATUS, "Failed", 3).add(Kind.USER, "again", 4).messages
+        assertEquals(null, failed.appBefore(3))
     }
 }

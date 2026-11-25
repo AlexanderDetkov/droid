@@ -269,15 +269,15 @@ private fun FirstRun(setup: Setup, onClose: () -> Unit) {
             pairing && s.pairStep == PairingService.CODE_STEP -> Words("Type the code in my notification")
             pairing -> Words("Connecting", progress = true)
             s.paired -> Words("Almost there", s.helperError)
-            else -> Words("One setting to turn on")
+            else -> Words("A few switches, once", "They let me tap and type in your apps. My notification ticks each one off.")
         }
-        Page.PICK -> Words("Which brain should I use?", progress = s.busy != null)
+        Page.PICK -> Words("Which AI should I use?", progress = s.busy != null)
         Page.WAIT -> Words("Getting ready", progress = true)
         Page.CHATGPT -> Words("Enter this code", "It's copied for you.", code = s.deviceCode)
         Page.CLAUDE -> if (paste) Words("Paste the code") else Words("Sign in to Claude", progress = s.busy != null)
         Page.FIX -> Words("One more switch", makerFix())
         Page.TROUBLE -> Words("Something went wrong", s.error?.trim()?.lineSequence()?.firstOrNull())
-        Page.READY -> Words("All set!")
+        Page.READY -> Words("All set!", "Hold the power button to talk to me from any app.")
     }
     val feel = when (page) {
         Page.HELLO -> Feel.HAPPY
@@ -381,7 +381,7 @@ private fun FirstRun(setup: Setup, onClose: () -> Unit) {
     }
 }
 
-/** The first run's button space: room for the three brains to pick from and a quiet link under them. */
+/** The first run's button space: room for the three AIs to pick from and a quiet link under them. */
 private val BUTTONS = (64 * 3 + 10 * 3 + 44).dp
 
 /** Where the first run is: Connect, Pick, Sign in ([at], or none). */
@@ -401,7 +401,7 @@ private fun Big(label: String, tag: String, enabled: Boolean = true, hidden: Boo
     NextStep(label, onClick, enabled = enabled, tag = tag)
 }
 
-/** One of the brains to pick: its name and a few words on what it's for. */
+/** One of the AIs to pick: its name and a few words on what it's for and who pays. */
 @Composable
 private fun Choice(label: String, detail: String, tag: String, primary: Boolean = false, onClick: () -> Unit) {
     val shape = RoundedCornerShape(32.dp)

@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -65,7 +67,7 @@ fun DocScreen(backend: Backend, doc: Doc, title: String, about: String?, tag: St
     BackHandler { close() }
 
     if (confirmDiscard) ConfirmDialog("Discard changes?", null, "Discard", onClose, { confirmDiscard = false }, danger = true, dismiss = "Keep editing")
-    if (confirmDelete && onDelete != null) ConfirmDialog("Delete this memory?", "Claude won't remember “$title” any more.", "Delete", {
+    if (confirmDelete && onDelete != null) ConfirmDialog("Forget this note?", "I won't remember “$title” any more.", "Forget it", {
         scope.launch {
             try { withContext(Dispatchers.IO) { backend.delete(doc) }; haptic(); onDelete() }
             catch (e: Exception) { Toast.makeText(ctx, e.message ?: "Could not delete", Toast.LENGTH_SHORT).show() }
@@ -107,42 +109,51 @@ fun DocScreen(backend: Backend, doc: Doc, title: String, about: String?, tag: St
 }
 
 /**
- * Claude's memory, as Claude Code keeps it (see [MEMORY_DIR]): its notes by title, each opening to read, change or
- * delete. Droid adds nothing to how the notes are made.
+ * What Dash knows about you, on one page: what you told him (your instructions, every agent's at the start of every
+ * task; a tap edits them), then what he's learned (Claude's memory, as Claude Code keeps it, see [MEMORY_DIR]: its
+ * notes by title, each opening to read, change or forget). Droid adds nothing to how the notes are made.
  */
 @Composable
-fun MemoryScreen(backend: Backend, onClose: () -> Unit) {
+fun KnowScreen(backend: Backend, onBack: () -> Unit, onInstructions: () -> Unit) {
     var open by remember { mutableStateOf<Note?>(null) }
-    var version by remember { mutableIntStateOf(0) }  // reloads the list after a note was changed or deleted
+    var version by remember { mutableIntStateOf(0) }  // reloads after a note was changed or forgotten
+    var told by remember { mutableStateOf<String?>(null) }
     var notes by remember { mutableStateOf<List<Note>?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(version) {
-        try { notes = withContext(Dispatchers.IO) { backend.memory() } }
-        catch (e: Exception) { error = e.message ?: "Could not read Claude's memory" }
+        try {
+            withContext(Dispatchers.IO) {
+                told = frontmatter(backend.read(Doc.INSTRUCTIONS)).second.trim()
+                notes = backend.memory()
+            }
+        } catch (e: Exception) { error = e.message ?: "Could not read what I know" }
     }
     open?.let { n ->
         val done: () -> Unit = { open = null; version++ }
         return DocScreen(backend, n.doc, n.title, null, "note", done, onDelete = done)
     }
-    BackHandler { onClose() }
-    SubScreen("Memory", onClose, backTag = "memory_close") {
-        LazyColumn(Modifier.fillMaxSize().testTag("memory"), contentPadding = PaddingValues(bottom = 24.dp)) {
-            item {
-                Text("What Claude has learned about you and your phone while working. Claude Code keeps these notes and " +
-                    "decides what to remember; open one to change or delete it.",
-                    Modifier.padding(horizontal = 20.dp, vertical = 4.dp), style = MaterialTheme.typography.bodyMedium, color = P.muted)
+    SubScreen("What I know about you", onBack, backTag = "know_close") {
+        LazyColumn(Modifier.fillMaxSize().testTag("know"), contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 24.dp)) {
+            item("told") {
+                KitLabel("What you told me", Modifier.padding(top = 0.dp))
+                Column(Modifier.padding(top = 8.dp).fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(P.surface).clickable(onClick = onInstructions)
+                    .padding(horizontal = 18.dp, vertical = 16.dp).testTag("instructions")) {
+                    Text(told?.ifBlank { "Nothing yet. Tell me about yourself, the people and apps you use, and how you like things done." } ?: "…",
+                        style = MaterialTheme.typography.bodyLarge.copy(fontSize = 17.sp, lineHeight = 24.sp), maxLines = 6, overflow = TextOverflow.Ellipsis)
+                    Text("I read this before every task. Tap to change it.", Modifier.padding(top = 10.dp),
+                        style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp), color = P.muted)
+                }
             }
+            item("learned") { KitLabel("What I've learned") }
             val list = notes
             when {
-                error != null -> item { Text(error!!, Modifier.padding(24.dp), color = P.muted) }
-                list == null -> item { Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { Spinner(size = 24.dp) } }
-                list.isEmpty() -> item { Text("Nothing yet.", Modifier.padding(horizontal = 20.dp, vertical = 16.dp), style = MaterialTheme.typography.bodyMedium, color = P.faint) }
-                else -> items(list, key = { it.doc.path }) { n ->
-                    Column(Modifier.fillMaxWidth().clickable { open = n }.padding(horizontal = 20.dp, vertical = 12.dp).testTag("note")) {
-                        Text(n.title, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        if (n.about.isNotEmpty()) Text(n.about, Modifier.padding(top = 2.dp), style = MaterialTheme.typography.bodySmall,
-                            color = P.muted, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    }
+                error != null -> item("error") { Text(error!!, Modifier.padding(vertical = 16.dp), color = P.muted) }
+                list == null -> item("loading") { Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { Busy(size = 24.dp) } }
+                list.isEmpty() -> item("none") { Text("Nothing yet. I keep notes myself as I work, and they show up here.", Modifier.padding(start = 4.dp, top = 8.dp),
+                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp), color = P.muted) }
+                else -> itemsIndexed(list, key = { _, n -> n.doc.path }) { i, n ->
+                    KitRow(n.title, Modifier.testTag("note"), sub = n.about.ifEmpty { null }, lead = { IconTile(R.drawable.ic_notes) }, line = i > 0,
+                        onClick = { open = n }, trailing = { Chevron() })
                 }
             }
         }

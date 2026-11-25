@@ -1,5 +1,7 @@
 package com.adetkov.droid
 
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -83,56 +85,39 @@ import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
 
 /**
- * Droid's screen, big, in place of the chat's page ([ScreenFeed] on 127.0.0.1:[port] with the run's [token]), in Dash's
- * ring under his line; it closes when the stream ends. "Let me do it" (take over) sends the owner's touches to it, for a
- * signature, a login or anything else the agent leaves to them, with Back and their keyboard beside Done. [working]: the
- * agent is working on a request (else it answered and the run is holding its screen). [onTouched]: the owner touched
- * the screen, so the agent should be told.
+ * Do it myself: Droid's screen ([ScreenFeed] on 127.0.0.1:[port] with the run's [token]) in the owner's hands, in place
+ * of the chat's page, as big as it fits, in Dash's ring. Their touches go to it, for a signature, a login or anything
+ * else they'd rather do themselves; the bar holds their keyboard (typing on his screen), Done and Back (his screen's
+ * Back). It closes when the stream ends. [onTouched]: the owner touched the screen, so the agent should be told;
+ * [onDone]: they're finished.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun WatchScreen(
-    port: Int, token: String, status: String, working: Boolean, isUp: () -> Boolean,
-    onClose: () -> Unit, onTouched: () -> Unit,
-    /** Start with the owner's touches going to the screen (the agent handed it over). */
-    startInControl: Boolean = false,
-    /** Done gives the screen back to the agent that handed it over (null: Done only ends taking over). */
-    onHandBack: (() -> Unit)? = null,
+    port: Int, token: String, onClose: () -> Unit, isUp: () -> Boolean, onTouched: () -> Unit, onDone: () -> Unit,
     /** Where the agent taps its screen, in the screen's pixels. */
     taps: Flow<Pair<Int, Int>>? = null,
-    /** What the agent is doing, while [working]; and whether its answer asked the owner something. */
-    doing: Doing? = null, asks: Boolean = false,
-    /** How the agent set Dash, and whether a page waits on the owner: Watch's Dash is the chat's, in the same pose. */
-    mood: Mood? = null, waiting: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
-    var control by remember { mutableStateOf(startInControl) }  // the owner's touches go to the hidden screen
-    LaunchedEffect(startInControl) { if (startInControl) control = true }  // handed over while already watching
     val view = LocalView.current
     DisposableEffect(Unit) { view.keepScreenOn = true; onDispose { view.keepScreenOn = false } }
     // the chat's keyboard goes: it would type to the chat, not the screen
     val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
     val focus = androidx.compose.ui.platform.LocalFocusManager.current
     LaunchedEffect(Unit) { focus.clearFocus(); keyboard?.hide() }
-    // While the touches are the owner's, their own keyboard types on Droid's screen (which never shows one, see
-    // vd-start.sh).
+    // The owner's own keyboard types on Droid's screen (which never shows one, see vd-start.sh).
     var sink by remember { mutableStateOf<KeySink?>(null) }
     val imm = remember { view.context.getSystemService(InputMethodManager::class.java) }
     val typing = WindowInsets.isImeVisible && sink?.hasFocus() == true
-    // by the window: the sink may be gone already (control ended)
+    // by the window: the sink may be gone already
     fun hideKeys() { imm.hideSoftInputFromWindow(view.windowToken, 0); sink?.clearFocus() }
-    LaunchedEffect(control) { if (!control) hideKeys() }
     DisposableEffect(Unit) { onDispose { hideKeys() } }
     BackHandler { onClose() }
     val feed = rememberScreenFeed(port, token, isUp = isUp, onEnd = onClose)!!
     val raw = feed.frame
     val f = remember(raw) { raw?.asImageBitmap() }
     val rig = rememberDash("watch")
-    // his pose: what the agent does on it while it works, your turn after an answer that asks you, driving while it's yours
-    LaunchedEffect(control, working, doing?.work, asks, mood, waiting) {
-        rig.feel(if (control) Feel.DRIVING else chatFeel(working, doing, if (asks) Outcome.ASKS else null, mood, waiting))
-    }
-    LaunchedEffect(doing?.n) { if (doing != null && doing.n > 0 && working && !control) rig.react(doing) }
+    LaunchedEffect(Unit) { rig.feel(Feel.DRIVING) }
     val display = rememberDisplaySize()
     LaunchedEffect(taps) { taps?.collect { (x, y) -> rig.tap(x / display.width, y / display.height) } }
     // Connected but nothing drawn on the hidden display yet (the server only sends when a frame exists).
@@ -142,39 +127,32 @@ fun WatchScreen(
         if (feed.connected && f == null) { delay(1500); idle = true }
     }
     val words = when {
-        control -> "Your turn. Tap Done when you're finished."
         f == null -> if (idle) "Nothing on my screen yet." else "Connecting…"
-        working -> mood?.words?.takeIf { it.isNotBlank() } ?: "On it!"
-        asks || waiting -> mood?.words?.takeIf { it.isNotBlank() } ?: "Your turn"
-        else -> "Here's my screen."
+        else -> "It's yours. Tap Done when you're finished."
     }
     Column(modifier.fillMaxSize().background(P.bg).testTag("watch")) {
-        DashLine(words, size = DashSize.SMALL, rig = rig, sub = status.takeIf { working && !control && f != null })
-        BoxWithConstraints(Modifier.weight(1f).fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 6.dp),
+        DashLine(words, size = DashSize.SMALL, rig = rig)
+        BoxWithConstraints(Modifier.weight(1f).fillMaxWidth().padding(start = 14.dp, end = 14.dp, top = 10.dp, bottom = 6.dp),
             contentAlignment = Alignment.Center) {
             if (f != null) {
                 val ratio = f.height / f.width.toFloat()
-                RingedScreen(f, minOf(maxWidth, maxHeight / ratio), Modifier.testTag("screen").then(if (control) Modifier.pointerInput(f.width, f.height) {
+                RingedScreen(f, minOf(maxWidth, maxHeight / ratio), Modifier.testTag("screen").pointerInput(f.width, f.height) {
                     forwardTouches(f.width, f.height, feed::send, onTouched)
-                } else Modifier))
+                })
             }
         }
-        if (control) {
-            Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically) {
-                Pick(false, { onTouched(); feed.send("k 4") }, Modifier.testTag("back_key"), "Back on my screen") {
-                    Icon(painterResource(R.drawable.ic_back), null, Modifier.padding(end = 6.dp).size(18.dp), tint = P.text)
-                    PickText("Back", false)
-                }
-                Pick(typing, { if (typing) hideKeys() else sink?.let { it.requestFocus(); imm.showSoftInput(it, 0) } }, Modifier.testTag("keyboard"),
-                    if (typing) "Hide the keyboard" else "Type on my screen") {
-                    Icon(painterResource(R.drawable.ic_keyboard), null, Modifier.padding(end = 6.dp).size(18.dp), tint = if (typing) CallText else P.text)
-                    PickText("Keyboard", typing)
-                }
-                AndroidView({ KeySink(it) { m -> onTouched(); feed.send(m) }.also { k -> sink = k } }, Modifier.size(1.dp))
+        // The bar, as it is while the screen is yours: the keyboard on the left, Done in the middle, Back on the right.
+        Row(Modifier.fillMaxWidth().navigationBarsPadding().padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 12.dp).height(64.dp)
+            .clip(RoundedCornerShape(32.dp)).background(Lavender), verticalAlignment = Alignment.CenterVertically) {
+            BarSide(R.drawable.ic_keyboard, if (typing) "Hide the keyboard" else "Type on my screen", "keyboard", CallText,
+                { if (typing) hideKeys() else sink?.let { it.requestFocus(); imm.showSoftInput(it, 0) } })
+            Box(Modifier.weight(1f).height(48.dp).clip(RoundedCornerShape(24.dp)).background(P.call).clickable { hideKeys(); onDone() }
+                .testTag("done_control"), contentAlignment = Alignment.Center) {
+                Text("Done", style = MaterialTheme.typography.titleMedium.copy(fontSize = 19.sp, fontWeight = FontWeight.Bold), color = OnCall)
             }
-            NextStep("Done", { if (control) { control = false; onHandBack?.invoke() } }, tag = "done_control")  // once
-        } else if (f != null) NextStep("Let me do it", { control = true }, tag = "take_over")
+            BarSide(R.drawable.ic_back, "Back on my screen", "back_key", CallText, { onTouched(); feed.send("k 4") })
+            AndroidView({ KeySink(it) { m -> onTouched(); feed.send(m) }.also { k -> sink = k } }, Modifier.size(1.dp))
+        }
     }
 }
 
@@ -183,6 +161,8 @@ fun WatchScreen(
  * "k KEYCODE"), as from a hardware keyboard. It holds no text of its own, so the keyboard sends Delete as a key.
  */
 @android.annotation.SuppressLint("ViewConstructor")  // made in code only, never from a layout
+private val LINE_BREAK = Regex("\r\n|\r|\n")
+
 private class KeySink(ctx: Context, private val send: (String) -> Unit) : View(ctx) {
     init { isFocusable = true; isFocusableInTouchMode = true; importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO }  // (unseen: screen readers skip it)
 
@@ -228,7 +208,7 @@ private class KeySink(ctx: Context, private val send: (String) -> Unit) : View(c
 
     private fun key(code: Int) = send("k $code")
     // (a \r is a line break too: the helper reads its commands by line, so one inside a "t" would start a command)
-    private fun type(text: String) = text.split(Regex("\r\n|\r|\n")).forEachIndexed { i, line ->
+    private fun type(text: String) = text.split(LINE_BREAK).forEachIndexed { i, line ->
         if (i > 0) key(KeyEvent.KEYCODE_ENTER)
         if (line.isNotEmpty()) send("t $line")
     }

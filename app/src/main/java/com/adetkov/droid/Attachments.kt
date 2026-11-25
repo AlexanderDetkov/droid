@@ -18,6 +18,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.core.content.FileProvider
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
@@ -85,9 +89,6 @@ private fun import(ctx: Context, uri: Uri): Attachment? {
 /** Saves the assistant's screenshot of the app it was opened over. Null if it can't be written. */
 fun saveScreenshot(ctx: Context, shot: Bitmap) = save(ctx, shot, "Screenshot.png", Source.SCREEN)
 
-/** Saves a picture from Droid's camera (see [Camera]). Null if it can't be written. Slow: call it off the main thread. */
-fun savePhoto(ctx: Context, photo: Bitmap) = save(ctx, photo, "photo_${System.currentTimeMillis() / 1000}.jpg", Source.CAMERA)
-
 private fun save(ctx: Context, bitmap: Bitmap, name: String, source: Source): Attachment? {
     val f = newSlot(ctx, name)
     val png = name.endsWith(".png")
@@ -106,11 +107,11 @@ fun discard(a: Attachment) = drop(File(a.path))
 /** Deletes an attachment's file and its folder. */
 private fun drop(f: File) { f.delete(); f.parentFile?.delete() }
 
-/** The pickers: each adds what was picked through [onAdd]. (The camera is Droid's own, see [Camera].) */
-class Pickers(val photos: () -> Unit, val files: () -> Unit)
+/** The pickers: each adds what was picked through [onAdd]; the camera is the phone's own. */
+class Pickers(val camera: () -> Unit, val photos: () -> Unit, val files: () -> Unit)
 
 @Composable
-fun rememberPickers(onAdd: (List<Attachment>) -> Unit): Pickers {
+fun rememberPickers(denied: ((String) -> Unit)? = null, onAdd: (List<Attachment>) -> Unit): Pickers {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     fun importAll(uris: List<Uri>) = scope.launch {
@@ -120,11 +121,39 @@ fun rememberPickers(onAdd: (List<Attachment>) -> Unit): Pickers {
     }
     val photos = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(10)) { importAll(it) }
     val docs = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { importAll(it) }
+    // (Droid asks for the camera itself, since it declares it: Android refuses another app's camera to an app that
+    // declares it and wasn't given it.)
+    val withCamera = rememberWith(android.Manifest.permission.CAMERA, denied)
+    val camera = rememberCamera { onAdd(listOf(it)) }
     return remember {
         Pickers(
-            photos = { photos.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) },
-            files = { docs.launch(arrayOf("*/*")) },
+            camera = { withCamera(camera) },
+            photos = { runCatching { photos.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) } },
+            files = { runCatching { docs.launch(arrayOf("*/*")) } },
         )
+    }
+}
+
+/**
+ * The phone's own camera: the returned function opens it, and its picture, written straight into an attachment's slot,
+ * comes to [onPhoto]; one not taken leaves nothing behind. (The caller asks for the camera permission first.)
+ */
+@Composable
+fun rememberCamera(onPhoto: (Attachment) -> Unit): () -> Unit {
+    val ctx = LocalContext.current
+    // its slot outlives the activity (Android may close Droid while the camera is up): the picture still arrives
+    var shot by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<String?>(null) }
+    val take = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
+        val f = shot?.let(::File) ?: return@rememberLauncherForActivityResult
+        shot = null
+        if (ok && f.length() > 0) onPhoto(Attachment(f.name, f.path, "image/jpeg", Source.CAMERA)) else drop(f)
+    }
+    return remember {
+        {
+            val f = newSlot(ctx, "photo_${System.currentTimeMillis() / 1000}.jpg").also { shot = it.path }
+            runCatching { take.launch(FileProvider.getUriForFile(ctx, ctx.packageName + ".files", f)) }
+                .onFailure { drop(f); shot = null; Toast.makeText(ctx, "No camera app to take it", Toast.LENGTH_SHORT).show() }
+        }
     }
 }
 
@@ -144,7 +173,7 @@ fun transcriptText(c: Conv): String = buildString {
             m.files.forEach { append("\n[").append(it.name).append(']') }
             append("\n\n")
         }
-        Kind.AGENT -> append("Droid: ").append(stripMarkdown(m.text)).append("\n\n")
+        Kind.AGENT -> append("Dash: ").append(stripMarkdown(m.text)).append("\n\n")
         else -> {}
     }
 }.trimEnd()

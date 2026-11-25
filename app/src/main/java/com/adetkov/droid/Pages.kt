@@ -16,21 +16,22 @@ import org.json.JSONTokener
  * a waiting command reads), [wait]: the agent's command waits for the page's answer, [where]: chat, full, float, home
  * (the home screen, under Dash) or notify, [title]: its <title>, [reply]: what the owner answered (null until then; empty when it went to the chat as a
  * message). [note]: for a page a notification's button opens (`page:`), that notification's id: while the agent waits
- * on the notification, the page answers it.
+ * on the notification, the page answers it. [base]: the app folder it was shown from (see [appBase]), whose files it
+ * loads by relative path; [path]: the file itself, read again when the app refreshes.
  */
 data class PageInfo(
     val id: String, val wait: Boolean = false, val where: String = "chat", val title: String = "", val reply: String? = null,
-    val note: String = "",
+    val note: String = "", val base: String = "", val path: String = "",
 ) {
     fun json(): String = JSONObject().put("id", id).put("wait", wait).put("where", where).put("title", title)
-        .apply { if (reply != null) put("reply", reply); if (note.isNotEmpty()) put("note", note) }.toString()
+        .apply { if (reply != null) put("reply", reply); if (note.isNotEmpty()) put("note", note); if (base.isNotEmpty()) put("base", base).put("path", path) }.toString()
 
     companion object {
         fun of(m: Msg): PageInfo = parse(m.data)
         fun parse(json: String?): PageInfo = try {
             JSONObject(json ?: "{}").let { o ->
                 PageInfo(o.optString("id"), o.optBoolean("wait"), o.optString("where", "chat").ifEmpty { "chat" }, o.optString("title"),
-                    if (o.has("reply")) o.optString("reply") else null, o.optString("note"))
+                    if (o.has("reply")) o.optString("reply") else null, o.optString("note"), o.optString("base"), o.optString("path"))
             }
         } catch (_: JSONException) { PageInfo("") }
     }
@@ -59,7 +60,19 @@ fun List<Msg>.awaits(index: Int, working: Boolean, noteWaited: (String) -> Boole
  * The chat's app: the newest page the agent made for the owner in it (an answer with HTML, or a page it showed in the
  * chat), which is what the owner's screen shows of the chat and stays live across turns; -1 for none.
  */
-fun List<Msg>.currentApp(): Int = indexOfLast { (it.kind == Kind.AGENT && hasHtml(it.text)) || (it.kind == Kind.PAGE && PageInfo.of(it).where == "chat") }
+fun List<Msg>.currentApp(): Int = indexOfLast { (it.kind == Kind.AGENT && hasHtml(it.text)) || (it.kind == Kind.PAGE && PageInfo.of(it).where.let { w -> w == "chat" || w == "home" }) }
+
+/**
+ * The chat's app from before the turn that starts at [start], which that turn works on: if it was still on screen when
+ * the turn began. An answer in words in a later turn than the app's drops it, and so does a failure; the few words that
+ * end the app's own turn (it was shown, then "Here it is.") keep it. Null for none.
+ */
+fun List<Msg>.appBefore(start: Int): Int? = currentApp().takeIf { at ->
+    at in 0..start && (at + 1 until start).none { i ->
+        this[i].let { (it.kind == Kind.AGENT && it.text.isNotBlank() && !hasHtml(it.text) && (at + 1 until i).any { j -> this[j].kind.opensTurn }) ||
+            (it.kind == Kind.STATUS && it.text != "Stopped") }
+    }
+}
 
 /**
  * The one test of whether the page at [index] may still act (send, run, screen, Dash). The chat's app ([currentApp])
@@ -83,6 +96,14 @@ fun Conv.withPage(info: PageInfo, html: String, now: Long = System.currentTimeMi
     val m = messages[i].copy(text = html, data = info.json())
     if (i > messages.indexOfLast { it.kind.opensTurn }) return copy(messages = messages.toMutableList().also { it[i] = m })
     return copy(messages = messages.filterIndexed { j, _ -> j != i } + m.copy(ts = now), updatedAt = now)
+}
+
+/** The chat with page [pageId]'s latest copy now holding [html] (its app refreshed itself): in place, its title read again. */
+fun Conv.withPageText(pageId: String, html: String): Conv {
+    val i = pageIndex(pageId)
+    if (i < 0) return this
+    val m = messages[i]
+    return copy(messages = messages.toMutableList().also { it[i] = m.copy(text = html, data = PageInfo.of(m).copy(title = pageTitle(html)).json()) })
 }
 
 /** The chat with page [pageId] answered: [reply] is what the agent's command got, or empty for a message (the chat shows that). */
@@ -222,21 +243,37 @@ fun htmlToText(text: String): String {
     val decoded = ENTITY.replace(lines) { m ->
         val e = m.groupValues[1]
         when {
-            e.startsWith("#x") || e.startsWith("#X") -> e.substring(2).toIntOrNull(16)?.let { String(Character.toChars(it)) } ?: m.value
-            e.startsWith("#") -> e.substring(1).toIntOrNull()?.let { String(Character.toChars(it)) } ?: m.value
+            // (a number that's no character, past U+10FFFF, stays as written: Character.toChars would throw)
+            e.startsWith("#x") || e.startsWith("#X") -> e.substring(2).toIntOrNull(16)?.takeIf(Character::isValidCodePoint)?.let { String(Character.toChars(it)) } ?: m.value
+            e.startsWith("#") -> e.substring(1).toIntOrNull()?.takeIf(Character::isValidCodePoint)?.let { String(Character.toChars(it)) } ?: m.value
             else -> when (e) { "amp" -> "&"; "lt" -> "<"; "gt" -> ">"; "quot" -> "\""; "apos" -> "'"; "nbsp" -> " "; "mdash" -> "—"; "ndash" -> "–"; "hellip" -> "…"; "middot" -> "·"; else -> m.value }
         }
     }
-    return decoded.lines().joinToString("\n") { it.trim() }.replace(Regex("\n{3,}"), "\n\n").trim()
+    return decoded.lines().joinToString("\n") { it.trim() }.replace(BLANK_LINES, "\n\n").trim()
 }
+
+private val BLANK_LINES = Regex("\n{3,}")
+private val PAGE_SPACES = Regex("\\s+")
+private val TITLE = Regex("<title[^>]*>(.*?)</title>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+private val NAMED_PATH = Regex("""(?:src|href|data|poster)\s*=\s*["'](/[^"'<>]+)["']|url\(\s*["']?(/[^"')]+)""", RegexOption.IGNORE_CASE)
+private val MD_PATH = Regex("""\]\((/[^)\s]+)\)""")
 
 /** The text of an HTML page's <title>, if it has one. */
 fun pageTitle(html: String): String =
-    Regex("<title[^>]*>(.*?)</title>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)).find(html)
-        ?.groupValues?.get(1)?.let(::htmlToText)?.replace(Regex("\\s+"), " ")?.trim().orEmpty()
+    TITLE.find(html)
+        ?.groupValues?.get(1)?.let(::htmlToText)?.replace(PAGE_SPACES, " ")?.trim().orEmpty()
 
-/** A chat's name on the owner's screen: its app's, as the agent named it (its <title>), or the chat's own. */
-fun appName(c: Conv): String = c.messages.currentApp().takeIf { it >= 0 }?.let { pageTitle(c.messages[it].text) }?.ifBlank { null } ?: c.title
+/**
+ * The origin (see [pageOrigin]) a chat's app and its answers live at: one for the whole chat, so what the app keeps
+ * (localStorage: a draft, a pick, a timer's end) carries over to its next version. A page the agent showed elsewhere
+ * than the chat ([info], where it isn't "chat": a question it waits on in a notification, say) keeps its own.
+ */
+fun chatOrigin(conv: String, info: PageInfo? = null): String =
+    if (info == null || info.where == "chat") "app:$conv" else "page:$conv:${info.id}"
+
+/** A chat's name on the owner's screen: the owner's own, if they renamed it; else its app's, as the agent named it (its <title>), or the chat's. */
+fun appName(c: Conv): String = if (c.named) c.title
+    else c.messages.currentApp().takeIf { it >= 0 }?.let { pageTitle(c.messages[it].text) }?.ifBlank { null } ?: c.title
 
 /** The JSON the page script renders an answer from: its segments, each [isHtml, text]. */
 internal fun segmentsJson(text: String): String = JSONArray().apply {
@@ -245,7 +282,7 @@ internal fun segmentsJson(text: String): String = JSONArray().apply {
 
 /** Every absolute path a page names (in an attribute or a url()), which it may load from the agent's Linux. */
 internal fun namedPaths(html: String): Set<String> =
-    Regex("""(?:src|href|data|poster)\s*=\s*["'](/[^"'<>]+)["']|url\(\s*["']?(/[^"')]+)""", RegexOption.IGNORE_CASE).findAll(html)
+    NAMED_PATH.findAll(html)
         .map { m -> m.groupValues[1].ifEmpty { m.groupValues[2] } }.toSet() +
         // and a Markdown image or link: ![caption](/root/x.png)
-        Regex("""\]\((/[^)\s]+)\)""").findAll(html).map { it.groupValues[1] }
+        MD_PATH.findAll(html).map { it.groupValues[1] }

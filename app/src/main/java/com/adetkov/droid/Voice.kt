@@ -82,6 +82,7 @@ class Voice(private val speech: Speech, private val audio: AudioManager) {
         @Volatile var finishing = false
         @Volatile var cancelled = false
         @Volatile private var decoding = false
+        @Volatile private var took = 0L  // ms the latest transcription took (it grows with what was said)
         /** The latest live transcript, and the speech end it covers (with [SETTLE] after it). */
         @Volatile private var partial: Pair<Int, String>? = null
         /** For the pause after the speech ending at the first number: how much silence ends the turn (see [judge]). */
@@ -108,9 +109,11 @@ class Voice(private val speech: Speech, private val audio: AudioManager) {
         private fun close(f: () -> Unit) = ui { session = null; end(); f() }
 
         fun run() {
-            val mic = source ?: AudioMic.open(audio) ?: return close { onError("The microphone is busy") }
+            // the voice detector before the microphone: one that won't load (a model cut short) ends the session, with
+            // no microphone left open
+            val vad = try { speech.vad() } catch (e: Exception) { Log.w("Droid", "voice detector", e); return close { onError("Voice isn't ready") } }
+            val mic = source ?: AudioMic.open(audio) ?: run { vad.release(); return close { onError("The microphone is busy") } }
             asr.execute { speech.warmUp() }
-            val vad = speech.vad()
             val audio = Samples()
             val frame = FloatArray(Speech.VAD_WINDOW)
             var speechFrames = 0      // frames the VAD called speech
@@ -120,6 +123,8 @@ class Voice(private val speech: Speech, private val audio: AudioManager) {
             var queued = -1           // the speech end the latest transcription covers
             var judged = -1           // the speech end whose pause has been judged
             var paused = false        // onPause was called for the current pause
+            var sounds: Pair<Int, java.util.concurrent.Future<Float?>>? = null  // Smart Turn on the pause after that speech end
+            var soundsAsked = 0L
             try {
                 while (!cancelled && !finishing) {
                     if (mic.read(frame) < frame.size) break
@@ -140,31 +145,42 @@ class Voice(private val speech: Speech, private val audio: AudioManager) {
                     val enough = ending?.takeIf { it.first == lastSpeech }?.second ?: END_SILENCE
                     if (heard && silence >= enough) { Log.i("Droid", "turn over after ${silence * 1000 / MIC_RATE} ms of silence"); break }
                     if (audio.size > MAX_LENGTH) break
-                    // Live transcript: re-transcribe what was said about once a second, and at each pause, which Smart Turn
-                    // judges meanwhile; so by the end of the silence the transcript covers everything said (no final pass).
+                    // Live transcript: what was said so far, transcribed again at each pause and about once a second while
+                    // they talk; so by the end of the silence the transcript covers everything said (no final pass). One
+                    // pass at a time, of the latest: a pass takes longer as what was said grows (a tenth of it on four
+                    // cores, a third on a hot, busy phone), and passes queued at each pause fell ever further behind (a
+                    // long request was judged 30 s after the owner stopped). A live one also waits twice as long as the
+                    // last took, so a long request doesn't keep the cores busy all the while.
                     val transcribe = audio.size < PARTIALS_UP_TO
-                    val pause = heard && silence >= PAUSE && judged != lastSpeech
+                    val pause = heard && silence >= PAUSE
+                    if (pause && judged != lastSpeech) {  // Smart Turn judges the pause meanwhile, on its own thread
+                        judged = lastSpeech
+                        val heardSoFar = audio.slice(firstSpeech - LEAD, audio.size)
+                        sounds = lastSpeech to speech.turner.submit<Float?> { try { speech.finished(heardSoFar) } catch (e: Exception) { Log.w("Droid", "turn failed", e); null } }
+                        soundsAsked = System.nanoTime()
+                    }
                     // (not once they've gone quiet: the pause about to come would wait behind it)
-                    val periodic = heard && transcribe && !decoding && queued != lastSpeech && silence < PAUSE / 2 &&
-                        audio.size - lastPartial >= MIC_RATE
-                    if (pause || periodic) {
+                    val periodic = silence < PAUSE / 2 && audio.size - lastPartial >= maxOf(MIC_RATE.toLong(), took * 2 * MIC_RATE / 1000)
+                    if (heard && transcribe && !decoding && queued != lastSpeech && (pause || periodic)) {
                         val spoke = lastSpeech
                         // what was said, and silence after it, so the end is punctuated as one (zeros past what was heard)
-                        val clip = if (transcribe && queued != spoke) audio.slice(firstSpeech - LEAD, spoke + SETTLE) else null
-                        if (clip != null) { queued = spoke; lastPartial = audio.size }
-                        val sounds = if (!pause) null else {
-                            judged = spoke
-                            val heardSoFar = audio.slice(firstSpeech - LEAD, audio.size)
-                            speech.turner.submit<Float?> { try { speech.finished(heardSoFar) } catch (e: Exception) { Log.w("Droid", "turn failed", e); null } }
-                        }
-                        if (periodic) decoding = true
-                        val asked = System.nanoTime()
+                        val clip = audio.slice(firstSpeech - LEAD, spoke + SETTLE)
+                        queued = spoke; lastPartial = audio.size; decoding = true
                         asr.execute {
-                            val text = clip?.let { try { speech.transcribe(it) } catch (e: Exception) { "" } }
-                            if (text != null) { partial = spoke to text; if (text.isNotEmpty()) ui { onPartial(text) } }
-                            if (sounds != null) ending = spoke to judge(sounds.get(), if (transcribe) partial?.takeIf { it.first == spoke }?.second else null, asked)
-                            if (periodic) decoding = false
+                            val start = System.nanoTime()
+                            val text = try { speech.transcribe(clip) } catch (e: Exception) { "" }
+                            took = (System.nanoTime() - start) / 1_000_000
+                            partial = spoke to text
+                            if (text.isNotEmpty()) ui { onPartial(text) }
+                            decoding = false
                         }
+                    }
+                    // The pause's judgment, once Smart Turn has answered and a transcript covers just that speech (more
+                    // speech since makes it moot)
+                    sounds?.let { (spoke, p) ->
+                        val text = partial?.takeIf { it.first == spoke }?.second
+                        if (spoke != lastSpeech) sounds = null
+                        else if (p.isDone && (text != null || !transcribe)) { sounds = null; ending = spoke to judge(p.get(), text, soundsAsked) }
                     }
                 }
             } catch (e: Exception) {
@@ -220,8 +236,9 @@ fun rememberVoice(): Pair<Voice, Speaker> {
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     DisposableEffect(lifecycle) {
         val observer = LifecycleEventObserver { _, e ->
-            // Talking is what these screens are for: the recognizer loads now (a few seconds), not after the first word.
-            if (e == Lifecycle.Event.ON_START && speech.installed) speech.transcriber.execute { speech.warmUp() }
+            // The recognizer (~700 MB) loads when the owner starts talking, while they talk (see Session.run), not each
+            // time a screen opens: loaded for every visit, typed or watched too, it pushed the phone into swap and made
+            // all of it slow (2026-11-23).
             if (e == Lifecycle.Event.ON_STOP) voice.cancel()
         }
         lifecycle.addObserver(observer)

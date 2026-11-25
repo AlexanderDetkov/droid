@@ -59,7 +59,7 @@ figcaption, small, .small { font-size: 13px; line-height: 18px; color: var(--mut
 .card + .card { margin-top: 10px; }
 :is(.tiles, .row, .stack) > .card { margin: 0; }
 /* A number or word to see from across the room */
-.big { font-size: 44px; line-height: 50px; font-weight: 700; letter-spacing: -.5px; }
+.big { font-size: 44px; line-height: 50px; font-weight: 700; letter-spacing: -.5px; overflow-wrap: normal; font-variant-numeric: tabular-nums; }
 .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .stack { display: flex; flex-direction: column; gap: 10px; }
 
@@ -77,6 +77,8 @@ button:active, .button:active { background: var(--raised); }
 .droid-buttons { margin: 12px 0; }
 :is(footer, .tiles, .chips, .row, .stack, .item, .more) > :is(button, .button) { margin: 0; }
 /* The main thing to do, in Dash's color */
+/* A label breaks between words, never inside one ("Canc / el"): a button is at least as wide as its longest word. */
+:is(button, .button, .chips > *, .value) { overflow-wrap: break-word; }
 button.primary, .button.primary { background: var(--call); border-color: var(--call); color: var(--on-call); font-weight: 700; }
 button.quiet, .button.quiet { border-color: transparent; color: var(--muted); font-weight: 500; padding: 15.5px 14px; }
 /* Big buttons two by two: <div class="tiles"><button>…</button>…</div>, a picture or icon above each label */
@@ -119,9 +121,9 @@ button.quiet, .button.quiet { border-color: transparent; color: var(--muted); fo
 /* The rest, out of the way: <div class="more">38 others can wait <button>Show them</button></div> */
 .more { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 8px 8px 18px; border: 1.5px solid var(--hairline); border-radius: 22px; color: var(--muted); }
 .more > :is(button, .button) { padding: 10px 16px; }
-/* How far along: <div class="bar"><i style="width: 70%"></i></div> */
-.bar { height: 8px; border-radius: 4px; background: var(--raised); overflow: hidden; }
-.bar > i { display: block; height: 100%; border-radius: 4px; background: var(--call); }
+/* How far along: <div class="progress"><i style="width: 70%"></i></div> */
+.progress { height: 8px; border-radius: 4px; background: var(--raised); overflow: hidden; }
+.progress > i { display: block; height: 100%; border-radius: 4px; background: var(--call); }
 /* On or off: <input type="checkbox" class="switch"> */
 input[type=checkbox].switch { appearance: none; width: 52px; height: 32px; border-radius: 16px; background: var(--hairline); position: relative; cursor: pointer; transition: background .2s; }
 input[type=checkbox].switch::after { content: ""; position: absolute; top: 4px; left: 4px; width: 24px; height: 24px; border-radius: 50%; background: #FFF; box-shadow: 0 1px 3px rgba(0, 0, 0, .25); transition: transform .2s; }
@@ -131,7 +133,8 @@ input[type=checkbox].switch:checked::after { transform: translateX(20px); }
 /* The next step: the buttons in a <footer> at the end of the page. On the owner's screen it stays at the bottom, always
    in reach, while the rest scrolls above it (droid.js keeps room for it); in the chat's history it is the page's last row. */
 footer { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0 0; }
-footer > :is(button, .button, a) { flex: 1 1 0; min-width: min(100%, 140px); min-height: 60px; border-radius: 30px; font-size: 19px; }
+/* (a long label wraps inside its button, never past its edges) */
+footer > :is(button, .button, a) { flex: 1 1 0; min-width: min(100%, 140px); min-height: 60px; border-radius: 30px; font-size: 19px; text-align: center; text-wrap: balance; padding-left: 16px; padding-right: 16px; }
 html.screen :is(body, #droid) > footer:not(:has(~ :not(script, style, template))) {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; margin: 0; padding: 12px 20px 16px; background: var(--bg);
 }
@@ -175,3 +178,55 @@ label.option > :not(input) { grid-column: 1; }
 label.option > span { font-size: 15px; line-height: 21px; color: var(--muted); }
 details > summary { cursor: pointer; font-weight: 600; }
 progress, meter { width: 100%; accent-color: var(--call); }
+
+/* --- kit1 --- */
+/* Icons: <i class="icon">call</i>, any Material Symbols name (restaurant, flight, payments, check_circle…); "icon fill"
+   for a filled one. In a row (.item) an icon sits in a grey round tile, as Droid's own rows have; in a button, beside
+   the label. */
+@font-face { font-family: "Droid Icons"; src: url(/_droid/icons.woff2) format("woff2"); font-display: block; }
+.icon {
+  font-family: "Droid Icons"; font-weight: normal; font-style: normal; font-size: 24px; line-height: 1; letter-spacing: normal;
+  text-transform: none; display: inline-block; white-space: nowrap; direction: ltr; font-feature-settings: "liga";
+  -webkit-font-smoothing: antialiased; font-variation-settings: "FILL" 0, "wght" 500; vertical-align: -.22em; flex: none;
+  overflow: hidden; max-width: 1.2em;
+}
+.icon.fill { font-variation-settings: "FILL" 1, "wght" 500; }
+:is(button, .button) > .icon { font-size: 22px; vertical-align: 0; }
+.item > .icon, .tile-icon {
+  width: 40px; height: 40px; max-width: none; border-radius: 50%; background: var(--raised); color: var(--text);
+  display: inline-flex; align-items: center; justify-content: center; font-size: 22px;
+}
+.card .item > .icon { background: var(--bg); }
+.hero > .icon { font-size: 52px; max-width: none; color: var(--call); margin-bottom: 4px; }
+
+/* Pictures: <img class="photo" src="/full/path.jpg"> wide and rounded; <img class="thumb"> a small square in a row. */
+img.photo { display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: cover; border-radius: 22px; }
+img.thumb { width: 48px; height: 48px; border-radius: 12px; object-fit: cover; flex: none; }
+.item > img.thumb { margin: -4px 0; }
+
+/* Messages, as a chat shows them: <div class="bubbles"><p class="them">…</p><p class="me">…</p></div>. A draft the
+   owner can change: <p class="me" contenteditable>…</p> (droid.js keeps what they typed in it). */
+.bubbles { display: flex; flex-direction: column; gap: 6px; margin: 12px 0; }
+.bubbles > * { margin: 0; max-width: 84%; padding: 10px 15px; border-radius: 20px; line-height: 23px; align-self: flex-start; background: var(--surface); }
+.bubbles > .me { align-self: flex-end; background: var(--pick); color: var(--pick-text); }
+.bubbles small { display: block; color: var(--muted); font-size: 12px; }
+[contenteditable] { outline: none; cursor: text; }
+[contenteditable]:focus { box-shadow: 0 0 0 2px var(--call); }
+
+/* A label above a group: <h6>Still to do</h6> reads as a quiet heading. */
+h6 { font-size: 13px; line-height: 18px; font-weight: 600; color: var(--muted); letter-spacing: .3px; margin: 22px 0 6px; }
+
+/* What a tap is doing (droid.js): a spinner while it goes, a check when it's done. */
+:is(button, .button).droid-busy { pointer-events: none; opacity: .75; }
+:is(button, .button).droid-busy::after { content: ""; width: 16px; height: 16px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: droid-spin .7s linear infinite; }
+html.droid-done :is(button, .button).droid-busy::after { animation: none; }  /* the turn is over: nothing is going */
+:is(button, .button).droid-done::after { content: "check"; font-family: "Droid Icons"; font-size: 20px; font-feature-settings: "liga"; }
+@keyframes droid-spin { to { transform: rotate(360deg); } }
+
+/* Arriving: the page's blocks rise into place, one after another (droid.js marks them; not when the phone has
+   animations off). Only before they start do they hold their first frame: once in place nothing of the animation
+   stays, so a pinned footer is still pinned to the screen. */
+@media (prefers-reduced-motion: no-preference) {
+  .droid-rise { animation: droid-rise .32s cubic-bezier(.2, .7, .2, 1) backwards; animation-delay: calc(var(--droid-i, 0) * 40ms); }
+}
+@keyframes droid-rise { from { opacity: 0; transform: translateY(8px); } }

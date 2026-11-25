@@ -72,7 +72,12 @@ object FloatPage {
         }
         val w = Window(app, wm, params, conv to pageId)
         w.compose.setContent { DroidTheme { FloatCard(conv, pageId, ::hide) } }
-        wm.addView(w.root, params)
+        // the right to draw over apps can go between the check and here: then it's a notification's to open (Surfaces)
+        try { wm.addView(w.root, params) } catch (e: RuntimeException) {
+            // (never attached: nothing has composed, and its lifecycle never started)
+            android.util.Log.w("Droid", "float page: ${e.message}")
+            return
+        }
         w.owner.lifecycle.currentState = Lifecycle.State.RESUMED
         shown = w
     }

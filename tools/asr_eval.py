@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Evaluate on-device speech-to-text models for Droid (sherpa-onnx offline NeMo transducers) on public data.
+"""Evaluate on-device speech-to-text models for Droid (sherpa-onnx offline NeMo transducers; smaller NeMo CTC and
+Moonshine models greedy only) on public data.
 
 Measures, per model: WER on fixed random subsets of LibriSpeech test-clean / test-other (300 utterances each,
 seed 0), test-clean with 10 dB babble from three other LibriSpeech speakers, and SLURP (900 real recordings of
@@ -54,6 +55,11 @@ MODELS = {
     "ultra": ("sherpa-onnx-nemo-parakeet-tdt-0.6b-ultra-int8", V3_NEMO, "v3"),
     "redux": ("sherpa-onnx-nemo-parakeet-tdt-0.6b-redux-int8", V3_NEMO, "v3"),
     "v3": ("sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8", V3_NEMO, "v3"),
+    # Smaller models, greedy only (no tokenizer, so no hotwords): a NeMo transducer, a NeMo CTC, Moonshine v2
+    "110m": ("sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8", None, None),
+    "110m-ctc": ("sherpa-onnx-nemo-parakeet_tdt_ctc_110m-en-36000-int8", None, None),
+    "moonshine-base": ("sherpa-onnx-moonshine-base-en-quantized-2026-02-27", None, None),
+    "moonshine-tiny": ("sherpa-onnx-moonshine-tiny-en-quantized-2026-02-27", None, None),
 }
 # Locally re-quantised encoders (see `requant`): name -> (base model, fp32 export on HuggingFace)
 REQUANT = {
@@ -163,6 +169,8 @@ def prepare_models():
         d = MODELS_DIR / pkg
         if not d.exists():
             extract(fetch(RELEASE + pkg + ".tar.bz2", MODELS_DIR / f"{pkg}.tar.bz2"), d)
+        if not tok:
+            continue
         vocab = TOK / tok / "bpe.vocab"
         if not vocab.exists():
             import sentencepiece as spm
@@ -304,6 +312,14 @@ def prepare_slurp():
 def recognizer(model, beam, score, encoding, threads=4):
     import sherpa_onnx
     d = model_dir(model)
+    if not (d / "joiner.int8.onnx").exists():  # NeMo CTC or Moonshine v2: greedy only
+        assert not beam, f"{model}: greedy only"
+        if (d / "model.int8.onnx").exists():
+            return sherpa_onnx.OfflineRecognizer.from_nemo_ctc(
+                model=str(d / "model.int8.onnx"), tokens=str(d / "tokens.txt"), num_threads=threads)
+        return sherpa_onnx.OfflineRecognizer.from_moonshine_v2(
+            encoder=str(d / "encoder_model.ort"), decoder=str(d / "decoder_model_merged.ort"),
+            tokens=str(d / "tokens.txt"), num_threads=threads)
     kw = dict(encoder=str(d / "encoder.int8.onnx"), decoder=str(d / "decoder.int8.onnx"),
               joiner=str(d / "joiner.int8.onnx"), tokens=str(d / "tokens.txt"), num_threads=threads,
               model_type="nemo_transducer")
@@ -380,7 +396,7 @@ def _decode(a, out, utts, done):
             continue
         x, sr = sf.read(DATA / u["wav"], dtype="float32")
         lines = hotword_lines(u, a.hotwords, a.case)
-        if a.encoding == "pretok":
+        if lines and a.encoding == "pretok":
             lines = pretokenize(lines, a.model)
         s = rec.create_stream(hotwords="/".join(lines)) if lines else rec.create_stream()
         if a.length_reward:  # added per emitted token by modified_beam_search (counters dropped speech)
@@ -672,7 +688,7 @@ def main():
     r.add_argument("--jobs", type=int, default=4)
     r.add_argument("--only", nargs="*", help="only the runs of these models")
     s = sub.add_parser("speed")
-    s.add_argument("--models", nargs="*", default=list(MODELS))
+    s.add_argument("--models", nargs="*", default=[m for m in MODELS if MODELS[m][2]])  # those with hotwords
     s.add_argument("--cpus", type=lambda x: {int(c) for c in x.split(",")}, default={0, 2, 4, 6})
     s.add_argument("--n", type=int, default=40)
     sub.add_parser("report")

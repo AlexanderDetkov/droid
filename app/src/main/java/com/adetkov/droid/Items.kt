@@ -30,9 +30,9 @@ sealed interface Item {
  * The last turn is "live" while [running] and it has no answer since its latest work: a message sent mid-turn can go
  * in before the answer it came during, and the agent then works on it after that answer.
  */
-fun buildItems(messages: List<Msg>, running: Boolean): List<Item> {
+fun buildItems(messages: List<Msg>, running: Boolean, firstTurn: Int = 0): List<Item> {
     val out = ArrayList<Item>()
-    var from = 0
+    var from = firstTurn
     while (from < messages.size) {
         var to = from + 1
         while (to < messages.size && !messages[to].kind.opensTurn) to++
@@ -66,7 +66,9 @@ fun buildItems(messages: List<Msg>, running: Boolean): List<Item> {
     return out
 }
 
-private fun plainLine(s: String) = stripMarkdown(s).replace(Regex("\\s+"), " ")
+private val SPACES = Regex("\\s+")
+
+private fun plainLine(s: String) = stripMarkdown(s).replace(SPACES, " ")
 
 /** How the last turn ended, for what Dash does after it. */
 enum class Outcome { ASKS, DONE, FAILED, STOPPED }
@@ -112,8 +114,8 @@ fun moodAt(messages: List<Msg>, index: Int): Mood? {
  * in the morning) and wasn't asked in the last 3 hours (it may be making it, or have failed), and the owner wants it.
  */
 object HomeDay {
-    const val REQUEST = "Make my home page for today"
-    const val VIA = "Droid asked you for this by itself, as I opened it: put the page on my home screen, and greet me with Dash's words"
+    const val REQUEST = "Make my page for today"
+    const val VIA = "Droid asked you for this by itself, as I opened it in the morning: make my day's page here, in this chat, and greet me with Dash's words"
     fun dayStart(now: Long): Long = Calendar.getInstance().apply {
         timeInMillis = now - 4 * 3600_000L
         set(Calendar.HOUR_OF_DAY, 4); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
@@ -138,7 +140,9 @@ object HomeDay {
  */
 /** A chat on the home screen and in Everything. [aside]: the owner said Not now to it, since its last message. */
 data class AppTile(val conv: String, val name: String, val words: String, val feel: Feel, val calls: Boolean, val working: Boolean, val at: Long,
-                   val aside: Boolean = false)
+                   val aside: Boolean = false,
+                   /** The app Dash worked in for it (a package), for its icon. */
+                   val app: String? = null)
 
 /** Whether the owner set this chat aside (Not now, in [notNow]) since its last message. */
 fun Conv.setAside(notNow: Map<String, Long>): Boolean = notNow[id]?.let { at -> (messages.lastOrNull()?.ts ?: 0L) <= at } == true
@@ -148,24 +152,42 @@ fun Conv.setAside(notNow: Map<String, Long>): Boolean = notNow[id]?.let { at -> 
  * what he's at, then the latest; at most [max]. One set aside ([notNow]) doesn't call the owner; [home] leaves it out.
  */
 fun appTiles(convs: List<Conv>, running: Set<String>, hidden: String?, now: Long = System.currentTimeMillis(), max: Int = 6,
-             within: Long = 7 * 86_400_000L, notNow: Map<String, Long> = emptyMap(), home: Boolean = false): List<AppTile> =
-    convs.filter { it.id != hidden && it.messages.isNotEmpty() && now - it.updatedAt < within }.mapNotNull { c ->
+             within: Long = 7 * 86_400_000L, notNow: Map<String, Long> = emptyMap(), home: Boolean = false, cache: TileCache? = null): List<AppTile> {
+    cache?.keepOnly(convs)
+    return convs.filter { it.id != hidden && it.messages.isNotEmpty() && now - it.updatedAt < within }.mapNotNull { c ->
         val working = c.id in running
         val aside = !working && c.setAside(notNow)
         if (home && aside) return@mapNotNull null
-        val outcome = lastOutcome(c.messages, working)
-        val mood = lastMood(c.messages)
-        val calls = !working && !aside && (outcome == Outcome.ASKS || mood?.calls == true)
-        val failed = outcome == Outcome.FAILED
-        val words = when {
-            working -> latestStep(c.messages) ?: "Getting started"
-            mood != null && mood.words.isNotBlank() -> mood.words
-            failed -> "Couldn't finish"
-            else -> ""
-        }
-        val feel = when { working -> Feel.THINKING; mood != null -> mood.feel; calls -> Feel.NEEDS_YOU; failed -> Feel.CONFUSED; else -> Feel.CONTENT }
-        AppTile(c.id, appName(c), words, feel, calls, working, c.updatedAt, aside)
+        if (cache != null) cache.tile(c, working, aside) { tileOf(c, working, aside) } else tileOf(c, working, aside)
     }.sortedWith(compareByDescending<AppTile> { it.calls }.thenByDescending { it.working }.thenByDescending { it.at }).take(max)
+}
+
+/** Tiles kept by chat: a chat's tile is made again only when its [Conv] object changed (the store replaces just the one that did), or it started or stopped running, or was set aside. */
+class TileCache {
+    private class Entry(val conv: Conv, val working: Boolean, val aside: Boolean, val tile: AppTile)
+    private val entries = HashMap<String, Entry>()
+    fun tile(c: Conv, working: Boolean, aside: Boolean, make: () -> AppTile): AppTile {
+        entries[c.id]?.takeIf { it.conv === c && it.working == working && it.aside == aside }?.let { return it.tile }
+        return make().also { entries[c.id] = Entry(c, working, aside, it) }
+    }
+    fun keepOnly(convs: List<Conv>) { if (entries.size > convs.size) entries.keys.retainAll(convs.mapTo(HashSet()) { it.id }) }
+}
+
+private fun tileOf(c: Conv, working: Boolean, aside: Boolean): AppTile {
+    val outcome = lastOutcome(c.messages, working)
+    // a turn that couldn't finish keeps no words it was given on the way: the list says what the chat says
+    val mood = lastMood(c.messages).takeIf { outcome != Outcome.FAILED }
+    val calls = !working && !aside && (outcome == Outcome.ASKS || mood?.calls == true)
+    val failed = outcome == Outcome.FAILED
+    val words = when {
+        working -> latestStep(c.messages) ?: "Getting started"
+        mood != null && mood.words.isNotBlank() -> mood.words
+        failed -> "Couldn't finish"
+        else -> ""
+    }
+    val feel = when { working -> Feel.THINKING; mood != null -> mood.feel; calls -> Feel.NEEDS_YOU; failed -> Feel.CONFUSED; else -> Feel.CONTENT }
+    return AppTile(c.id, appName(c), words, feel, calls, working, c.updatedAt, aside, c.app)
+}
 
 /** How the agent last set Dash in the last turn, if it did. */
 fun lastMood(messages: List<Msg>): Mood? = lastTurn(messages).let { turn ->
@@ -222,7 +244,7 @@ fun latestStatus(messages: List<Msg>): String =
 
 /** An answer short enough for Dash to say: one line of words (no page, no list), at most 110 characters; else null. */
 fun shortAnswer(text: String): String? = text.takeIf { !hasHtml(it) && !it.trim().contains('\n') }
-    ?.let { stripMarkdown(it).replace(Regex("\\s+"), " ").trim() }?.takeIf { it.isNotEmpty() && it.length <= 110 }
+    ?.let { stripMarkdown(it).replace(SPACES, " ").trim() }?.takeIf { it.isNotEmpty() && it.length <= 110 }
 
 /** What the agent is doing now, in its last turn: its latest step or narration, in a line; null before any. */
 fun latestStep(messages: List<Msg>): String? =

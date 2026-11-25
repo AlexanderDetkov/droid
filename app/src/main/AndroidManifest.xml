@@ -17,7 +17,8 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <!-- Wake-ups the agent sets (droid later) go off on time; granted the same way. -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
-    <!-- Droid's camera, in the chat and the assistant (Camera.kt). Not required: without one, Droid works as before. -->
+    <!-- The camera, for the agent's pages (a live page may ask for it from a tap; see PageView). Droid takes pictures with
+         the phone's own camera app, which it may open only while it holds this. Not required: without one, Droid works as before. -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />

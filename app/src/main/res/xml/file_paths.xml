@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- What answers show is opened in other apps from Droid's copies of it. -->
+<!-- What answers show is opened in other apps from Droid's copies of it; the phone's camera saves a picture straight into an attachment's slot. -->
 <paths>
     <files-path name="shown" path="shown/" />
+    <external-files-path name="uploads" path="uploads/" />
 </paths>

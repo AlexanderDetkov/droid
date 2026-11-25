@@ -12,7 +12,8 @@
                                  "data"}. --id ID: showing the same ID again updates that page in place.
   droid look FILE                Shows you an HTML page as the owner's screen would show it as your answer (under
                                  Dash and his words, above the talk bar unless it ends with a <footer>): it's drawn
-                                 on your hidden display, and this prints the screenshot's path, for you to look at.
+                                 on your hidden display, and this prints the screenshot's path, for you to look at,
+                                 and what Droid noticed touching, overlapping, cut off or too small.
   droid notify TITLE [TEXT] [options]
                                  Posts a notification, or updates the one with the same --id. Options:
       --id ID                    names it, to update it (progress), take it away (--cancel) or wait on it. The id
@@ -213,7 +214,8 @@ def show(args):
     if not 0 < os.path.getsize(path) <= 2_000_000:
         die("a page is a file of up to 2 MB, and not empty")
     if pid is None:
-        pid = uuid.uuid4().hex[:8]
+        # a page in an app folder (/root/apps/NAME/…) is the chat's app: showing it again updates it in place
+        pid = "app" if re.match(r"/root/apps/[^/]+/", path) else uuid.uuid4().hex[:8]
     elif not ID.fullmatch(pid):
         die("an id is up to 64 letters, digits, - and _")
     os.makedirs(REPLIES, exist_ok=True)
@@ -261,6 +263,9 @@ def look(args):
     if not shot:
         die("couldn't take the screenshot")
     print(shot[-1])
+    problems = r.get("problems")
+    if isinstance(problems, list):
+        print(("Droid noticed: " + "; ".join(map(str, problems)) + ".") if problems else "Droid noticed nothing touching, overlapping or cut off.")
 
 
 SHOT = "shot"

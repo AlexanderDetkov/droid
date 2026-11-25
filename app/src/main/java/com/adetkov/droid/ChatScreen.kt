@@ -1,5 +1,17 @@
 package com.adetkov.droid
 
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.animation.core.Spring
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.ui.text.input.ImeAction
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.animation.AnimatedContent
@@ -25,14 +37,13 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -53,9 +64,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -73,7 +84,6 @@ import java.text.SimpleDateFormat
 import java.util.Locale
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -87,7 +97,9 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -123,23 +135,25 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private const val BOTTOM = 100_000  // scroll offset that lands on the end of the last item
-
 /**
- * The whole chat, turn by turn ("Earlier in this chat"), in the kit: what the owner asked or tapped, in their bubbles;
- * Dash, small, with what he said and his steps under it (a tap opens them, with the screen he ended on); and what the
- * agent made, as it was (the latest turn's still live). Back to now, under it, returns to the chat's screen.
+ * A chat's history, from its menu: every turn, oldest first, in the kit (what the owner asked or tapped, in their
+ * bubbles; Dash, small, with what he said and his steps under it, a tap opening them with the screen he ended on; what
+ * the agent made, as a picture of it, which a tap opens full screen). It opens at the newest. A turn still going is
+ * now's, the chat's own screen, not the history's. Back to now, or Back, returns to the chat.
  */
 @Composable
-fun Transcript(
-    conv: Conv, running: Boolean, speakingKey: String?, onSpeak: (String, String) -> Unit, onRetry: () -> Unit, modifier: Modifier,
+fun HistoryScreen(
+    conv: Conv, running: Boolean, onBack: () -> Unit,
     /** A failure that Setup fixes (a sign-in run out, free models used up): open Setup. */
     onSetup: () -> Unit = {},
-    /** A page handed over the agent's screen (droid.screen): open it with the owner's touches going to it. */
-    onTakeOver: () -> Unit = {},
 ) {
     val messages = conv.messages
     val items = remember(messages, running) { buildItems(messages, running) }
+    // while Dash works, the turn he's on is now's: the history ends at the request that opened it
+    val start = remember(messages) { messages.indexOfLast { it.kind.opensTurn } }
+    val shown = remember(items, start, running) {
+        if (!running) items else items.filter { if (it is Item.Steps) it.turn < start else (it as Item.Message).index <= start }
+    }
     val talks = remember(messages) { turnTalks(messages) }
     // each message's turn (where it starts), and the turns that have a steps row to carry Dash
     val turnOf = remember(messages) { var t = 0; IntArray(messages.size) { i -> if (messages[i].kind.opensTurn) t = i; t } }
@@ -149,80 +163,54 @@ fun Transcript(
         val starts = messages.indices.filter { messages[it].kind.opensTurn }
         starts.filterIndexed { n, i -> n == 0 || messages[i].ts - messages[starts[n - 1]].ts >= 3600_000L }.toSet()
     }
-    val waiting = remember(messages, running) { waitingPage(messages, running)?.let { PageInfo.of(it).title } }
-    val state = rememberLazyListState()
-    val scope = rememberCoroutineScope()
     var menuFor by remember { mutableStateOf<Msg?>(null) }  // a long-pressed request or answer
     var selecting by remember { mutableStateOf<String?>(null) }
-    // Follow new content only while the user is at the bottom. Only their own drag up leaves it: the list's own scrolls
-    // and corrections (a page above growing, the keyboard) never do.
-    var follow by remember(conv.id) { mutableStateOf(true) }
-    val dragged by state.interactionSource.collectIsDraggedAsState()
-    LaunchedEffect(state) {
-        snapshotFlow { Triple(state.canScrollForward, dragged, state.lastScrolledBackward) }
-            .collect { (more, drag, back) -> if (!more) follow = true else if (drag && back) follow = false }
-    }
-    LaunchedEffect(conv.id, items.size, messages.lastOrNull()?.text?.length, running) {
-        if (follow && items.isNotEmpty()) state.scrollToItem(items.lastIndex, BOTTOM)
-    }
-    // It opens at now, scrolled back from: again as its pages lay out (they come in at no height).
-    LaunchedEffect(conv.id) {
-        repeat(3) { delay(350); if (follow && items.isNotEmpty()) state.scrollToItem(items.lastIndex, BOTTOM) }
-    }
-    // Pages in this chat stay loaded while it shows; a drag that starts on one scrolls the chat.
-    val pages = remember(conv.id) { PageCache() }
-    DisposableEffect(pages) { onDispose { pages.clear() } }
-    val drag = rememberListDrag(state, onDrag = { dy -> if (dy > 0) follow = false },
-        grew = { if (follow) scope.launch { state.scrollToItem(state.layoutInfo.totalItemsCount - 1, BOTTOM) } })
-    val focus = LocalFocusManager.current
-    val view = LocalView.current
-    val droid = LocalContext.current.applicationContext as DroidApp
-    val lastIndex = items.lastIndex
-    Box(modifier) { CompositionLocalProvider(LocalPageCache provides pages, LocalListDrag provides drag) {
-        LazyColumn(
-            Modifier.fillMaxSize().testTag("messages").dismissesKeyboard(drag, focus, view), state,
-            contentPadding = PaddingValues(top = 8.dp, bottom = 24.dp),
-        ) {
-            items(items, key = { it.key }) { item ->
-                val gap = when {
-                    item === items.first() -> 0.dp
-                    item is Item.Message && item.msg.kind.opensTurn -> 28.dp
-                    else -> 12.dp
-                }
-                Column(Modifier.fillMaxWidth().padding(top = gap).animateItem(fadeInSpec = tween(260), fadeOutSpec = null, placementSpec = spring(stiffness = 600f))) {
-                    when (item) {
-                        is Item.Steps -> {
-                            val last = item.turn == turnOf.lastOrNull()
-                            TurnLine(item, conv.id, talks[item.turn], asking = if (last) waiting else null)
-                        }
-                        is Item.Message -> {
-                            val m = item.msg
-                            val key = "${conv.id}:${item.index}"
-                            if (item.index in times) TimeLabel(m.ts)
-                            val talk = talks[turnOf[item.index]]
-                            when (m.kind) {
-                                Kind.USER -> UserMessage(m) { menuFor = m }
-                                // a short answer is what Dash says: on his steps row, or on its own when the turn had none
-                                Kind.AGENT -> if (talk?.saysAnswer == true) { if (turnOf[item.index] !in stepped) TurnLine(null, conv.id, talk) }
-                                    else Answer(m.text, speakingKey == key, { onSpeak(key, m.text) }, onTakeOver = onTakeOver,
-                                        conv = conv.id, index = item.index, live = pageLive(droid, conv, item.index)) { menuFor = m }
-                                Kind.PAGE -> PageMessage(m, conv.id, pageLive(droid, conv, item.index), onTakeOver)
-                                Kind.WAKE -> WakeLine(m.text)
-                                Kind.STATUS -> StatusRow(m.text, conv.engine, retry = if (item === items[lastIndex] && !running) onRetry else null, onSetup = onSetup)
-                                else -> Text(m.text, Modifier.padding(horizontal = 20.dp), style = MaterialTheme.typography.bodySmall, color = P.muted)
+    val list = rememberSaveable(conv.id, saver = LazyListState.Saver) { LazyListState(firstVisibleItemIndex = Int.MAX_VALUE) }  // (past the end: the newest)
+    BackHandler(onBack = onBack)
+    // on past the newest, back to now (as scrolling up past now's top came here)
+    val density = LocalDensity.current
+    val pull = remember { Pull(down = false, threshold = with(density) { 80.dp.toPx() }, onGo = onBack) }
+    val pulled by animateFloatAsState(pull.pulled, spring(stiffness = Spring.StiffnessHigh), label = "pull")
+    Column(Modifier.fillMaxSize().background(P.bg)) {
+        Where(R.drawable.ic_back, "Back", onBack, "History · " + appName(conv), leftTag = "history_close")
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            LazyColumn(Modifier.fillMaxSize().nestedScroll(pull.connection).graphicsLayer { translationY = -pulled }.testTag("history"), list,
+                contentPadding = PaddingValues(bottom = 112.dp)) {
+                items(shown, key = { it.key }) { item ->
+                    val gap = when {
+                        item === shown.first() -> 8.dp
+                        item is Item.Message && item.msg.kind.opensTurn -> 28.dp
+                        else -> 12.dp
+                    }
+                    Column(Modifier.fillMaxWidth().padding(top = gap)) {
+                        when (item) {
+                            is Item.Steps -> TurnLine(item, conv.id, talks[item.turn])
+                            is Item.Message -> {
+                                val m = item.msg
+                                if (item.index in times) TimeLabel(m.ts)
+                                val talk = talks[turnOf[item.index]]
+                                when (m.kind) {
+                                    Kind.USER -> UserMessage(m) { menuFor = m }
+                                    // a short answer is what Dash says: on his steps row, or on its own when the turn had none
+                                    Kind.AGENT -> if (talk?.saysAnswer == true) { if (turnOf[item.index] !in stepped) TurnLine(null, conv.id, talk) }
+                                        else Answer(m.text, conv.id, item.index) { menuFor = m }
+                                    Kind.PAGE -> PageMessage(m, conv.id, item.index)
+                                    Kind.WAKE -> WakeLine(m.text)
+                                    Kind.STATUS -> StatusRow(m.text, conv.engine, retry = null, onSetup = onSetup)
+                                    else -> Text(m.text, Modifier.padding(horizontal = 20.dp), style = MaterialTheme.typography.bodySmall, color = P.muted)
+                                }
                             }
                         }
                     }
                 }
             }
+            KitChip(if (pull.ready) "Let go for now" else "Back to now", onBack, Modifier.align(Alignment.BottomCenter).padding(bottom = 22.dp)
+                .shadow(10.dp, RoundedCornerShape(20.dp), ambientColor = Color.Black.copy(alpha = .10f), spotColor = Color.Black.copy(alpha = .14f)),
+                tag = "back_to_now")
         }
-        }
-        // Text scrolling under the top row fades out instead of being cut off.
-        val bg = P.bg
-        Box(Modifier.fillMaxWidth().height(20.dp).align(Alignment.TopCenter)
-            .background(androidx.compose.ui.graphics.Brush.verticalGradient(listOf(bg, bg.copy(alpha = 0f)))))
+        Box(Modifier.navigationBarsPadding())
     }
-    menuFor?.let { m -> MessageSheet(m, speakingKey, onSpeak, { selecting = stripMarkdown(m.text) }) { menuFor = null } }
+    menuFor?.let { m -> MessageSheet(m, { selecting = stripMarkdown(m.text) }) { menuFor = null } }
     selecting?.let { SelectTextSheet(it) { selecting = null } }
 }
 
@@ -259,34 +247,24 @@ private fun TimeLabel(ts: Long) {
 }
 
 /**
- * A turn's Dash in the history: small, with what he said ([talk]) and his steps under it ("3 steps · 41s"; while he
- * works, what he's doing and for how long). A tap on the steps opens them, with the screen he ended on.
+ * A turn's Dash in the history: small, with what he said ([talk]) and his steps under it ("3 steps · 41s"). A tap on
+ * the steps opens them, with the screen he ended on. (A turn going on is now's, not the history's.)
  */
 @Composable
-private fun TurnLine(s: Item.Steps?, conv: String, talk: TurnTalk?, asking: String? = null) {
-    val live = s?.live == true
+private fun TurnLine(s: Item.Steps?, conv: String, talk: TurnTalk?) {
     var open by rememberSaveable(s?.key) { mutableStateOf(false) }
-    val feel = when { asking != null -> Feel.NEEDS_YOU; live -> Feel.THINKING; else -> talk?.feel ?: Feel.IDLE }
-    val rig = rememberDash("turn:${s?.key}", feel, active = live)
+    val feel = talk?.feel ?: Feel.IDLE
+    val rig = rememberDash("turn:${s?.key}", feel, active = false)
     LaunchedEffect(feel) { rig.feel(feel) }
-    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    if (live) LaunchedEffect(Unit) { while (true) { now = System.currentTimeMillis(); delay(1000) } }
     val n = s?.lines?.size ?: 0
-    val working = live && asking == null
-    val sub = when {
-        s == null -> null
-        working -> s.lines.lastOrNull()?.text ?: "Getting started"
-        else -> stepsLine(s) ?: if (n > 0) "What I did" else null
-    }
-    val words = talk?.words.takeIf { !live || asking != null } ?: when { asking != null -> asking.ifBlank { "Your turn" }; live -> "On it!"; else -> null }
+    val sub = s?.let { stepsLine(it) ?: if (n > 0) "What I did" else null }
     val ctx = LocalContext.current
     val stillFile = remember(conv, s?.stillKey) { s?.let { Stills.file(ctx, conv, it.stillKey) } }
     Column(Modifier.fillMaxWidth()) {
-        DashLine(words, size = DashSize.SMALL, rig = rig, sub = sub, subTail = if (working && s != null) duration(now - s.start) else null,
-            onSub = if (n > 0) ({ open = !open }) else null)
+        DashLine(talk?.words, size = DashSize.SMALL, rig = rig, sub = sub, onSub = if (n > 0) ({ open = !open }) else null)
         AnimatedVisibility(open && s != null, enter = fadeIn(tween(200)) + expandVertically(), exit = fadeOut(tween(120)) + shrinkVertically()) {
             Column(Modifier.padding(start = 72.dp, end = 20.dp, top = 10.dp)) {
-                val still = stillFile?.let { rememberStill(it, live) }
+                val still = stillFile?.let { rememberStill(it, false, with(LocalDensity.current) { 72.dp.roundToPx() }) }
                 if (still != null) ScreenWindow(still, 72.dp, Modifier.padding(bottom = 12.dp).testTag("still"))
                 if (s != null) Timeline(s.lines)
             }
@@ -334,84 +312,70 @@ fun AttachmentView(a: Attachment, big: Boolean, modifier: Modifier = Modifier) {
     }
 }
 
-/** An answer in the history: a page the agent made, as it was; words, plainly (a long press: copy, read aloud, share). */
-@OptIn(ExperimentalFoundationApi::class)
+/**
+ * An answer in the history: its words; or, made as an app (HTML), a picture of it ([PageStill]). A long press on the
+ * words opens what can be done with them.
+ */
 @Composable
-private fun Answer(
-    text: String, speaking: Boolean, onSpeak: () -> Unit, onTakeOver: () -> Unit,
-    /** The chat and the answer's place in it, and whether a page in it may act ([pageLive]: in the latest turn). */
-    conv: String = "", index: Int = 0, live: Boolean = true,
-    onLongPress: () -> Unit,
-) {
+private fun Answer(text: String, conv: String, index: Int, onLongPress: () -> Unit) {
     val ctx = LocalContext.current
-    // An answer with HTML is a page the agent made: it renders as one, seamless with the chat.
-    val html = remember(text) { hasHtml(text) }
-    Box(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
-        if (html) {
-            val app = ctx.applicationContext as DroidApp
-            val actions = remember(conv, index) { ChatPageActions(ctx, conv, null, isLive = { pageLiveNow(app, conv, null, index) }, onScreen = onTakeOver) }
-            val dark = P.dark
-            InlinePage("a:$conv:$index:${text.hashCode()}", "answer:$conv:$index", dark, { cx -> answerDocument(cx, text, dark) },
-                namedPaths(text), actions, Modifier.testTag("answer"), live = live)
-        } else {
-            val shown = remember(text) { answerText(text) }
-            Markdown(shown, Modifier.fillMaxWidth().combinedClickable(remember { MutableInteractionSource() }, null,
-                onLongClick = onLongPress, onClick = {}).testTag("answer"))
-        }
+    if (remember(text) { hasHtml(text) }) PageStill(conv, index, remember(text) { pageTitle(text) }) { ctx.startActivity(answerIntent(ctx, conv, index)) }
+    else Box(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+        val shown = remember(text) { answerText(text) }
+        Markdown(shown, Modifier.fillMaxWidth().combinedClickable(remember { MutableInteractionSource() }, null,
+            onLongClick = onLongPress, onClick = {}).testTag("answer"))
     }
 }
 
 /**
- * A page the agent showed (`droid show`): in the chat, the page itself, and the owner's answer under it once given
- * (one that went as a message is the chat's); one shown elsewhere (full screen, floating, a notification) is a line
- * here that opens it full screen. [live]: whether it may still act ([pageLive]).
+ * A page the agent showed (`droid show`) in the history: in the chat, a picture of it ([PageStill]); one shown
+ * elsewhere (full screen, floating, a notification), a line with its name. Either opens it full screen. The owner's
+ * answer goes under it once given (one that went as a message is the chat's).
  */
 @Composable
-private fun PageMessage(m: Msg, conv: String, live: Boolean, onTakeOver: () -> Unit) {
+private fun PageMessage(m: Msg, conv: String, index: Int) {
     val ctx = LocalContext.current
     val info = remember(m.data) { PageInfo.of(m) }
+    val open = { ctx.startActivity(pageIntent(ctx, conv, info.id)) }
     Column(Modifier.fillMaxWidth()) {
-        if (info.where == "chat") Box(Modifier.padding(horizontal = 20.dp)) {
-            val actions = remember(conv, info.id) { ChatPageActions(ctx, conv, info.id, onScreen = onTakeOver) }
-            val dark = P.dark
-            InlinePage("p:$conv:${info.id}:${m.text.hashCode()}", "page:$conv:${info.id}", dark, { cx -> pageDocument(cx, m.text, dark, PageMode.INLINE) },
-                namedPaths(m.text), actions, Modifier.testTag("page"), live = live)
-        } else Row(
-            Modifier.padding(horizontal = 20.dp).clip(RoundedCornerShape(14.dp)).border(1.dp, P.hairline, RoundedCornerShape(14.dp))
-                .clickable { ctx.startActivity(pageIntent(ctx, conv, info.id)) }.padding(start = 12.dp, end = 16.dp, top = 10.dp, bottom = 10.dp).testTag("page_link"),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(painterResource(R.drawable.ic_screen), null, Modifier.size(18.dp), tint = P.muted)
-            Text(info.title.ifEmpty { "Page" }, Modifier.padding(start = 10.dp), style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
+        if (info.where == "chat" || info.where == "home") PageStill(conv, index, info.title, open) else PageLine(info.title, open)
         info.reply?.takeIf { it.isNotEmpty() }?.let { r -> YouBubble(r, Modifier.padding(top = 4.dp).testTag("page_reply"), tap = true) }
     }
 }
 
-/** The newest page the agent put on the home screen (`droid show --home`): its chat and its PAGE message. */
-internal fun homePageOf(convs: List<Conv>): Pair<String, Msg>? = convs.flatMap { c ->
-    c.messages.filter { it.kind == Kind.PAGE && PageInfo.of(it).where == "home" }.map { c.id to it }
-}.maxByOrNull { it.second.ts }
-
 /**
- * The agent's page on the home screen: a place to start from, not a question asked once, so it stays live; what it
- * sends starts a new chat (the agent is told where it came from), which [onStarted] opens.
+ * What the agent made in an earlier turn, in the history: a picture of it as it was on screen (see [keepStill]), its
+ * top, a fixed height, so nothing moves as the chat scrolls; or, with none kept, a line with its name. A tap opens it.
  */
 @Composable
-fun HomePage(conv: String, m: Msg, onStarted: (String) -> Unit) {
+private fun PageStill(conv: String, index: Int, title: String, onOpen: () -> Unit) {
     val ctx = LocalContext.current
-    val info = remember(m.data) { PageInfo.of(m) }
-    val scope = rememberCoroutineScope()
-    val actions = remember(conv, info.id) {
-        object : PageActions by ChatPageActions(ctx, conv, info.id, isLive = { true }) {
-            override fun send(text: String, data: String?) {
-                scope.launch { startTask(ctx, null, text, data = data, via = "I tapped this on the page you put on my home screen")?.let(onStarted) }
-            }
-        }
+    val file = remember(conv, index) { Stills.file(ctx, conv, "p$index") }
+    val kept = remember(file) { file.lastModified() }  // 0: none
+    if (kept == 0L) { PageLine(title, onOpen); return }
+    val still = rememberStill(file, kept, ctx.resources.displayMetrics.widthPixels)
+    val shape = RoundedCornerShape(20.dp)
+    val bg = P.bg
+    Box(Modifier.padding(start = 72.dp, end = 20.dp).fillMaxWidth().height(168.dp).clip(shape).border(1.5.dp, P.hairline, shape)
+        .clickable(onClickLabel = "Open", onClick = onOpen).semantics { contentDescription = title.ifBlank { "What Dash made" } }.testTag("page_still")) {
+        if (still != null) androidx.compose.foundation.Image(still, null, Modifier.fillMaxSize(),
+            contentScale = androidx.compose.ui.layout.ContentScale.FillWidth, alignment = Alignment.TopCenter)
+        Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(48.dp)
+            .background(androidx.compose.ui.graphics.Brush.verticalGradient(listOf(bg.copy(alpha = 0f), bg))))
     }
-    val dark = P.dark
-    InlinePage("home:$conv:${info.id}:${m.text.hashCode()}", "page:$conv:${info.id}", dark,
-        { cx -> pageDocument(cx, m.text, dark, PageMode.INLINE) }, namedPaths(m.text), actions, live = true)
+}
+
+/** A page by its name, in the history: a line that opens it. */
+@Composable
+private fun PageLine(title: String, onOpen: () -> Unit) {
+    Row(
+        Modifier.padding(horizontal = 20.dp).clip(RoundedCornerShape(14.dp)).border(1.dp, P.hairline, RoundedCornerShape(14.dp))
+            .clickable(onClick = onOpen).padding(start = 12.dp, end = 16.dp, top = 10.dp, bottom = 10.dp).testTag("page_link"),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(painterResource(R.drawable.ic_screen), null, Modifier.size(18.dp), tint = P.muted)
+        Text(title.ifEmpty { "Page" }, Modifier.padding(start = 10.dp), style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
 }
 
 /** The agent waking itself up (`droid later`): a quiet line where a request would start the turn. */
@@ -424,20 +388,14 @@ private fun WakeLine(text: String) {
     }
 }
 
-/** A long-pressed request or answer: copy it, select some of it, and an answer's read aloud and share. */
+/** A long-pressed request or answer: copy it, or select some of it. */
 @Composable
-private fun MessageSheet(m: Msg, speakingKey: String?, onSpeak: (String, String) -> Unit, onSelect: () -> Unit, onDismiss: () -> Unit) {
+private fun MessageSheet(m: Msg, onSelect: () -> Unit, onDismiss: () -> Unit) {
     val copy = rememberCopy()
-    val ctx = LocalContext.current
     val text = stripMarkdown(m.text)
     ActionSheet(onDismiss) { close ->
         SheetRow(R.drawable.ic_copy, "Copy", { copy(text); close() }, tag = "sheet_copy")
         SheetRow(R.drawable.ic_select, "Select text", { onSelect(); close() }, tag = "sheet_select", line = true)
-        if (m.kind == Kind.AGENT) {
-            val key = "${m.ts}:${m.text.hashCode()}"
-            SheetRow(R.drawable.ic_speaker, if (speakingKey == key) "Stop reading" else "Read it aloud", { onSpeak(key, m.text); close() }, tag = "sheet_speak", line = true)
-            SheetRow(R.drawable.ic_share, "Share", { shareText(ctx, text); close() }, tag = "sheet_share", line = true)
-        }
     }
 }
 
@@ -510,94 +468,6 @@ private fun Timeline(lines: List<Line>) {
 }
 
 /**
- * Starting points on a new chat: a tap sends the request (shown shorter on it). The quick ones, so a first try answers
- * within a minute (Claude on the demo phone, 2026-11-20: calendar 46 s, timer 27 s, quiet 31 s).
- */
-private val SUGGESTIONS = listOf(
-    Triple(R.drawable.ic_s_calendar, "What's on my calendar?", "What's on my calendar today and tomorrow?"),
-    Triple(R.drawable.ic_s_alarm, "Set a 10-minute timer", "Set a timer for 10 minutes"),
-    Triple(R.drawable.ic_s_dnd, "Quiet my phone till morning", "Quiet my phone until tomorrow morning"),
-)
-
-@Composable
-fun EmptyState(onSuggestion: (String) -> Unit, modifier: Modifier, listening: Boolean = false, level: () -> Float = { 0f }, typing: Boolean = false,
-               home: (@Composable () -> Unit)? = null,
-               /** The home page's greeting (Dash's words when he made it), and when he made it ("this morning"). */
-               greeting: String? = null, made: String? = null,
-               /** He's making today's home page. */
-               preparing: Boolean = false,
-               /** Dash's apps (the chats of the last week), opening one, and setting one aside (Not now). */
-               apps: List<AppTile> = emptyList(), onOpen: (String) -> Unit = {}, onNotNow: (String) -> Unit = {},
-               /** A long press on one: its menu. */
-               onMenu: (String) -> Unit = {}) {
-    // Dash says hi, then rests: he listens while you talk and reads along while you type.
-    val rig = rememberDash()  // at rest, so the greeting below is a change: he hops
-    var greeted by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { delay(1400); greeted = true }
-    val feel = when { listening -> Feel.LISTENING; typing -> Feel.READING; !greeted -> Feel.HAPPY; else -> Feel.IDLE }
-    LaunchedEffect(feel) { rig.feel(feel) }
-    rig.level = level
-    // Home is a page like any other: Dash's words, then what needs you, what he's at, and his page for your day (or the
-    // latest apps); on a first visit, three things to say.
-    val scroll = rememberScrollState()
-    val drag = rememberListDrag(scroll)
-    val needs = apps.filter { it.calls }
-    val working = apps.filter { it.working && !it.calls }
-    val rest = apps.filter { !it.calls && !it.working }
-    val words = when {
-        listening -> "I'm listening…"
-        greeting != null -> greeting
-        needs.size == 1 -> "One thing needs you."
-        needs.size > 1 -> "${COUNTS.getOrElse(needs.size) { needs.size.toString() }} things need you."
-        preparing -> "Getting your day ready…"
-        apps.isEmpty() -> "Hi! I'm Dash. What should I do?"
-        else -> "Hi! What should I do?"
-    }
-    Column(modifier.verticalScroll(scroll)) {
-        DashLine(words, size = DashSize.BIG, rig = rig)
-        Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 10.dp, bottom = 20.dp)) {
-            if (needs.isNotEmpty()) { KitLabel("Needs you"); AppRows(needs, onOpen, onMenu, onNotNow) }
-            if (working.isNotEmpty()) { KitLabel("Working on it"); AppRows(working, onOpen, onMenu) }
-            if (home != null) {
-                Box(Modifier.padding(top = 22.dp).fillMaxWidth().testTag("home_page")) {
-                    CompositionLocalProvider(LocalListDrag provides drag) { home() }
-                }
-                if (made != null) Text("I made this page for you $made", Modifier.fillMaxWidth().padding(top = 12.dp),
-                    style = MaterialTheme.typography.bodySmall, color = P.faint, textAlign = TextAlign.Center)
-            } else if (rest.isNotEmpty()) { KitLabel("Recent"); AppRows(rest, onOpen, onMenu, onNotNow) }
-            if (apps.isEmpty() && home == null) {
-                KitLabel("Try saying")
-                Column(Modifier.testTag("suggestions")) {
-                    SUGGESTIONS.forEachIndexed { i, (icon, label, request) ->
-                        KitRow(label, Modifier.testTag("suggestion"), lead = { IconTile(icon) }, line = i > 0, onClick = { onSuggestion(request) })
-                    }
-                }
-            }
-        }
-    }
-}
-
-private val COUNTS = listOf("No", "One", "Two", "Three", "Four", "Five", "Six")
-
-/**
- * Dash's apps, a row each: its first letter, its name, and his words about it (a spinner while he's at it). A long
- * press opens its menu; with [onNotNow], a row swiped left is set aside.
- */
-@Composable
-private fun AppRows(tiles: List<AppTile>, onOpen: (String) -> Unit, onMenu: (String) -> Unit, onNotNow: ((String) -> Unit)? = null) {
-    Column(Modifier.fillMaxWidth().testTag("apps")) {
-        tiles.forEachIndexed { i, t ->
-            key(t.conv) {
-                NotNow({ onNotNow?.invoke(t.conv) }, enabled = onNotNow != null) {
-                    KitRow(t.name, Modifier.testTag("app_tile"), sub = t.words.ifEmpty { null }, lead = { LetterTile(t.name) }, busy = t.working,
-                        line = i > 0, onClick = { onOpen(t.conv) }, onLongClick = { onMenu(t.conv) })
-                }
-            }
-        }
-    }
-}
-
-/**
  * How the owner talks to Droid: the bar at the bottom of every screen. At rest, Tap to talk in the middle, typing on
  * the left and adding (a photo, the camera, a file) on the right; while Dash listens, the same pill, solid. Typing, a
  * draft or an attachment open the message box in its place, the same three parts: talk instead on the left (what's
@@ -627,7 +497,8 @@ fun Composer(
     LaunchedEffect(typing) { if (typing) runCatching { focus.requestFocus() } }
     Column(modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 12.dp)) {
         Column(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(32.dp)).background(P.bg).border(2.dp, P.call, RoundedCornerShape(32.dp))
+            // the same lavender pill as the talk bar, so typing reads as the bar opened, not a new box
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(32.dp)).background(Lavender)
                 .animateContentSize(spring(stiffness = 700f)),
         ) {
             if (files.isNotEmpty()) LazyRow(
@@ -649,15 +520,19 @@ fun Composer(
                 if (typeOnly) Box(Modifier.width(20.dp))
                 else IconBtn(R.drawable.ic_mic, "Talk instead", onVoice, Modifier.testTag("mic"), tint = CallText, size = 56.dp, iconSize = 22.dp)
                 Box(Modifier.weight(1f).heightIn(min = 40.dp).padding(end = 4.dp, top = 9.dp, bottom = 9.dp), contentAlignment = Alignment.CenterStart) {
-                    if (text.isEmpty()) Text("Message Droid", style = MaterialTheme.typography.bodyLarge.copy(fontSize = 18.sp), color = P.muted,
+                    if (text.isEmpty()) Text("Message Dash", style = MaterialTheme.typography.bodyLarge.copy(fontSize = 18.sp), color = P.muted,
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
                     // Text put in from outside (what Dash heard) gets the cursor at its end.
                     val value = if (field.text == text) field else TextFieldValue(text, TextRange(text.length))
                     BasicTextField(
                         value, { field = it; onText(it.text) }, Modifier.fillMaxWidth().testTag("input").focusRequester(focus)
+                            // a hardware keyboard's Enter sends too (Shift+Enter: a new line)
+                            .onPreviewKeyEvent { e -> if (e.key == Key.Enter && !e.isShiftPressed && e.type == KeyEventType.KeyDown && canSend) { onSend(); true } else false }
                             .onFocusChanged { f -> if (focused && !f.isFocused && text.isEmpty() && files.isEmpty()) onTyping(false); focused = f.isFocused },
                         textStyle = MaterialTheme.typography.bodyLarge.copy(color = P.text, fontSize = 18.sp, lineHeight = 25.sp), cursorBrush = SolidColor(P.call), maxLines = 6,
-                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+                        // Enter sends, as in the rest of Droid (a rename, a search)
+                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Send),
+                        keyboardActions = KeyboardActions(onSend = { if (canSend) onSend() }),
                     )
                 }
                 if (canSend) RoundAction(R.drawable.ic_send, "Send", "send", onSend)
@@ -693,12 +568,12 @@ internal fun LevelBarsImpl(level: () -> Float, color: Color, box: Dp) {
     })
 }
 
-/** The attach sheet: Droid's camera, photos, files. */
+/** The attach sheet: the phone's camera, photos, files. */
 @Composable
-fun AttachSheet(onCamera: () -> Unit, pickers: Pickers, onDismiss: () -> Unit) {
+fun AttachSheet(pickers: Pickers, onDismiss: () -> Unit) {
     ActionSheet(onDismiss) { close ->
         listOf(
-            Triple(R.drawable.ic_camera, "Camera", onCamera),
+            Triple(R.drawable.ic_camera, "Camera", pickers.camera),
             Triple(R.drawable.ic_photos, "Photos", pickers.photos),
             Triple(R.drawable.ic_file, "Files", pickers.files),
         ).forEachIndexed { i, (icon, label, go) ->

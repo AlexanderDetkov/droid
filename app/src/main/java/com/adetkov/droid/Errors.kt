@@ -19,6 +19,8 @@ private val CLAUDE_LIMIT = Regex("""Claude AI usage limit reached\|(\d{9,})""")
 internal fun plainStatus(status: String, engine: Engine, zone: ZoneId = ZoneId.systemDefault()): Plain? {
     val said = status.removePrefix("Error: ").removePrefix("Failed: ")
     return when {
+        // the app was closed while it worked (by Android, or an update): nothing went wrong with the task itself
+        said == "Interrupted" -> Plain("Your phone closed me partway. Try again, and I'll go on from there.")
         "Free usage limit reached" in said ->
             Plain("OpenCode's free models are used up for now. Sign in to Claude, or give OpenCode a provider key, in Setup.", setup = true)
         "Credit balance is too low" in said ->
@@ -29,7 +31,9 @@ internal fun plainStatus(status: String, engine: Engine, zone: ZoneId = ZoneId.s
         // and Setup is where it's done
         "Wireless debugging" in said || "Droid's helper" in said -> Plain(said, setup = true)
         else -> CLAUDE_LIMIT.find(said)?.let { m ->
-            Plain("You've reached your Claude usage limit. It resets ${resetsAt(m.groupValues[1].toLong(), zone)}.")
+            // (a time it can't be: no time said)
+            val at = m.groupValues[1].toLongOrNull()?.takeIf { it in 0..253_402_300_799L }
+            Plain("You've reached your Claude usage limit." + (at?.let { " It resets ${resetsAt(it, zone)}." } ?: ""))
         }
     }
 }

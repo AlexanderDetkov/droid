@@ -39,22 +39,24 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 /**
- * A page the agent showed full screen (`droid show --full`): Back to the chat, the page's title, the page, and a
- * message box under it to tell the agent something about it (its answer, while the agent waits on it). A page that
- * answers (droid.send, or elsewhere: the chat's message box) or closes itself (droid.close) is done here. A page shown
- * full screen while one is (the same, updated, or another) takes its place.
+ * A page the agent showed full screen (`droid show --full`), or one the chat's history opens (a page, or an answer
+ * the agent made as an app): Back to the chat, the page's title, the page, and a message box under it to tell the
+ * agent something about it (its answer, while the agent waits on it). A page that answers (droid.send, or elsewhere:
+ * the chat's message box) or closes itself (droid.close) is done here. A page shown full screen while one is (the
+ * same, updated, or another) takes its place.
  */
 class PageActivity : ComponentActivity() {
-    /** The chat and the page it shows. */
-    private var shown by mutableStateOf<Pair<String, String>?>(null)
+    /** The chat, and the page it shows: by its id, else the answer at a message. */
+    private var shown by mutableStateOf<Triple<String, String?, Int>?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         if (!show(intent)) { finish(); return }
-        setContent { DroidTheme { shown?.let { (conv, page) -> key(conv, page) { PageScreen(conv, page, ::finish) } } } }
+        setContent { DroidTheme { shown?.let { (conv, page, at) -> key(conv, page, at) { PageScreen(conv, page, at, ::finish) } } } }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -65,31 +67,36 @@ class PageActivity : ComponentActivity() {
 
     private fun show(i: Intent): Boolean {
         val conv = i.getStringExtra(EXTRA_CONV) ?: return false
-        val page = i.getStringExtra(EXTRA_PAGE) ?: return false
-        Notify.cancel(this, conv, pageNote(page))  // the notification that told of it
-        shown = conv to page
+        val page = i.getStringExtra(EXTRA_PAGE)
+        val at = i.getIntExtra(EXTRA_AT, -1)
+        if (page == null && at < 0) return false
+        if (page != null) Notify.cancel(this, conv, pageNote(page))  // the notification that told of it
+        shown = Triple(conv, page, at)
         return true
     }
 }
 
 @Composable
-private fun PageScreen(conv: String, pageId: String, onClose: () -> Unit) {
+private fun PageScreen(conv: String, pageId: String?, at: Int, onClose: () -> Unit) {
     val ctx = LocalContext.current
     val app = ctx.applicationContext as DroidApp
     val convs by app.store.convs.collectAsState()
     val running by app.runner.running.collectAsState()  // whether the agent still waits on it changes with its run
     val c = convs.firstOrNull { it.id == conv }
-    val i = c?.pageIndex(pageId) ?: -1
+    // the page by its id (its latest), or an answer with HTML
+    val i = if (c == null) -1 else if (pageId != null) c.pageIndex(pageId)
+        else at.takeIf { c.messages.getOrNull(it)?.let { m -> m.kind == Kind.AGENT && hasHtml(m.text) } == true } ?: -1
     if (c == null || i < 0) { LaunchedEffect(Unit) { onClose() }; return }
     val m = c.messages[i]
-    val info = PageInfo.of(m)
+    val info = if (pageId != null) PageInfo.of(m) else PageInfo("", title = pageTitle(m.text))
     // as the chat and its run are now (both collected above, so this follows them)
-    val waits = remember(c, running) { awaited(app, c, i) }
+    val waits = remember(c, running) { pageId != null && awaited(app, c, i) }
     val live = remember(c, running) { pageLive(app, c, i) }
     CloseWhenAnswered(info.reply != null, onClose)
     val dark = P.dark
-    val actions = remember(conv, pageId) {
-        ChatPageActions(ctx, conv, pageId, onScreen = { openChat(ctx, conv, handoff = true); onClose() }, onClose = onClose,
+    val actions = remember(conv, pageId, i) {
+        ChatPageActions(ctx, conv, pageId, isLive = { pageLiveNow(app, conv, pageId, i) },
+            onScreen = { openChat(ctx, conv, handoff = true); onClose() }, onClose = onClose,
             onSent = { openChat(ctx, conv, handoff = false); onClose() })
     }
     Column(Modifier.fillMaxSize().background(P.bg).systemBarsPadding().imePadding()) {
@@ -101,10 +108,12 @@ private fun PageScreen(conv: String, pageId: String, onClose: () -> Unit) {
             }
         }
         key(m.text, dark) {
-            FillPage("full:$pageId:${m.text.hashCode()}:$dark", "page:$conv:$pageId", { cx -> pageDocument(cx, m.text, dark, PageMode.FULL) },
+            if (pageId != null) FillPage("full:$pageId:${m.text.hashCode()}:$dark", "page:$conv:$pageId", { cx -> pageDocument(cx, m.text, dark, PageMode.FULL) },
+                namedPaths(m.text), actions, Modifier.weight(1f).fillMaxWidth(), live = live, base = info.base.ifEmpty { null })
+            else FillPage("full:a$i:${m.text.hashCode()}:$dark", chatOrigin(conv), { cx -> answerDocument(cx, m.text, dark, PageMode.FULL) },
                 namedPaths(m.text), actions, Modifier.weight(1f).fillMaxWidth(), live = live)
         }
-        PageComposer("Message Droid") { text -> pageSend(ctx, conv, pageId, text, null); openChat(ctx, conv, handoff = false); onClose() }
+        PageComposer("Message Dash") { text -> pageSend(ctx, conv, pageId, text, null); openChat(ctx, conv, handoff = false); onClose() }
     }
 }
 
@@ -118,21 +127,21 @@ internal fun CloseWhenAnswered(answered: Boolean, onClose: () -> Unit) {
     }
 }
 
-/** A plain message box with a send button, as the chat's looks. */
+/** A message box with a send button, the same lavender pill as the chat's bar. */
 @Composable
 fun PageComposer(hint: String, onSend: (String) -> Unit) {
     var text by remember { mutableStateOf("") }
     val send = { text.trim().takeIf { it.isNotEmpty() }?.let { onSend(it); text = "" } }
-    Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 12.dp).clip(RoundedCornerShape(30.dp))
-        .border(2.dp, P.call, RoundedCornerShape(30.dp)).height(60.dp).padding(start = 20.dp, end = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 12.dp).clip(RoundedCornerShape(32.dp))
+        .background(Lavender).height(64.dp).padding(start = 22.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.weight(1f)) {
-            if (text.isEmpty()) Text(hint, style = MaterialTheme.typography.bodyLarge, color = P.muted)
+            if (text.isEmpty()) Text(hint, style = MaterialTheme.typography.bodyLarge.copy(fontSize = 18.sp), color = P.muted)
             BasicTextField(text, { text = it }, Modifier.fillMaxWidth(), singleLine = true,
-                textStyle = MaterialTheme.typography.bodyLarge.copy(color = P.text), cursorBrush = SolidColor(P.call),
+                textStyle = MaterialTheme.typography.bodyLarge.copy(color = P.text, fontSize = 18.sp), cursorBrush = SolidColor(P.call),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send), keyboardActions = KeyboardActions(onSend = { send() }))
         }
-        IconBtn(R.drawable.ic_send, "Send", { send() }, Modifier.clip(RoundedCornerShape(24.dp)).background(if (text.isBlank()) P.raised else P.call),
-            tint = if (text.isBlank()) P.muted else OnCall, size = 48.dp, iconSize = 22.dp, enabled = text.isNotBlank())
+        IconBtn(R.drawable.ic_send, "Send", { send() }, Modifier.clip(RoundedCornerShape(24.dp)).background(P.call.copy(alpha = if (text.isBlank()) .4f else 1f)),
+            tint = OnCall, size = 48.dp, iconSize = 22.dp, enabled = text.isNotBlank())
     }
 }
 

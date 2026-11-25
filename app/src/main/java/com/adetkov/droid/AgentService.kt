@@ -47,16 +47,23 @@ private fun serve(ctx: Context, id: String) {
 fun clearDone(ctx: Context, convId: String) = ctx.getSystemService(NotificationManager::class.java).cancel(nid(convId) + 1)
 
 /**
- * Deletes chat [convId] and all it left: its run and agent session (see [Runner.delete]), its stills and the files its
+ * Deletes chat [convId] and all it left: its run and agent session (see [Runner.delete]), its app folder, its stills and the files its
  * answers showed, its notifications (the app's and the agent's), and what the agent set for later in it.
  */
 fun deleteChat(ctx: Context, convId: String) {
     val app = ctx.applicationContext as DroidApp
     app.runner.delete(convId)
-    Stills.delete(ctx, convId)
-    Shown.delete(ctx, convId)
     clearDone(ctx, convId)
     Notify.forget(ctx, convId)
+    // its files, away from the screen's thread: its pictures, its answers' copies, and its app folder in Droid's Linux
+    // (a name Droid made: the apps folder and the chat's id)
+    kotlin.concurrent.thread(isDaemon = true, name = "delete-chat") {
+        Stills.delete(ctx, convId)
+        Shown.delete(ctx, convId)
+        app.backend.apps?.let { apps ->
+            try { app.backend.run("rm -rf ${shellQuote(appDir(apps, convId))}", 30) } catch (e: Exception) { Log.w("Droid", "delete app: $e") }
+        }
+    }
 }
 
 private fun nid(id: String) = id.hashCode() and 0x3fffffff
@@ -82,6 +89,8 @@ const val EXTRA_HANDOFF = "handoff"
 private const val ACTION_STOP = "stop"
 /** Which run, and whether working or holding its screen, a Stop or Close screen was shown for. */
 private const val EXTRA_RUN = "run"
+/** Which picture of Dash a notification shows (see AgentService.looks). */
+private const val EXTRA_LOOK = "com.adetkov.droid.look"
 private const val CH_RUN = "running"
 private const val CH_DONE = "done"
 
@@ -100,8 +109,8 @@ class AgentService : Service() {
     private var lastStartId = 0
     /** Chats working on a request, to notify when it finishes. */
     private val tracked = HashSet<String>()
-    /** Chats with an ongoing notification. */
-    private val posted = HashSet<String>()
+    /** Chats with an ongoing notification, and what it shows ([looks]). */
+    private val posted = HashMap<String, String>()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -144,10 +153,11 @@ class AgentService : Service() {
             val shown = app.runner.screens.value.filterValues { it.port != null }.keys + busy
             // A request finished (its run may hold the screen on): its answer, or why it stopped; not over the chat itself.
             for (id in tracked - busy) { tracked -= id; if (!app.isVisible(id)) doneNotification(id)?.let { nm.notify(nid(id) + 1, it) } }
-            for (id in posted - shown) { posted -= id; nm.cancel(nid(id)) }
+            for (id in posted.keys - shown) { posted -= id; nm.cancel(nid(id)) }
             // Up while any run is, one exiting after its answer too: its agent may go on (to a message sent mid-turn),
             // which a frozen app wouldn't see.
             if (runs.isEmpty()) {
+                posted.clear()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf(lastStartId)
                 return@collect
@@ -157,7 +167,12 @@ class AgentService : Service() {
                 fgId = busy.firstOrNull() ?: shown.firstOrNull() ?: runs.first()
                 startForeground(nid(fgId!!), ongoing(fgId!!), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
             }
-            for (id in shown) { posted += id; if (id in busy) tracked += id; nm.notify(nid(id), ongoing(id)) }
+            for (id in shown) {
+                if (id in busy) tracked += id
+                // the same again would only make the system redraw it (its time counts by itself)
+                val n = ongoing(id); val looks = looks(n)
+                if (posted.put(id, looks) != looks) nm.notify(nid(id), n)
+            }
             delay(1000)
         }
     }
@@ -190,7 +205,10 @@ class AgentService : Service() {
     }
 
     /** Dash as the notification's picture, in the pose of what the chat is doing or waits on you for. */
-    private fun dash(feel: Feel) = dashPortrait(feel, (64 * resources.displayMetrics.density).toInt(), resources.displayMetrics.density, lightShade(this))
+    private fun Notification.Builder.dash(feel: Feel): Notification.Builder {
+        val b = dashPortrait(feel, (64 * resources.displayMetrics.density).toInt(), resources.displayMetrics.density, lightShade(this@AgentService))
+        return setLargeIcon(b).addExtras(android.os.Bundle().apply { putInt(EXTRA_LOOK, System.identityHashCode(b)) })
+    }
 
     private fun runningNotification(id: String): Notification {
         val conv = app.store.get(id)
@@ -198,7 +216,7 @@ class AgentService : Service() {
         val page = conv?.let { waitingPage(it.messages, true) }
         return Notification.Builder(this, CH_RUN)
             .setSmallIcon(R.drawable.ic_notify)
-            .setLargeIcon(dash(chatFeel(true, app.runner.doing.value[id], null, waiting = page != null)))
+            .dash(chatFeel(true, app.runner.doing.value[id], null, waiting = page != null))
             .apply { if (page != null) setSubText("Your turn") }
             .setContentTitle(conv?.title ?: "Droid")
             .setContentText(page?.let { PageInfo.of(it).title.ifEmpty { "Droid is waiting for your answer" } } ?: conv?.let { latestStatus(it.messages) } ?: "Working…")
@@ -208,7 +226,6 @@ class AgentService : Service() {
             .setShowWhen(true)
             .setWhen(app.runner.running.value[id]?.started ?: System.currentTimeMillis())
             .setContentIntent(open(id, false))
-            .addAction(action(R.drawable.ic_eye, "Watch", open(id, true)))
             .addAction(action(R.drawable.ic_stop, "Stop", stop(id)))
             .build()
             .also { it.flags = it.flags or Notification.FLAG_NO_CLEAR or Notification.FLAG_ONGOING_EVENT }
@@ -222,17 +239,16 @@ class AgentService : Service() {
         val mood = conv?.let { lastMood(it.messages) }
         return Notification.Builder(this, CH_RUN)
             .setSmallIcon(R.drawable.ic_notify)
-            .setLargeIcon(dash(mood?.feel ?: if (outcome == Outcome.ASKS) Feel.NEEDS_YOU else Feel.IDLE))
+            .dash(mood?.feel ?: if (outcome == Outcome.ASKS) Feel.NEEDS_YOU else Feel.IDLE)
             .apply { turnLabel(outcome, mood)?.let { setSubText(it) } }
             .setContentTitle(conv?.title ?: "Droid")
-            .setContentText(if (closesAt != null) "Droid's screen stays open for your reply, or for you to take over"
-                else "Droid's screen stays open while you watch")
+            .setContentText(if (closesAt != null) "Keeping my screen open for your reply, or for you to do it yourself"
+                else "Keeping my screen open while it's yours")
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .apply { if (closesAt != null) setUsesChronometer(true).setChronometerCountDown(true).setShowWhen(true).setWhen(closesAt) else setShowWhen(false) }
             .setContentIntent(open(id, false))
-            .addAction(action(R.drawable.ic_eye, "Watch", open(id, true)))
-            .addAction(action(R.drawable.ic_close, "Close screen", stop(id)))
+            .addAction(action(R.drawable.ic_close, "Close", stop(id)))
             .build()
             .also { it.flags = it.flags or Notification.FLAG_NO_CLEAR or Notification.FLAG_ONGOING_EVENT }
     }
@@ -246,7 +262,7 @@ class AgentService : Service() {
         val messages = conv?.messages.orEmpty()
         return Notification.Builder(this, CH_RUN)
             .setSmallIcon(R.drawable.ic_notify)
-            .setLargeIcon(dash(chatFeel(false, null, lastOutcome(messages, false), lastMood(messages))))
+            .dash(chatFeel(false, null, lastOutcome(messages, false), lastMood(messages)))
             .setContentTitle(conv?.title ?: "Droid")
             .setContentText("Finishing up…")
             .setOngoing(true)
@@ -267,7 +283,7 @@ class AgentService : Service() {
         val mood = lastMood(conv.messages)
         return Notification.Builder(this, CH_DONE)
             .setSmallIcon(R.drawable.ic_notify)
-            .setLargeIcon(dash(chatFeel(false, null, outcome, mood)))
+            .dash(chatFeel(false, null, outcome, mood))
             .setSubText(appName(conv))  // the app it's from, in its header
             // Dash's words are the headline, as in the chat; the request names the chat when he has none
             .setContentTitle(mood?.words?.takeIf { it.isNotBlank() } ?: conv.title)
@@ -279,4 +295,12 @@ class AgentService : Service() {
     }
 
     private fun plain(s: String) = stripMarkdown(s).replace(Regex("\\s+"), " ")
+
+    /** What [n] shows: its words, times, Dash's picture and buttons. */
+    @Suppress("DEPRECATION")
+    private fun looks(n: Notification) = buildString {
+        for (k in n.extras.keySet().sorted()) append(k).append('=').append(n.extras.get(k)).append(';')
+        append(n.`when`)
+        n.actions?.forEach { append('|').append(it.title) }
+    }
 }

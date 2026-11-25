@@ -19,6 +19,36 @@ import java.security.MessageDigest
  */
 
 internal const val EXTRA_PAGE = "page"
+internal const val EXTRA_AT = "at"
+
+/**
+ * A chat's app keeping itself current. Opened again a while after it was shown (or last refreshed), an app shown from
+ * its folder that has an executable `refresh` there gets it run, in that folder, with no turn of the agent's; then its
+ * page is read again (the script may have rewritten it, or only the data it loads). Returns whether it ran, for the
+ * screen to reload the app in place. Off the main thread.
+ */
+object AppRefresh {
+    private const val AFTER = 10 * 60_000L
+    private val last = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    fun run(app: DroidApp, conv: String, m: Msg): Boolean {
+        val info = PageInfo.of(m)
+        if (info.base.isEmpty() || info.path.isEmpty()) return false
+        val now = System.currentTimeMillis()
+        if (now - maxOf(m.ts, last[conv] ?: 0L) < AFTER) return false
+        last[conv] = now
+        // (run by sh if it can't be run itself: a folder that doesn't allow running files; Droid's Linux out of reach
+        // is a refresh that didn't happen)
+        val (out, code) = try {
+            app.backend.run("cd ${shellQuote(info.base)} && [ -f refresh ] || exit 3; ./refresh; c=\$?; [ \$c = 126 ] && exec sh ./refresh; exit \$c", 40)
+        } catch (e: Exception) { Log.w("Droid", "refresh $conv: $e"); return false }
+        if (code != 0) { if (code != 3) Log.w("Droid", "refresh $conv: exit $code: ${out.takeLast(300)}"); return false }
+        val f = File(Shown.dir(app, conv), "refresh-${System.nanoTime()}.html")
+        val html = try { if (app.backend.fetch(info.path, f)) f.readText() else null } catch (_: IOException) { null } finally { f.delete() }
+        if (html != null && html != m.text) app.store.update(conv) { it.withPageText(info.id, html) }
+        return true
+    }
+}
 
 /** The notification that tells the owner about page [pageId] (one waiting on them, or one that couldn't open). */
 internal fun pageNote(pageId: String) = "page-$pageId"
@@ -97,6 +127,7 @@ class ChatPageActions(
     override fun screen() { main.post(onScreen) }
     override fun open(url: String) = openLink(ctx, url)
     override fun close() { main.post(onClose) }
+    override fun did(label: String, what: String) = app.runner.pageDid(conv, label, what)
     override fun fetch(path: String): File? {
         val name = MessageDigest.getInstance("SHA-1").digest(path.toByteArray()).take(6).joinToString("") { "%02x".format(it) }
         val f = File(shown, "linux-$name-${File(path).name}")
@@ -108,6 +139,11 @@ class ChatPageActions(
 /** Opens page [pageId] of chat [conv] full screen, in place of the page there if one is (see [PageActivity]). */
 fun pageIntent(ctx: Context, conv: String, pageId: String): Intent = Intent(ctx, PageActivity::class.java)
     .putExtra(EXTRA_CONV, conv).putExtra(EXTRA_PAGE, pageId).setData("droid://page/$conv/$pageId".toUri())
+    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+
+/** Opens the answer at message [at] of chat [conv], an app the agent made in its answer, full screen (see [PageActivity]). */
+fun answerIntent(ctx: Context, conv: String, at: Int): Intent = Intent(ctx, PageActivity::class.java)
+    .putExtra(EXTRA_CONV, conv).putExtra(EXTRA_AT, at).setData("droid://answer/$conv/$at".toUri())
     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
 
 /**

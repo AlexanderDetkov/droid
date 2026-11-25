@@ -16,6 +16,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -25,7 +28,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -33,7 +35,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -119,7 +120,7 @@ fun ActionSheet(onDismiss: () -> Unit, title: String? = null, content: @Composab
     val scope = rememberCoroutineScope()
     val close: () -> Unit = { scope.launch { state.hide() }.invokeOnCompletion { if (!state.isVisible) onDismiss() } }
     ModalBottomSheet(
-        onDismissRequest = onDismiss, sheetState = state, containerColor = P.bg, contentColor = P.text,
+        onDismissRequest = onDismiss, sheetState = state, containerColor = P.sheet, contentColor = P.text,
         shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
         dragHandle = { BottomSheetDefaults.DragHandle(color = P.hairline, width = 36.dp, height = 4.dp) },
     ) {
@@ -141,52 +142,64 @@ fun SheetRow(icon: Int, label: String, onClick: () -> Unit, danger: Boolean = fa
     }
 }
 
-/** A confirm dialog; the confirming action is red when it destroys something. */
+/**
+ * Asks once, in the same sheet as everything else: the question, what it means, one big button ([danger]: red, for
+ * what can't be undone), and [dismiss] under it ([onSecondary]: what that does besides closing, e.g. "Type instead").
+ */
 @Composable
 fun ConfirmDialog(
     title: String, text: String?, confirm: String, onConfirm: () -> Unit, onDismiss: () -> Unit,
-    danger: Boolean = false, dismiss: String = "Cancel",
+    danger: Boolean = false, dismiss: String = "Cancel", onSecondary: (() -> Unit)? = null,
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = P.sheet, titleContentColor = P.text, textContentColor = P.muted,
-        shape = RoundedCornerShape(24.dp),
-        title = { Text(title, style = MaterialTheme.typography.titleLarge) },
-        text = text?.let { { Text(it, style = MaterialTheme.typography.bodyMedium) } },
-        confirmButton = {
-            TextButton({ onDismiss(); onConfirm() }, Modifier.testTag("confirm")) {
-                Text(confirm, color = if (danger) P.danger else P.text, fontWeight = FontWeight.SemiBold)
-            }
-        },
-        dismissButton = { TextButton(onDismiss) { Text(dismiss, color = P.muted) } },
-    )
+    ActionSheet(onDismiss) { close ->
+        SheetQuestion(title, text)
+        // (dark's red is light: dark words on it)
+        SheetButton(confirm, if (danger) P.danger else P.call, if (danger) (if (P.dark) Color(0xFF0D0D0D) else Color.White) else OnCall, "confirm") { onConfirm(); close() }
+        Box(Modifier.fillMaxWidth().padding(horizontal = 20.dp).height(56.dp).clip(RoundedCornerShape(28.dp))
+            .clickable { close(); onSecondary?.invoke() }.testTag("dismiss"), contentAlignment = Alignment.Center) {
+            Text(dismiss, style = MaterialTheme.typography.titleMedium.copy(fontSize = 17.sp, fontWeight = FontWeight.SemiBold))
+        }
+    }
 }
 
-/** A one-line text prompt, e.g. renaming a chat; the text starts selected. */
+/** A one-line text to change in a sheet, e.g. renaming a chat: the text starts selected, so typing replaces it. */
 @Composable
 fun TextDialog(title: String, initial: String, confirm: String, onConfirm: (String) -> Unit, onDismiss: () -> Unit) {
     var value by remember { mutableStateOf(TextFieldValue(initial, TextRange(0, initial.length))) }
     val focus = remember { FocusRequester() }
-    LaunchedEffect(Unit) { focus.requestFocus() }
-    fun submit() { if (value.text.isNotBlank()) { onConfirm(value.text.trim()); onDismiss() } }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = P.sheet, titleContentColor = P.text, shape = RoundedCornerShape(24.dp),
-        title = { Text(title, style = MaterialTheme.typography.titleLarge) },
-        text = {
+    LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
+    ActionSheet(onDismiss) { close ->
+        fun submit() { if (value.text.isNotBlank()) { onConfirm(value.text.trim()); close() } }
+        Column(Modifier.imePadding()) {
+            SheetQuestion(title, null)
             BasicTextField(
-                value, { value = it }, Modifier.fillMaxWidth().focusRequester(focus).testTag("dialog_text")
-                    .clip(RoundedCornerShape(12.dp)).background(P.surface).padding(horizontal = 14.dp, vertical = 12.dp),
-                singleLine = true, textStyle = MaterialTheme.typography.bodyLarge.copy(color = P.text), cursorBrush = SolidColor(P.text),
+                value, { value = it }, Modifier.fillMaxWidth().padding(horizontal = 20.dp).focusRequester(focus).testTag("dialog_text")
+                    .clip(RoundedCornerShape(18.dp)).background(P.surface).padding(horizontal = 18.dp, vertical = 15.dp),
+                singleLine = true, textStyle = MaterialTheme.typography.bodyLarge.copy(color = P.text, fontSize = 18.sp), cursorBrush = SolidColor(P.call),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done), keyboardActions = KeyboardActions(onDone = { submit() }),
             )
-        },
-        confirmButton = {
-            TextButton(::submit, Modifier.testTag("confirm"),
-                enabled = value.text.isNotBlank()) { Text(confirm, color = P.text, fontWeight = FontWeight.SemiBold) }
-        },
-        dismissButton = { TextButton(onDismiss) { Text("Cancel", color = P.muted) } },
-    )
+            Spacer(Modifier.height(14.dp))
+            SheetButton(confirm, P.call, OnCall, "confirm", enabled = value.text.isNotBlank()) { submit() }
+        }
+    }
+}
+
+/** A sheet's question: its words big, what it means quietly under them. */
+@Composable
+private fun SheetQuestion(title: String, text: String?) {
+    Text(title, Modifier.padding(horizontal = 24.dp).padding(top = 4.dp, bottom = if (text == null) 14.dp else 6.dp),
+        style = MaterialTheme.typography.titleLarge.copy(fontSize = 22.sp, fontWeight = FontWeight.Bold))
+    if (text != null) Text(text, Modifier.padding(horizontal = 24.dp).padding(bottom = 20.dp),
+        style = MaterialTheme.typography.bodyLarge.copy(fontSize = 16.sp, lineHeight = 23.sp), color = P.muted)
+}
+
+/** A sheet's one big button. */
+@Composable
+private fun SheetButton(label: String, bg: Color, fg: Color, tag: String, enabled: Boolean = true, onClick: () -> Unit) {
+    Box(Modifier.fillMaxWidth().padding(horizontal = 20.dp).height(60.dp).clip(RoundedCornerShape(30.dp))
+        .background(if (enabled) bg else P.raised).clickable(enabled = enabled, onClick = onClick).testTag(tag), contentAlignment = Alignment.Center) {
+        Text(label, style = MaterialTheme.typography.titleMedium.copy(fontSize = 18.sp, fontWeight = FontWeight.Bold), color = if (enabled) fg else P.faint)
+    }
 }
 
 /** A circle with the first letter of [name]. */

@@ -94,11 +94,17 @@ object Stills {
     fun deleteAll(ctx: Context) = File(ctx.filesDir, "stills").deleteRecursively()
 }
 
-/** A turn's still, once there is one; [version] changes when it was rewritten. */
+/** A turn's still, once there is one; [version] changes when it was rewritten. Decoded no bigger than [width] px needs (a JPEG has no alpha). */
 @Composable
-fun rememberStill(f: File, version: Any?): ImageBitmap? {
-    val bmp by produceState<ImageBitmap?>(null, f, version) {
-        value = withContext(Dispatchers.IO) { if (f.exists()) BitmapFactory.decodeFile(f.path)?.asImageBitmap() else null }
+fun rememberStill(f: File, version: Any?, width: Int = Int.MAX_VALUE): ImageBitmap? {
+    val bmp by produceState<ImageBitmap?>(null, f, version, width) {
+        value = withContext(Dispatchers.IO) {
+            if (!f.exists()) return@withContext null
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }.also { BitmapFactory.decodeFile(f.path, it) }
+            var sample = 1
+            while (bounds.outWidth / (sample * 2) >= width) sample *= 2
+            BitmapFactory.decodeFile(f.path, BitmapFactory.Options().apply { inSampleSize = sample; inPreferredConfig = Bitmap.Config.RGB_565 })?.asImageBitmap()
+        }
     }
     return bmp
 }

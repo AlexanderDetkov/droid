@@ -1,6 +1,10 @@
 package com.adetkov.droid
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -57,11 +61,12 @@ fun SubScreen(
 }
 
 /**
- * Settings, for everyone: who's signed in, what Droid should know about you, voice and looks. What only technical
- * people need (the agent and its model, memory, voice match, Setup's details) is one tap further, under Advanced.
+ * Settings, one screen: who's signed in (the AI for new chats is a tap further), what Dash knows about you, and the few
+ * switches anyone wants, then Setup. About and Delete all are its footer; a newer Droid, while there is one, its top.
  */
 @Composable
-fun SettingsScreen(onBack: () -> Unit, onInstructions: () -> Unit, onSetup: () -> Unit, onAbout: () -> Unit, onAdvanced: () -> Unit) {
+fun SettingsScreen(onBack: () -> Unit, onAccount: () -> Unit, onKnow: () -> Unit, onVoiceMatch: () -> Unit, onSetup: () -> Unit,
+                   onAbout: () -> Unit, onDeleteAll: () -> Unit) {
     val app = LocalContext.current.applicationContext as DroidApp
     val prefs = app.prefs
     val setup by app.setup.state.collectAsState()
@@ -69,107 +74,134 @@ fun SettingsScreen(onBack: () -> Unit, onInstructions: () -> Unit, onSetup: () -
     val engine by prefs.engine.collectAsState()
     val speak by prefs.speakReplies.collectAsState()
     val home by prefs.homePage.collectAsState()
-    val haptics by prefs.haptics.collectAsState()
     val update by Updates.newer.collectAsState()
+    val voiceMatch by app.voiceMatch.enabled.collectAsState()
+    val voiceprint by app.voiceMatch.print.collectAsState()
+    val convs by app.store.convs.collectAsState()
+    var confirmDeleteAll by remember { mutableStateOf(false) }
+    if (confirmDeleteAll) ConfirmDialog(
+        "Delete all ${convs.size} chats?", "Their apps and what I remember of them go too. Your instructions and my notes stay.",
+        "Delete all", onDeleteAll, { confirmDeleteAll = false }, danger = true,
+    )
 
     SubScreen("Settings", onBack) {
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).navigationBarsPadding().padding(start = 20.dp, end = 20.dp, bottom = 16.dp)) {
-            // Who Droid works as; a tap goes to Setup, where signing in happens
-            Group("Account") {
-                val other = setup.others[engine]
-                KitRow(if (engine == Engine.CLAUDE) setup.email ?: "Not signed in" else engine.label, Modifier.testTag("settings_account"),
-                    sub = if (engine == Engine.CLAUDE) planLabel(setup.plan) ?: if (setup.signedIn) "Claude account" else "Tap to sign in"
-                        else other?.detail ?: "Tap to set it up",
-                    lead = { Avatar(setup.email, 42.dp) }, onClick = onSetup, trailing = { Chevron() })
-            }
-
             update?.let { u ->
-                Group(null) {
-                    NavItem(R.drawable.ic_download, "Droid ${u.version} is out", "Download it from GitHub",
-                        { openLink(app, u.url) }, "settings_update")
+                Row(Modifier.padding(top = 6.dp, bottom = 6.dp).fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Lavender)
+                    .clickable { openLink(app, u.url) }.padding(horizontal = 14.dp, vertical = 12.dp).testTag("settings_update"),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(42.dp).clip(RoundedCornerShape(14.dp)).background(P.call), contentAlignment = Alignment.Center) {
+                        Icon(painterResource(R.drawable.ic_download), null, Modifier.size(21.dp), tint = OnCall)
+                    }
+                    Column(Modifier.padding(start = 14.dp)) {
+                        Text("Droid ${u.version} is out", style = MaterialTheme.typography.titleMedium.copy(fontSize = 18.sp, fontWeight = FontWeight.Bold), color = CallText)
+                        Text("See what's new and get it", style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp), color = CallText)
+                    }
                 }
             }
-
-            Group("You and me") {
-                NavItem(R.drawable.ic_notes, "Instructions", "What Droid should know about you, and how you like things done", onInstructions, "settings_instructions")
+            // who you are, and the AI new chats use, in a line: "Claude Max · Smartest", or what's left to set up
+            val usable = if (engine == Engine.CLAUDE) setup.signedIn else setup.others[engine]?.signedIn == true
+            KitRow("Account", Modifier.testTag("settings_account"),
+                sub = if (!usable) "${aiName(engine)} · not set up yet" else listOfNotNull(
+                    if (engine == Engine.CLAUDE) planLabel(setup.plan) ?: "Claude" else aiName(engine),
+                    engine.model(prefs.model(engine)).label.takeIf { engine.models.size > 1 && it != "Default" },
+                ).joinToString(" · "),
+                lead = { Avatar(setup.email.takeIf { engine == Engine.CLAUDE }, 42.dp) }, onClick = onAccount, trailing = { Chevron() })
+            NavItem(R.drawable.ic_memory, "What I know about you", "Your instructions, and what I've learned", onKnow, "settings_know")
+            ToggleItem(R.drawable.ic_speaker, "Talk out loud", "I read my answers when you talk to me", speak, prefs::setSpeakReplies, "settings_speak")
+            ToggleItem(R.drawable.ic_sparkle, "Your day from me", "A chat each morning, at the top of your list", home, prefs::setHomePage, "settings_home_page")
+            if (setup.assistant) ToggleItem(R.drawable.ic_screen, "Send your screen", "When you ask over another app",
+                setup.screenshots, app.setup::setScreenshots, "settings_screenshots")
+            NavItem(R.drawable.ic_shield, "Voice match", when {
+                voiceprint == null -> "Skip the fingerprint when locked"
+                voiceMatch -> "On: your voice skips the fingerprint"
+                else -> "Off"
+            }, onVoiceMatch, "settings_voice_match")
+            KitRow("Theme", lead = { IconTile(R.drawable.ic_theme) }) {
+                Segmented(listOf("Phone", "Light", "Dark"), theme.ordinal) { prefs.setTheme(ThemeMode.entries[it]) }
             }
-
-            Group("Talking") {
-                ToggleItem(R.drawable.ic_speaker, "Talk out loud", "I read my answers to you when you talk to me", speak, prefs::setSpeakReplies, "settings_speak")
-                Divider()
-                ToggleItem(R.drawable.ic_sparkle, "Your day from me", "Each morning, on your home screen",
-                    home, prefs::setHomePage, "settings_home_page")
-            }
-
-            Group("Looks") {
-                KitRow("Theme", lead = { IconTile(R.drawable.ic_theme) }) {
-                    Segmented(ThemeMode.entries.map { it.label }, theme.ordinal) { prefs.setTheme(ThemeMode.entries[it]) }
-                }
-                Divider()
-                ToggleItem(R.drawable.ic_haptics, "Haptic feedback", null, haptics, prefs::setHaptics, "settings_haptics")
-            }
-
-            Group("Droid") {
-                NavItem(R.drawable.ic_info, "About", "Droid ${remember { Updates.version(app) }}, source and licenses", onAbout, "settings_about")
-                Divider()
-                NavItem(R.drawable.ic_settings, "Advanced", "Agent and model, memory, voice match, setup", onAdvanced, "settings_advanced")
+            NavItem(R.drawable.ic_setup, "Setup and updates",
+                if (setup.voice && !setup.voiceCurrent) "Better speech is out" else "Access, speech, updates", onSetup, "settings_setup")
+            Row(Modifier.fillMaxWidth().padding(top = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Droid ${remember { Updates.version(app) }} · About", Modifier.clip(RoundedCornerShape(10.dp)).clickable(onClick = onAbout)
+                    .padding(horizontal = 4.dp, vertical = 10.dp).testTag("settings_about"),
+                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp, fontWeight = FontWeight.SemiBold), color = P.muted)
+                Spacer(Modifier.weight(1f))
+                if (convs.isNotEmpty()) Text("Delete all chats", Modifier.clip(RoundedCornerShape(10.dp)).clickable { confirmDeleteAll = true }
+                    .padding(horizontal = 4.dp, vertical = 10.dp).testTag("delete_all"),
+                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp, fontWeight = FontWeight.SemiBold), color = P.danger)
             }
         }
     }
 }
 
-/** What technical people may want to change: the agent and its model, Claude's memory, voice match, Setup's details. */
+/** What each agent is called in Droid: the AI behind it, not the tool. */
+fun aiName(e: Engine) = when (e) { Engine.CLAUDE -> "Claude"; Engine.CODEX -> "ChatGPT"; Engine.OPENCODE -> "Free" }
+
+/**
+ * Your account: who's signed in, the AI for new chats (one that isn't set up yet goes to Setup), and how hard it
+ * thinks. A chat keeps what it started with. Other ways to sign in (a Console account, API keys) are in Setup.
+ */
 @Composable
-fun AdvancedScreen(onBack: () -> Unit, onMemory: () -> Unit, onSetup: () -> Unit, onVoiceMatch: () -> Unit, onDeleteAll: () -> Unit) {
+fun AccountScreen(onBack: () -> Unit, onSetup: () -> Unit) {
     val app = LocalContext.current.applicationContext as DroidApp
     val prefs = app.prefs
     val setup by app.setup.state.collectAsState()
     val engine by prefs.engine.collectAsState()
     val models by prefs.models.collectAsState()
-    val voiceMatch by app.voiceMatch.enabled.collectAsState()
-    val voiceprint by app.voiceMatch.print.collectAsState()
-    val convs by app.store.convs.collectAsState()
-    var confirmDeleteAll by remember { mutableStateOf(false) }
-
-    if (confirmDeleteAll) ConfirmDialog(
-        "Delete all chats?", "All ${convs.size} chats, their attachments and what Droid remembers of them will be deleted.",
-        "Delete all", onDeleteAll, { confirmDeleteAll = false }, danger = true,
-    )
-
-    SubScreen("Advanced", onBack, backTag = "advanced_close") {
+    SubScreen("Account", onBack, backTag = "account_close") {
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).navigationBarsPadding().padding(start = 20.dp, end = 20.dp, bottom = 16.dp)) {
-            Group("Agent") {
-                EngineItem(engine, setup.others, prefs::setEngine)
-                Divider()
-                ModelItem(engine, models[engine].orEmpty()) { prefs.setModel(engine, it) }
-                Divider()
-                NavItem(R.drawable.ic_memory, "Memory", "What Claude has learned about you", onMemory, "settings_memory")
-            }
-
-            Group("Voice") {
-                NavItem(R.drawable.ic_shield, "Voice match", when {
-                    voiceprint == null -> "Skip the fingerprint on the lock screen"
-                    voiceMatch -> "On: your voice skips the fingerprint"
-                    else -> "Off"
-                }, onVoiceMatch, "settings_voice_match")
-                if (setup.assistant) {
-                    Divider()
-                    ToggleItem(R.drawable.ic_screen, "Send your screen", "The assistant sees the app you open it over",
-                        setup.screenshots, app.setup::setScreenshots, "settings_screenshots")
+            KitRow(setup.email ?: "Not signed in to Claude", sub = planLabel(setup.plan)?.let { "Signed in to $it" } ?: if (setup.signedIn) "Signed in" else null,
+                lead = { Avatar(setup.email, 42.dp) })
+            KitLabel("AI for new chats")
+            Column(Modifier.padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Engine.entries.forEach { e ->
+                    val usable = if (e == Engine.CLAUDE) setup.signedIn else setup.others[e]?.signedIn == true
+                    val sub = when {
+                        e == Engine.CLAUDE && setup.signedIn -> planLabel(setup.plan)?.let { "Your $it plan" } ?: "Your Claude account"
+                        e == Engine.CLAUDE -> "Not set up yet"
+                        usable -> setup.others[e]?.detail ?: "Ready"
+                        e == Engine.CODEX -> "Not set up yet: your ChatGPT account, free or paid"
+                        else -> "Not set up yet: no account, simple jobs only"
+                    }
+                    AiOption(aiName(e), sub, picked = e == engine, usable = usable, tag = "engine_" + e.id) {
+                        if (usable) prefs.setEngine(e) else onSetup()
+                    }
                 }
             }
-
-            Group("Phone") {
-                NavItem(R.drawable.ic_setup, "Setup and updates",
-                    if (setup.voice && !setup.voiceCurrent) "Better speech-to-text is out"
-                    else (if (setup.access == Access.ROOT) "Root" else "Wireless debugging") + ", Linux, agents, sign-in", onSetup, "settings_setup")
+            val choices = engine.models
+            if (choices.size > 1) {
+                KitLabel("How hard it thinks")
+                val current = choices.indexOfFirst { it.alias == models[engine].orEmpty() }.coerceAtLeast(0)
+                Box(Modifier.padding(top = 8.dp)) { Segmented(choices.map { it.label }, current) { prefs.setModel(engine, choices[it].alias) } }
+                Text(choices[current].detail + ". A chat keeps what it started with.", Modifier.padding(start = 4.dp, top = 10.dp),
+                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp), color = P.muted)
+            } else if (engine.custom) {
+                Box(Modifier.padding(top = 14.dp)) { ModelItem(engine, models[engine].orEmpty()) { prefs.setModel(engine, it) } }
             }
+            Text("Other ways to sign in", Modifier.padding(top = 22.dp).clip(RoundedCornerShape(10.dp)).clickable(onClick = onSetup)
+                .padding(horizontal = 4.dp, vertical = 10.dp).testTag("other_sign_in"),
+                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp, fontWeight = FontWeight.SemiBold), color = P.muted)
+        }
+    }
+}
 
-            Group(null) {
-                val tint = if (convs.isNotEmpty()) P.danger else P.faint  // nothing to delete
-                KitRow("Delete all chats", Modifier.testTag("delete_all"), lead = { IconTile(R.drawable.ic_delete_all, tint) }, titleColor = tint,
-                    onClick = if (convs.isNotEmpty()) ({ confirmDeleteAll = true }) else null)
+/** One AI to pick: its name, what it takes, and a check while it's the one. */
+@Composable
+private fun AiOption(name: String, sub: String, picked: Boolean, usable: Boolean, tag: String, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(20.dp)
+    Row(Modifier.fillMaxWidth().clip(shape).background(if (picked) Lavender else P.bg).border(1.5.dp, if (picked) Ring else P.hairline, shape)
+        .clickable(onClick = onClick).padding(horizontal = 18.dp, vertical = 14.dp).testTag(tag), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(name, style = MaterialTheme.typography.titleMedium.copy(fontSize = 18.sp, fontWeight = FontWeight.Bold))
+            Text(sub, style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp), color = P.muted)
+        }
+        when {
+            picked -> Box(Modifier.size(26.dp).clip(CircleShape).background(P.call), contentAlignment = Alignment.Center) {
+                Icon(painterResource(R.drawable.ic_check), null, Modifier.size(16.dp), tint = OnCall)
             }
+            !usable -> Chevron()
+            else -> Box(Modifier.size(26.dp).clip(CircleShape).border(2.dp, P.hairline, CircleShape))
         }
     }
 }
@@ -210,36 +242,13 @@ internal fun ToggleItem(icon: Int, title: String, detail: String?, on: Boolean, 
     KitRow(title, Modifier.testTag(tag), sub = detail, lead = { IconTile(icon) }, onClick = { set(!on) }) { KitSwitch(on, set) }
 
 @Composable
-private fun EngineItem(engine: Engine, status: Map<Engine, EngineStatus>, set: (Engine) -> Unit) {
-    Box {
-        var open by remember { mutableStateOf(false) }
-        KitRow("Agent", Modifier.testTag("settings_engine"), sub = engine.label + " · for new chats", lead = { IconTile(R.drawable.ic_bolt) },
-            onClick = { open = true }) { Icon(painterResource(R.drawable.ic_expand), null, Modifier.size(20.dp), tint = P.faint) }
-        DropdownMenu(open, { open = false }, shape = RoundedCornerShape(18.dp), containerColor = P.sheet) {
-            Engine.entries.forEach { e ->
-                // New chats would fail on an agent that isn't installed and signed in (Setup does that).
-                val usable = e == Engine.CLAUDE || status[e]?.signedIn == true
-                Row(Modifier.width(280.dp).clickable(enabled = usable) { set(e); open = false }.padding(horizontal = 16.dp, vertical = 10.dp)
-                    .testTag("engine_" + e.id), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                        Text(e.label, style = MaterialTheme.typography.titleSmall, color = if (usable) P.text else P.faint)
-                        Text(if (e == Engine.CLAUDE) "The default" else status[e]?.detail ?: "Not installed: see Setup",
-                            style = MaterialTheme.typography.bodySmall, color = P.muted)
-                    }
-                    Icon(painterResource(R.drawable.ic_check), null, Modifier.size(20.dp), tint = if (e == engine) P.text else Color.Transparent)
-                }
-            }
-        }
-    }
-}
-
-@Composable
 private fun ModelItem(engine: Engine, model: String, set: (String) -> Unit) {
     Box {
         var open by remember { mutableStateOf(false) }
         var typing by remember { mutableStateOf(false) }
         if (typing) TextDialog("Model name", model, "Use", { set(it.trim()) }, { typing = false })
-        KitRow("Model", Modifier.testTag("settings_model"), sub = engine.model(model).let { if (it.alias.isEmpty()) it.detail else "${it.label} · ${it.detail}" },
+        // a model's name as people say it: its last part ("llama-3.3-70b-instruct", not the provider path)
+        KitRow("Model", Modifier.testTag("settings_model"), sub = if (model.isEmpty()) "Chosen for you" else model.substringAfterLast('/'),
             lead = { IconTile(R.drawable.ic_sparkle) }, onClick = { open = true }) {
             Icon(painterResource(R.drawable.ic_expand), null, Modifier.size(20.dp), tint = P.faint)
         }
@@ -271,11 +280,11 @@ private fun ModelItem(engine: Engine, model: String, set: (String) -> Unit) {
 fun Segmented(options: List<String>, selected: Int, onSelect: (Int) -> Unit) {
     Row(Modifier.clip(RoundedCornerShape(50)).background(P.raised).padding(3.dp)) {
         options.forEachIndexed { i, o ->
-            val on = i == selected
+            val on = i == selected  // picked: lavender, like every pick
             Text(
-                o, Modifier.clip(RoundedCornerShape(50)).background(if (on) P.bg else Color.Transparent).clickable { onSelect(i) }
+                o, Modifier.clip(RoundedCornerShape(50)).background(if (on) Lavender else Color.Transparent).clickable { onSelect(i) }
                     .padding(horizontal = 12.dp, vertical = 6.dp).testTag("seg_" + o.lowercase()),
-                style = MaterialTheme.typography.labelMedium, color = if (on) P.text else P.muted,
+                style = MaterialTheme.typography.labelMedium.copy(fontWeight = if (on) FontWeight.Bold else FontWeight.Medium), color = if (on) CallText else P.text,
             )
         }
     }

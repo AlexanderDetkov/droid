@@ -126,6 +126,9 @@ data class SetupState(
  * Claude Code, by install.sh), the Claude sign-in, the voice models and the assistant role. Each step can be re-run;
  * [refresh] reads what is in place.
  */
+/** How long what a full check found of the agents' sign-in stands at a process start (see Setup.refreshOnStart). */
+private const val FULL_CHECK_EVERY = 60 * 60_000L
+
 class Setup(private val app: DroidApp) {
     private val prefs = app.getSharedPreferences("setup", 0)
     /** Decided at the first check and changed only by the owner, so a moment without `su` never moves a rooted phone. */
@@ -154,6 +157,12 @@ class Setup(private val app: DroidApp) {
     fun needed(s: SetupState = state.value) = !s.ready && (s.checked && s.connected || !prefs.getBoolean("ready", false))
 
     fun refresh() = step(null) { check() }
+
+    /**
+     * A new process's check: whether the agents are signed in is asked again only once the last time is an hour old
+     * (each asks by starting its CLI, seconds of work, while the app draws its first screen); till then it stands.
+     */
+    fun refreshOnStart() = step(null) { check(full = System.currentTimeMillis() - prefs.getLong("fullCheckAt", 0) !in 0..FULL_CHECK_EVERY) }
 
     /**
      * Phones without root: waits for Settings' pairing dialog (Wireless debugging → Pair device with pairing code) and
@@ -535,7 +544,7 @@ class Setup(private val app: DroidApp) {
     private val checking = Any()
 
     /** Reads what is in place. [ask]: the owner tapped Start, so starting the helper may ask them (see [AdbHelper.ensure]). */
-    private fun check(ask: Boolean = false): Unit = synchronized(checking) {
+    private fun check(ask: Boolean = false, full: Boolean = true): Unit = synchronized(checking) {
         // Longer than the others: the root manager may be asking the owner whether to allow Droid.
         val root = exec(RootHost, "id", timeoutS = 90).let { it.code == 0 && "uid=0" in it.out }
         // Root stays on offer wherever there is an su (see SetupScreen): Magisk's is there while it refuses Droid (its
@@ -571,7 +580,7 @@ class Setup(private val app: DroidApp) {
         val inputBlocked = inputRefused(probe("input keyevent 0").out)
         val installed = claude.code == 0
         val linux = installed || probe("test -e ${host.rootfs} -o -e ${host.rootfs}.new").code == 0
-        val status = if (!installed) null else authStatus(probe("${host.base}/enter.sh claude auth status --json").out)
+        val status = if (!installed || !full) null else authStatus(probe("${host.base}/enter.sh claude auth status --json").out)
         // No answer at all (the command itself failed): what the last check found stands, as when Android is out of reach.
         val last = state.value
         val kept = installed && status == null
@@ -580,7 +589,7 @@ class Setup(private val app: DroidApp) {
         fun field(name: String) = status?.takeIf { signedIn && !it.isNull(name) }?.optString(name)?.takeIf { it.isNotBlank() }
         val email = if (kept) last.email else field("email")
         val plan = if (kept) last.plan else field("subscriptionType")
-        val others = checkEngines(installed)
+        val others = if (full) checkEngines(installed) else last.others
         val screenshots = assistant && probe("settings get secure $SCREENSHOTS; settings get secure $SCREEN_TEXT").out.lines()
             .filter { it.isNotBlank() }.all { it.trim() == "1" }
         state.update {
@@ -591,6 +600,7 @@ class Setup(private val app: DroidApp) {
             putBoolean("ready", state.value.ready); putBoolean("installed", installed); putBoolean("signedIn", signedIn)
             putString("email", email); putString("plan", plan)
             putOthers(others)
+            if (full) putLong("fullCheckAt", System.currentTimeMillis())
         }
     }
 

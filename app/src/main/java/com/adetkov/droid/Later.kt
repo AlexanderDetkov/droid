@@ -42,8 +42,8 @@ object Later {
             w.note?.let { dropNote(ctx, w.conv, JSONObject(it).optString("id")) }  // a notification set again replaces the one set before
             val o = JSONObject().put("id", UUID.randomUUID().toString()).put("conv", w.conv).put("at", w.at).put("text", w.text)
             if (w.note != null) o.put("note", w.note)
-            save(ctx, load(ctx) + o)
-            arm(ctx, o)
+            // kept only if Android takes the alarm (it won't past 500 of an app's)
+            if (arm(ctx, o)) save(ctx, load(ctx) + o)
         }
     }
 
@@ -75,7 +75,7 @@ object Later {
     fun restore(ctx: Context) {
         if (synchronized(this) { load(ctx).isEmpty() }) return
         allowExact(ctx)
-        synchronized(this) { load(ctx).forEach { arm(ctx, it) } }
+        synchronized(this) { load(ctx).forEach { arm(ctx, it) } }  // (one Android won't take doesn't stop the rest)
     }
 
     /** [id] went off: takes it out and returns it, or null if it is gone. */
@@ -87,12 +87,16 @@ object Later {
         return Wake(o.optString("conv"), o.optLong("at"), o.optString("text"), o.optString("note").ifEmpty { null })
     }
 
-    private fun arm(ctx: Context, o: JSONObject) {
+    /** Sets [o]'s alarm; false if Android won't (too many of the app's, or exact alarms taken away meanwhile). */
+    private fun arm(ctx: Context, o: JSONObject): Boolean {
         val am = ctx.getSystemService(AlarmManager::class.java)
         val pi = intent(ctx, o.optString("id"))
         val at = o.optLong("at").coerceAtLeast(System.currentTimeMillis() + 1000)
         // Exact when Droid may set exact alarms (see allowExact); otherwise Android may delay it a little.
-        if (am.canScheduleExactAlarms()) am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi) else am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+        return try {
+            if (am.canScheduleExactAlarms()) am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi) else am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+            true
+        } catch (e: RuntimeException) { android.util.Log.w("Droid", "later: ${e.message}"); false }
     }
 
     @Volatile private var hasExact = false

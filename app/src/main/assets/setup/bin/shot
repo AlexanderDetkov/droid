@@ -4,13 +4,23 @@
 # Either waits until the screen has settled (at most 2 s, and it says when it was still changing), so there's no need
 # to sleep first. The display's helper (VdHelper in the app) answers both, from what it shows; it writes into Android's
 # /data/local/tmp/droid/vd: at /proc/1/root in the chroot, at its own path under proot (DROID_HOST is empty there).
+#
+# Also, through `tap` and `fill` (each a line that calls this):
+#   tap LABEL | tap X Y      taps what `shot --text` lists as LABEL (by its whole name, any case), or a place
+#   fill [FIELD] TEXT        sets a text field to TEXT at once, any language (the helper does it as an accessibility
+#                            service would): the field named FIELD, or the one with the cursor
+# And `shot --hook`: Claude Code's hook before each Read (settings.json). Reading /tmp/screen.png takes a shot first and
+# reads that, so one step both takes and shows it; any other Read goes on untouched.
 V=/data/local/tmp/droid/vd/$AGENT_DISPLAY
 D=${DROID_HOST-/proc/1/root}$V
+OUT=/tmp/shot-$AGENT_DISPLAY.png
 
-# ask KIND: the helper's answer to a KIND request (shot or text), or failure if none comes within 10 s.
+# ask KIND [REQUEST]: the helper's answer to a KIND request (shot, text or fill), or failure if none comes within 10 s.
+# A REQUEST's content is written whole (by rename): the helper may look at any moment.
 ask() {
   rm -f "$D/$1.done"
-  touch "$D/$1.req" || return 1
+  if [ $# -gt 1 ]; then printf '%s' "$2" > "$D/$1.new" && mv -f "$D/$1.new" "$D/$1.req" || return 1
+  else touch "$D/$1.req" || return 1; fi
   for _ in $(seq 200); do [ -f "$D/$1.done" ] && return 0; sleep 0.05; done
   rm -f "$D/$1.req"
   return 1
@@ -19,14 +29,60 @@ changing() {
   if grep -q changing "$D/$1.done" 2>/dev/null; then echo "(the screen was still changing: shot again for a later look)"; fi
 }
 
-if [ "$1" = --text ]; then
-  # The helper writes what `uiautomator dump --windows` would (an option its help leaves out), for this display only;
-  # if it can't, Android's own dump, which takes 2-3 s. This keeps only what reads or acts: text, descriptions, fields,
-  # switches, lists.
-  rm -f "$D/ui.xml"
-  ask text && [ -s "$D/ui.xml" ] || OUT=$(android "uiautomator dump --windows $V/ui.xml" 2>&1)
-  [ -s "$D/ui.xml" ] || { echo "no text: Android couldn't read the hidden display (${OUT:-no answer}); use shot"; exit 1; }
-  python3 -I - "$D/ui.xml" "$AGENT_DISPLAY" <<'EOF'
+# picture: the display as a PNG at $OUT; else says why not and fails.
+picture() {
+  rm -f "$D/shot.png"
+  if ! ask shot; then echo "no screenshot: the hidden display didn't answer within 10 s"; return 1
+  elif [ -f "$D/shot.png" ]; then cp "$D/shot.png" "$OUT"
+  else echo "no frame yet: nothing has been drawn on the hidden display"; return 1; fi
+}
+
+case "$1" in
+--hook)
+  IN=$(cat)
+  case "$IN" in *'"/tmp/screen.png"'*) ;; *) exit 0 ;; esac
+  # The answer for Claude Code: read this shot instead, or don't, saying why (it sees the reason as the Read's error)
+  if [ -z "$AGENT_DISPLAY" ]; then WHY="no hidden display in this run"
+  else WHY=$(picture) && WHY=; fi
+  if [ -n "$WHY" ]; then
+    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' "$WHY"
+  else
+    NOTE=; grep -q changing "$D/shot.done" 2>/dev/null && NOTE=',"additionalContext":"The screen was still changing as it was taken (loading, or moving): read it again for a later look."'
+    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"file_path":"%s"}%s}}\n' "$OUT" "$NOTE"
+  fi
+  exit 0 ;;
+--fill)
+  shift
+  case $# in
+    1) FIELD= ;;
+    2) FIELD=$1; shift ;;
+    *) echo "usage: fill [FIELD] TEXT (FIELD: a field's name as shot --text lists it; none: the one with the cursor)" >&2; exit 2 ;;
+  esac
+  FIELD=$(printf '%s' "$FIELD" | tr '\n' ' ')
+  ask fill "$FIELD
+$1" || { echo "no answer: the hidden display didn't answer within 10 s"; exit 1; }
+  sed '/^changing$/d' "$D/fill.done"
+  changing fill
+  grep -q "now holds\|filled the password\|typed it" "$D/fill.done"
+  exit ;;
+--tap)
+  shift
+  [ -n "$*" ] || { echo "usage: tap LABEL | tap X Y" >&2; exit 2; }
+  if [ $# -eq 2 ]; then case "$1$2" in *[!0-9]*) ;; *) exec android "input tap $1 $2" ;; esac; fi
+  MODE=tap ;;
+--text) MODE=text ;;
+*)
+  picture && echo "$OUT" && changing shot
+  exit ;;
+esac
+
+# The helper writes what `uiautomator dump --windows` would (an option its help leaves out), for this display only; if
+# it can't, Android's own dump, which takes 2-3 s. This keeps only what reads or acts: text, descriptions, fields,
+# switches, lists.
+rm -f "$D/ui.xml"
+ask text && [ -s "$D/ui.xml" ] || OUT=$(android "uiautomator dump --windows $V/ui.xml" 2>&1)
+[ -s "$D/ui.xml" ] || { echo "no text: Android couldn't read the hidden display (${OUT:-no answer}); use shot"; exit 1; }
+SAID=$(python3 -I - "$D/ui.xml" "$AGENT_DISPLAY" "$MODE" "$*" <<'EOF'
 import re, sys
 import xml.etree.ElementTree as ET
 try:
@@ -76,16 +132,45 @@ for window in mine[0].iter('window'):
         x, y = (x1 + x2) // 2, (y1 + y2) // 2
         if lines and lines[-1][0] == label and abs(lines[-1][1] - x) < 100 and abs(lines[-1][2] - y) < 100:
             continue  # a tab or button and the label inside it: once
-        lines.append((label, x, y, f"{label or cls}  @{x},{y}" + (f"  [{', '.join(flags)}]" if flags else '')))
-print('\n'.join(l[3] for l in lines) if lines else "no text on the hidden display (a picture or a game, say); use shot")
-EOF
-  CODE=$?
-  changing text
-  exit $CODE
-fi
+        line = f"{label or cls}  @{x},{y}" + (f"  [{', '.join(flags)}]" if flags else '')
+        lines.append((label, x, y, line, {s for s in (label, text, desc) if s}, 'disabled' in flags))
+listing = '\n'.join(l[3] for l in lines) if lines else "no text on the hidden display (a picture or a game, say); use shot"
+if (sys.argv[3] if len(sys.argv) > 3 else 'text') == 'text':
+    print(listing)
+    sys.exit()
 
-OUT=/tmp/shot-$AGENT_DISPLAY.png
-rm -f "$D/shot.png"
-if ! ask shot; then echo "no screenshot: the hidden display didn't answer within 10 s"
-elif [ -f "$D/shot.png" ]; then cp "$D/shot.png" "$OUT" && echo "$OUT" && changing shot
-else echo "no frame yet: nothing has been drawn on the hidden display"; fi
+# tap LABEL: the one line it names, by its whole name in any case (its label, words or description). A part of a name
+# isn't enough ("Send" isn't "Send feedback"), nor a name in two places: it says which there are, and taps none.
+plain = lambda s: ' '.join(s.split()).casefold()
+want = plain(sys.argv[4])
+named = [l for l in lines if want in {plain(s) for s in l[4]}]
+# One control can be listed twice, its label inside it: one place
+places = []
+for l in named:
+    if not any(abs(l[1] - p[1]) < 100 and abs(l[2] - p[2]) < 100 for p in places):
+        places.append(l)
+if len(places) == 1:
+    l = places[0]
+    if l[5]:
+        sys.exit(f"“{sys.argv[4]}” is disabled: nothing to tap yet\n  {l[3]}")
+    print(f"TAP {l[1]} {l[2]} {l[3]}")
+elif places:
+    sys.exit(f"“{sys.argv[4]}” is in {len(places)} places: tap one by where it is (tap X Y)\n" + '\n'.join('  ' + l[3] for l in places))
+else:
+    near = [l for l in lines if any(want in plain(s) for s in l[4])]
+    if near:
+        sys.exit(f"no “{sys.argv[4]}” on the screen, only:\n" + '\n'.join('  ' + l[3] for l in near[:10]))
+    sys.exit(f"no “{sys.argv[4]}” on the screen. It shows:\n{listing}")
+EOF
+)
+CODE=$?
+case "$SAID" in
+  'TAP '*)
+    set -f; set -- $SAID
+    android "input tap $2 $3" || exit
+    echo "tapped ${SAID#TAP * * }"
+    changing text ;;
+  *) [ -n "$SAID" ] && echo "$SAID"
+     changing text ;;
+esac
+exit $CODE

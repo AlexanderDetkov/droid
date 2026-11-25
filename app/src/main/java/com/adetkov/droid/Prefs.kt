@@ -20,9 +20,8 @@ class Prefs(private val ctx: Context) {
     })
     /** Read the answer aloud when the request was spoken. */
     val speakReplies = MutableStateFlow(sp.getBoolean("speak", true))
-    val haptics = MutableStateFlow(sp.getBoolean("haptics", true))
     /** Dash makes the home page each day: the owner's day at a glance (see [HomeDay]). */
-    val homePage = MutableStateFlow(sp.getBoolean("home_page", true))
+    val homePage = MutableStateFlow(sp.getBoolean("home_page", false))  // off until the owner turns it on
     /** The chat Dash makes it in, and when he was last asked to. */
     var homeChat: String?
         get() = sp.getString("home_chat", null)
@@ -44,6 +43,12 @@ class Prefs(private val ctx: Context) {
         sp.edit { putStringSet("not_now", m.map { "${it.key}:${it.value}" }.toSet()) }
     }
 
+    /** Takes a Not now back (Undo): the chat needs the owner again, if it did. */
+    fun clearNotNow(conv: String) {
+        val m = notNow.value - conv
+        notNow.value = m
+        sp.edit { putStringSet("not_now", m.map { "${it.key}:${it.value}" }.toSet()) }
+    }
     fun setTheme(v: ThemeMode) { theme.value = v; sp.edit { putString("theme", v.name) }; applyTheme() }
     /** Tells Android too, so its splash and window behind Droid match from the first frame. */
     fun applyTheme() = ctx.getSystemService(UiModeManager::class.java).setApplicationNightMode(when (theme.value) {
@@ -57,6 +62,5 @@ class Prefs(private val ctx: Context) {
     fun model(e: Engine) = models.value[e].orEmpty()
     private fun modelKey(e: Engine) = if (e == Engine.CLAUDE) "model" else "model_${e.id}"
     fun setSpeakReplies(v: Boolean) { speakReplies.value = v; sp.edit { putBoolean("speak", v) } }
-    fun setHaptics(v: Boolean) { haptics.value = v; sp.edit { putBoolean("haptics", v) } }
     fun setHomePage(v: Boolean) { homePage.value = v; sp.edit { putBoolean("home_page", v) } }
 }

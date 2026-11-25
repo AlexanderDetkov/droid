@@ -4,7 +4,8 @@
 //   AGENT_PID: phone-agent's; the helper ends when it does (a vd-start.sh from before this passes none)
 // Prints "pid=", "displayId=" and "port=" lines. Answers the agent's `shot` in /data/local/tmp/droid/vd/<displayId>
 // once the display has settled (see Settle): shot.req with shot.png, text.req with ui.xml (what's on it, as
-// `uiautomator dump --windows` writes it), each then .done, holding "changing" if it never settled. Streams the display
+// `uiautomator dump --windows` writes it), fill.req by setting a text field (see fill), each then .done, holding
+// "changing" if it never settled (and for fill, what it did). Streams the display
 // to the app's Watch view on 127.0.0.1:<port>, which can send touches back (take over).
 package com.adetkov.droid;
 
@@ -62,6 +63,29 @@ public class VdHelper {
     }
 
     static Object virtualDevice; // keep the VirtualDevice alive for the life of the process
+
+    /**
+     * Whether the app holds this display for the owner (its task answered, the screen kept for their reply or their
+     * hands): set by a client's "h 1" / "h 0", cleared by the agent looking at its screen (it's working again). While
+     * held and no one views it, the display sleeps: awake, it keeps the whole phone from suspending.
+     */
+    static volatile boolean held;
+    static boolean asleep;
+    static boolean noPower;  // this Android can't put a virtual device to sleep: never ask again
+
+    /** Puts the VirtualDevice's displays to sleep, or wakes them; false if it can't. */
+    static boolean power(boolean sleep) {
+        if (virtualDevice == null || noPower) return false;
+        try {
+            virtualDevice.getClass().getMethod(sleep ? "goToSleep" : "wakeUp").invoke(virtualDevice);
+            System.out.println(sleep ? "asleep" : "awake");
+            return true;
+        } catch (Throwable e) {
+            System.out.println("power: " + e);
+            noPower = true;
+            return false;
+        }
+    }
 
     // Displays owned by a VirtualDevice get their own display/power group, so they keep running
     // while the phone's own screen is asleep (Android 17 ignores FLAG_OWN_DISPLAY_GROUP otherwise).
@@ -155,7 +179,7 @@ public class VdHelper {
 
         File dir = new File(ROOT, String.valueOf(displayId));
         dir.mkdirs();
-        File shotReq = new File(dir, "shot.req"), textReq = new File(dir, "text.req");
+        File shotReq = new File(dir, "shot.req"), textReq = new File(dir, "text.req"), fillReq = new File(dir, "fill.req");
         if (server != null) {
             java.net.ServerSocket ss = server;
             Thread t = new Thread(() -> serveFrames(ss, token, displayId));
@@ -174,8 +198,11 @@ public class VdHelper {
                 pending = img;
                 settle.frame(now);
             }
-            boolean shot = shotReq.exists(), text = textReq.exists();
-            if (shot || text) settle.ask(now);
+            boolean shot = shotReq.exists(), text = textReq.exists(), fill = fillReq.exists();
+            if (shot || text || fill) { settle.ask(now); held = false; }
+            // Held and unwatched: asleep (the next viewer, shot or task wakes it, and the app in front is resumed).
+            boolean sleep = held && clients.isEmpty();
+            if (sleep != asleep && power(sleep)) asleep = sleep;
             boolean due = settle.due(now);
             if (pending != null && ((due && shot) || frameDue())) {
                 latest = toBitmap(pending, w, h);
@@ -210,6 +237,23 @@ public class VdHelper {
                         out.delete();
                     }
                     writeFile(new File(dir, "text.done"), note);
+                }
+                if (fill) {
+                    // fill.req: the field's name (or an empty line), then the text, written whole (by rename)
+                    String said;
+                    try {
+                        String req = new String(java.nio.file.Files.readAllBytes(fillReq.toPath()), java.nio.charset.StandardCharsets.UTF_8);
+                        int nl = req.indexOf('\n');
+                        said = fill(displayId, nl < 0 ? "" : req.substring(0, nl).trim(), nl < 0 ? req : req.substring(nl + 1));
+                    } catch (Throwable e) {
+                        System.out.println("fill: " + e);
+                        said = "couldn't fill it: " + e;
+                    }
+                    fillReq.delete();
+                    java.io.ByteArrayOutputStream done = new java.io.ByteArrayOutputStream();
+                    done.write(note);
+                    done.write((said + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    writeFile(new File(dir, "fill.done"), done.toByteArray());
                 }
                 if (shot) {
                     shotReq.delete();
@@ -261,6 +305,22 @@ public class VdHelper {
      * UiAutomation may be connected at a time, so another task's dump is waited out.
      */
     static String windowsXml(int displayId) throws Exception {
+        return onWindows(displayId, windows -> {
+            StringBuilder x = new StringBuilder("<?xml version='1.0' encoding='UTF-8'?><displays><display id=\"" + displayId + "\">");
+            for (android.view.accessibility.AccessibilityWindowInfo win : windows) {
+                x.append("<window>");
+                android.view.accessibility.AccessibilityNodeInfo root = win.getRoot();
+                if (root != null) node(x, root, 0);
+                x.append("</window>");
+            }
+            return x.append("</display></displays>").toString();
+        });
+    }
+
+    interface WindowsWork { String on(java.util.List<android.view.accessibility.AccessibilityWindowInfo> windows) throws Exception; }
+
+    /** [work] on [displayId]'s windows (maybe none), read through a UiAutomation of this helper's (see [windowsXml]). */
+    static String onWindows(int displayId, WindowsWork work) throws Exception {
         android.os.HandlerThread thread = new android.os.HandlerThread("droid-text");
         thread.start();
         android.app.UiAutomation ui = null;
@@ -291,18 +351,37 @@ public class VdHelper {
                 windows = ui.getWindowsOnAllDisplays().get(displayId);
                 if (windows != null && !windows.isEmpty()) break;
             }
-            StringBuilder x = new StringBuilder("<?xml version='1.0' encoding='UTF-8'?><displays><display id=\"" + displayId + "\">");
-            if (windows != null) for (android.view.accessibility.AccessibilityWindowInfo win : windows) {
-                x.append("<window>");
-                android.view.accessibility.AccessibilityNodeInfo root = win.getRoot();
-                if (root != null) node(x, root, 0);
-                x.append("</window>");
+            // A web page (Chrome's, or an app's WebView) is read out only once something asks: the first look after it
+            // loads finds it empty, so it's given a moment to fill in.
+            for (long give = SystemClock.uptimeMillis() + 1000; windows != null && emptyWeb(windows) && SystemClock.uptimeMillis() < give; ) {
+                SystemClock.sleep(100);
+                windows = ui.getWindowsOnAllDisplays().get(displayId);
             }
-            return x.append("</display></displays>").toString();
+            return work.on(windows != null ? windows : java.util.Collections.emptyList());
         } finally {
             if (ui != null) try { android.app.UiAutomation.class.getMethod("disconnect").invoke(ui); } catch (Exception ignored) {}
             thread.quitSafely();
         }
+    }
+
+    /** Whether [windows] show a web page with nothing in it read out yet. */
+    static boolean emptyWeb(java.util.List<android.view.accessibility.AccessibilityWindowInfo> windows) {
+        for (android.view.accessibility.AccessibilityWindowInfo win : windows) {
+            android.view.accessibility.AccessibilityNodeInfo root = win.getRoot();
+            if (root != null && emptyWeb(root, 0)) return true;
+        }
+        return false;
+    }
+
+    static boolean emptyWeb(android.view.accessibility.AccessibilityNodeInfo n, int depth) {
+        // An app's WebView, or Chrome's page before it's read out: a bare frame it calls "Web View"
+        CharSequence cls = n.getClassName(), desc = n.getContentDescription();
+        if ((cls != null && cls.toString().endsWith("WebView")) || (desc != null && desc.toString().equals("Web View"))) return n.getChildCount() == 0;
+        for (int i = 0; depth < 100 && i < n.getChildCount(); i++) {
+            android.view.accessibility.AccessibilityNodeInfo child = n.getChild(i);
+            if (child != null && child.isVisibleToUser() && emptyWeb(child, depth + 1)) return true;
+        }
+        return false;
     }
 
     /** [n] and its visible children as uiautomator's <node> elements, with the attributes `shot --text` reads. */
@@ -335,6 +414,129 @@ public class VdHelper {
         x.append("</node>");
     }
 
+    /**
+     * `fill [FIELD] TEXT`: sets a text field on [displayId] to [value] at once, as an accessibility service would (any
+     * language, no keyboard): the field named [field] (by its hint, label, description or what it holds, as `shot
+     * --text` lists it), or with none the one with the cursor, or the only one there is. Says what it now holds, or
+     * why it didn't, with the fields there are.
+     */
+    static String fill(int displayId, String field, String value) throws Exception {
+        return onWindows(displayId, windows -> {
+            java.util.List<android.view.accessibility.AccessibilityNodeInfo> fields = new java.util.ArrayList<>(), words = new java.util.ArrayList<>();
+            android.view.accessibility.AccessibilityNodeInfo focused = null;
+            for (android.view.accessibility.AccessibilityWindowInfo win : windows) {
+                android.view.accessibility.AccessibilityNodeInfo root = win.getRoot();
+                if (root == null) continue;
+                editable(root, fields, words, 0);
+                android.view.accessibility.AccessibilityNodeInfo f = root.findFocus(android.view.accessibility.AccessibilityNodeInfo.FOCUS_INPUT);
+                if (focused == null && f != null && isField(f)) focused = f;
+            }
+            android.view.accessibility.AccessibilityNodeInfo target;
+            if (field.isEmpty()) {
+                target = focused != null ? focused : fields.size() == 1 ? fields.get(0) : null;
+                if (target == null) return fields.isEmpty() ? "no text field on the screen"
+                        : "no field has the cursor: name one (fill FIELD TEXT). Fields:" + listFields(fields, words);
+            } else {
+                String want = plain(field);
+                java.util.List<android.view.accessibility.AccessibilityNodeInfo> named = new java.util.ArrayList<>(), partly = new java.util.ArrayList<>();
+                for (android.view.accessibility.AccessibilityNodeInfo f : fields) {
+                    for (String name : names(f, words)) {
+                        if (name.equals(want)) { named.add(f); break; }
+                        if (name.contains(want) && !partly.contains(f)) partly.add(f);
+                    }
+                }
+                if (named.isEmpty()) named = partly;
+                if (named.size() != 1) return (named.isEmpty() ? "no field “" + field + "”" : "“" + field + "” names " + named.size() + " fields")
+                        + (fields.isEmpty() ? " (no text field on the screen)" : ". Fields:" + listFields(named.isEmpty() ? fields : named, words));
+                target = named.get(0);
+            }
+            // Focused first, so a key pressed next (Enter: search, send) goes to it
+            if (!target.isFocused()) target.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_FOCUS);
+            android.os.Bundle args = new android.os.Bundle();
+            args.putCharSequence(android.view.accessibility.AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, value);
+            if (!target.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_SET_TEXT, args)) {
+                text(value, displayId);
+                return "this field doesn't take text set at once: typed it at its cursor instead (look to check)";
+            }
+            String name = fieldName(target, words);
+            if (target.isPassword()) return "filled the password field" + (name.isEmpty() ? "" : " “" + name + "”");
+            // What it holds now, once it shows (a web page's field takes a moment); an app may also change it (a format)
+            CharSequence now = null;
+            for (long give = SystemClock.uptimeMillis() + 600; ; SystemClock.sleep(50)) {
+                target.refresh();
+                now = target.getText();
+                if ((now != null && now.length() > 0) == !value.isEmpty() || SystemClock.uptimeMillis() > give) break;
+            }
+            return (name.isEmpty() ? "the field" : "“" + name + "”") + " now holds: " + (now == null ? "" : now);
+        });
+    }
+
+    /** The editable fields the owner could see under [n], and the words around them (what may label one). */
+    static void editable(android.view.accessibility.AccessibilityNodeInfo n, java.util.List<android.view.accessibility.AccessibilityNodeInfo> fields, java.util.List<android.view.accessibility.AccessibilityNodeInfo> words, int depth) {
+        if (isField(n)) fields.add(n);
+        else if (n.getText() != null && n.getText().toString().trim().length() > 0) words.add(n);
+        for (int i = 0; depth < 100 && i < n.getChildCount(); i++) {
+            android.view.accessibility.AccessibilityNodeInfo child = n.getChild(i);
+            if (child != null && child.isVisibleToUser()) editable(child, fields, words, depth + 1);
+        }
+    }
+
+    /** A text field: editable, or an EditText (Chrome doesn't call a web page's fields editable), as `shot --text` sees it. */
+    static boolean isField(android.view.accessibility.AccessibilityNodeInfo n) {
+        return n.isEditable() || (n.getClassName() != null && n.getClassName().toString().contains("EditText"));
+    }
+
+    /** Words drawn inside field [f] (a label of its own that isn't its hint, as some forms have), or null. */
+    static CharSequence inside(android.view.accessibility.AccessibilityNodeInfo f, java.util.List<android.view.accessibility.AccessibilityNodeInfo> words) {
+        android.graphics.Rect r = new android.graphics.Rect(), w = new android.graphics.Rect();
+        f.getBoundsInScreen(r);
+        for (android.view.accessibility.AccessibilityNodeInfo n : words) {
+            n.getBoundsInScreen(w);
+            if (r.contains(w.centerX(), w.centerY())) return n.getText();
+        }
+        return null;
+    }
+
+    /** What a field goes by, plain (see [plain]): its hint, label, description, id and what it holds. */
+    static java.util.List<String> names(android.view.accessibility.AccessibilityNodeInfo f, java.util.List<android.view.accessibility.AccessibilityNodeInfo> words) {
+        java.util.List<String> n = new java.util.ArrayList<>();
+        android.view.accessibility.AccessibilityNodeInfo label = f.getLabeledBy();
+        for (CharSequence s : new CharSequence[]{f.getHintText(), label == null ? null : label.getText(), f.getContentDescription(), inside(f, words),
+                f.getViewIdResourceName() == null ? null : f.getViewIdResourceName().replaceFirst(".*/", "").replace('_', ' '),
+                f.isPassword() ? null : f.getText()}) {
+            String p = plain(s);
+            if (!p.isEmpty()) n.add(p);
+        }
+        return n;
+    }
+
+    /** A field's name as the owner would read it: its hint, label, description or the words inside it. */
+    static String fieldName(android.view.accessibility.AccessibilityNodeInfo f, java.util.List<android.view.accessibility.AccessibilityNodeInfo> words) {
+        android.view.accessibility.AccessibilityNodeInfo label = f.getLabeledBy();
+        for (CharSequence s : new CharSequence[]{f.getHintText(), label == null ? null : label.getText(), f.getContentDescription(), inside(f, words)})
+            if (s != null && !s.toString().trim().isEmpty()) return s.toString().trim().replaceAll("\\s+", " ");
+        return "";
+    }
+
+    static String listFields(java.util.List<android.view.accessibility.AccessibilityNodeInfo> fields, java.util.List<android.view.accessibility.AccessibilityNodeInfo> words) {
+        StringBuilder s = new StringBuilder();
+        android.graphics.Rect r = new android.graphics.Rect();
+        for (android.view.accessibility.AccessibilityNodeInfo f : fields) {
+            f.getBoundsInScreen(r);
+            String name = fieldName(f, words);
+            CharSequence now = f.isPassword() ? null : f.getText();
+            s.append("\n  ").append(name.isEmpty() ? "(unnamed)" : "“" + name + "”").append("  @").append(r.centerX()).append(',').append(r.centerY());
+            if (now != null && now.length() > 0 && !now.toString().equals(name)) s.append("  holds: ").append(now.length() > 80 ? now.subSequence(0, 80) + "…" : now);
+            if (f.isFocused()) s.append("  [focused]");
+        }
+        return s.toString();
+    }
+
+    /** [s] with its spaces collapsed, lower case, for matching names. */
+    static String plain(CharSequence s) {
+        return s == null ? "" : s.toString().trim().replaceAll("\\s+", " ").toLowerCase(java.util.Locale.ROOT);
+    }
+
     /** One XML attribute; characters XML can't hold (controls, a lone half of a surrogate pair) become spaces. */
     static void attr(StringBuilder x, String name, CharSequence value) {
         if (value == null) return;
@@ -354,12 +556,20 @@ public class VdHelper {
         x.append('"');
     }
 
+    /** The image as it comes when its rows are padded wider than the display: reused, only its cut to size is kept. */
+    static Bitmap wide;
+
     static Bitmap toBitmap(Image img, int w, int h) {
         Image.Plane p = img.getPlanes()[0];
         int rowPx = p.getRowStride() / p.getPixelStride();
-        Bitmap b = Bitmap.createBitmap(rowPx, h, Bitmap.Config.ARGB_8888);
-        b.copyPixelsFromBuffer(p.getBuffer());
-        return rowPx == w ? b : Bitmap.createBitmap(b, 0, 0, w, h);
+        if (rowPx == w) {
+            Bitmap b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+            b.copyPixelsFromBuffer(p.getBuffer());
+            return b;
+        }
+        if (wide == null || wide.getWidth() != rowPx || wide.getHeight() != h) wide = Bitmap.createBitmap(rowPx, h, Bitmap.Config.ARGB_8888);
+        wide.copyPixelsFromBuffer(p.getBuffer());
+        return Bitmap.createBitmap(wide, 0, 0, w, h);
     }
 
     /**
@@ -539,7 +749,8 @@ public class VdHelper {
     // "u X Y" (up), "c" (cancel the touch: no tap), "k KEYCODE" (a key press, e.g. 4 for Back), "t TEXT" (typed text, from
     // the owner's own keyboard: this display never has one, see vd-start.sh). Injected into this display like `input -d`,
     // which shell may do. A touch left down (a new "d", or the client going away) is cancelled,
-    // not lifted: a lift would count as a tap. A new "v WIDTH FPS" changes how this client's frames come.
+    // not lifted: a lift would count as a tap. A new "v WIDTH FPS" changes how this client's frames come; "h 1" / "h 0"
+    // says whether the app holds the display (see held).
     static void readInput(java.net.Socket client, int displayId, View view) {
         long down = 0;  // the touch's down time; 0: no finger down
         float x = 0, y = 0;
@@ -576,6 +787,9 @@ public class VdHelper {
                             break;
                         case "v":
                             view.set(line);
+                            break;
+                        case "h":
+                            held = a.length > 1 && a[1].equals("1");
                             break;
                     }
                 } catch (RuntimeException e) {

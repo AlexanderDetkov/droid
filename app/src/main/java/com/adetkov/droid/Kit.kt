@@ -1,7 +1,20 @@
 package com.adetkov.droid
 
+import androidx.core.graphics.drawable.toBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -38,6 +51,9 @@ import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.customActions
@@ -79,8 +95,73 @@ val CallText: Color @Composable @ReadOnlyComposable get() = if (P.dark) Color(0x
 /** Text on solid periwinkle. */
 val OnCall: Color @Composable @ReadOnlyComposable get() = if (P.dark) Color(0xFF0D0D0D) else Color.White
 
-/** Dash's ring: around what he sees (his screen, the camera). */
+/** Dash's ring: around what he sees (his screen). */
 val Ring: Color get() = DashColors.Accent
+
+/** The track under the busy spinner's arc ([Busy]). */
+val BusyTrack: Color @Composable @ReadOnlyComposable get() = if (P.dark) Color(0xFF4A4C6E) else Color(0xFFD9DBFA)
+
+/**
+ * Busy: the one way anything shows it's working, wherever it is (the button you tapped, a row on home, the grey line
+ * under Dash): a periwinkle arc turning on a lavender ring.
+ */
+@Composable
+fun Busy(modifier: Modifier = Modifier, size: Dp = 16.dp) {
+    // a turn every 0.9 s, drawn on the frames Dash's slow life is (see slowFrame): still, with Android's animations off
+    val calm = rememberCalm()
+    var angle by remember { mutableFloatStateOf(0f) }
+    if (!calm) LaunchedEffect(Unit) { while (true) angle = (slowFrame() / 1_000_000L % 900L) / 900f * 360f }
+    val track = BusyTrack
+    val arc = P.call
+    Canvas(modifier.size(size)) {
+        val w = this.size.width * .16f
+        val inset = Offset(w / 2, w / 2)
+        val box = Size(this.size.width - w, this.size.height - w)
+        drawArc(track, 0f, 360f, false, inset, box, style = Stroke(w))
+        drawArc(arc, angle - 90f, 90f, false, inset, box, style = Stroke(w, cap = StrokeCap.Round))
+    }
+}
+
+/** A small action, inside a page or under something: a lavender chip ("Do it myself", "Open", "Update"). */
+@Composable
+fun KitChip(label: String, onClick: () -> Unit, modifier: Modifier = Modifier, tag: String = "chip") {
+    // (a long label wraps, and the chip grows to hold it)
+    Row(modifier.heightIn(min = 40.dp).clip(RoundedCornerShape(20.dp)).background(Lavender).clickable(onClick = onClick)
+        .padding(horizontal = 18.dp, vertical = 8.dp).testTag(tag), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp, fontWeight = FontWeight.Bold), color = CallText)
+    }
+}
+
+/**
+ * A word of confirmation over the bottom of the screen that goes by itself ("Not now: Dentist", "Copied"), with
+ * [action] (Undo) when what was done can be taken back. What floats and goes away is the one thing in deep indigo.
+ */
+@Composable
+fun KitSnack(text: String, modifier: Modifier = Modifier, action: String? = null, onAction: () -> Unit = {}) {
+    val bg = if (P.dark) Color(0xFF3A3C70) else Color(0xFF26285C)
+    Row(modifier.fillMaxWidth().padding(horizontal = 16.dp).heightIn(min = 56.dp)
+        .shadow(12.dp, RoundedCornerShape(16.dp), ambientColor = Color.Black.copy(alpha = .12f), spotColor = Color.Black.copy(alpha = .2f))
+        .clip(RoundedCornerShape(16.dp)).background(bg).padding(start = 18.dp, end = 6.dp).testTag("snack"),
+        verticalAlignment = Alignment.CenterVertically) {
+        Text(text, Modifier.weight(1f).padding(vertical = 14.dp), style = MaterialTheme.typography.bodyLarge.copy(fontSize = 16.sp),
+            color = Color.White, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        if (action != null) Text(action, Modifier.clip(RoundedCornerShape(12.dp)).clickable(onClick = onAction).padding(horizontal = 14.dp, vertical = 12.dp)
+            .testTag("snack_action"), style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp, fontWeight = FontWeight.Bold), color = Color(0xFFC7CBFF))
+    }
+}
+
+/**
+ * Dash's first words while the agent works and hasn't given him any: a short word from a few, so he doesn't say the
+ * same thing every time. [seed] fixes it for the turn (it doesn't change as he works); never [before]'s.
+ */
+fun firstWords(seed: Long, before: Long? = null): String {
+    fun at(s: Long) = Math.floorMod(s * 2654435761L, FIRST_WORDS.size.toLong()).toInt()
+    var i = at(seed)
+    if (before != null && i == at(before)) i = (i + 1) % FIRST_WORDS.size
+    return FIRST_WORDS[i]
+}
+
+private val FIRST_WORDS = listOf("On it!", "Sure!", "Got it.", "Okay!", "One sec.", "Let me look.", "Leave it to me.", "Coming up.")
 
 /** How big Dash's line is: big on home and first run, small beside a screen or in a list of turns. */
 enum class DashSize(val box: DpSize, val font: Int, val line: Int) {
@@ -103,13 +184,14 @@ fun Where(left: Int?, leftLabel: String, onLeft: () -> Unit, title: String? = nu
     }
 }
 
-/** Stop, in the top row while Dash works. */
+/** Stop, in the top row while Dash works; once tapped ([stopping]), it says so at once and can't be tapped again. */
 @Composable
-fun StopButton(onStop: () -> Unit) {
-    Row(Modifier.height(44.dp).clip(RoundedCornerShape(22.dp)).background(P.surface).clickable(onClick = onStop)
+fun StopButton(stopping: Boolean = false, onStop: () -> Unit) {
+    Row(Modifier.height(44.dp).clip(RoundedCornerShape(22.dp)).background(if (stopping) Lavender else P.surface).clickable(enabled = !stopping, onClick = onStop)
         .padding(start = 14.dp, end = 16.dp).testTag("stop"), verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(11.dp).clip(RoundedCornerShape(3.dp)).background(P.text))
-        Text("Stop", Modifier.padding(start = 8.dp), style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp, fontWeight = FontWeight.Bold))
+        if (stopping) Busy(size = 14.dp) else Box(Modifier.size(11.dp).clip(RoundedCornerShape(3.dp)).background(P.text))
+        Text(if (stopping) "Stopping…" else "Stop", Modifier.padding(start = 8.dp), color = if (stopping) CallText else P.text,
+            style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp, fontWeight = FontWeight.Bold))
     }
 }
 
@@ -122,7 +204,9 @@ fun DashLine(
     words: String?, modifier: Modifier = Modifier, size: DashSize = DashSize.NORMAL, rig: DashRig? = null,
     sub: String? = null, onSub: (() -> Unit)? = null, onPoke: (() -> Unit)? = null,
     /** After [sub], never cut short: how long he's been at it. */
-    subTail: String? = null,
+    subTail: (@Composable () -> Unit)? = null,
+    /** He's working: the grey line starts with [Busy]. */
+    busy: Boolean = false,
     dash: (@Composable (DpSize) -> Unit)? = null,
 ) {
     Row(modifier.fillMaxWidth().padding(start = if (size == DashSize.SMALL) 16.dp else 12.dp, end = 20.dp, top = 4.dp),
@@ -137,11 +221,12 @@ fun DashLine(
             if (sub != null) Row(Modifier.padding(start = if (words != null) 14.dp else 4.dp, top = if (words != null) 6.dp else 0.dp).clip(RoundedCornerShape(10.dp))
                 .let { if (onSub != null) it.clickable(onClick = onSub) else it }.padding(vertical = 2.dp, horizontal = 2.dp).testTag("dash_sub"),
                 verticalAlignment = Alignment.CenterVertically) {
+                if (busy) Busy(Modifier.padding(end = 7.dp).testTag("busy"), size = 14.dp)
                 AnimatedContent(sub, Modifier.weight(1f, fill = false), label = "sub",
                     transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(120)) using SizeTransform(clip = false) }) { t ->
                     Text(t, style = MaterialTheme.typography.bodyMedium, color = P.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                if (subTail != null) Text(" · $subTail", style = MaterialTheme.typography.bodyMedium, color = P.muted, maxLines = 1, softWrap = false)
+                if (subTail != null) subTail()
                 if (onSub != null) Icon(painterResource(R.drawable.ic_chevron), null, Modifier.padding(start = 2.dp).size(16.dp), tint = P.faint)
             }
         }
@@ -188,20 +273,24 @@ fun YouBubble(text: String, modifier: Modifier = Modifier, tap: Boolean = false,
 }
 
 /**
- * The next step: one big button, just above the bar. [quiet]: outlined, for a way back rather than forward; [busy]: a
- * spinner while it goes.
+ * The next step: one big button, just above the bar. [quiet]: outlined, for a way back rather than forward; [busy]:
+ * tapped and going, lavender with [Busy], and it can't be tapped again.
  */
 @Composable
 fun NextStep(label: String, onClick: () -> Unit, modifier: Modifier = Modifier, quiet: Boolean = false, busy: Boolean = false,
              enabled: Boolean = true, icon: Int? = null, tag: String = "next") {
     val shape = RoundedCornerShape(30.dp)
-    val solid = !quiet && enabled
+    val solid = !quiet && enabled && !busy
     Row(modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp).height(60.dp).clip(shape)
-        .then(if (quiet) Modifier.border(1.5.dp, P.hairline, shape) else Modifier.background(if (enabled) P.call else P.raised))
-        .clickable(enabled = enabled && !busy, onClick = onClick).testTag(tag),
+        .then(when {
+            busy -> Modifier.background(Lavender)
+            quiet -> Modifier.border(1.5.dp, P.hairline, shape)
+            else -> Modifier.background(if (enabled) P.call else P.raised)
+        })
+        .clickable(enabled = enabled && !busy, onClick = onClick).padding(horizontal = 20.dp).testTag(tag),
         horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-        val color = if (solid) OnCall else if (enabled) P.text else P.faint
-        if (busy) Spinner(Modifier.padding(end = 12.dp), size = 20.dp, color = color, stroke = 2.5.dp)
+        val color = when { busy -> CallText; solid -> OnCall; enabled -> P.text; else -> P.faint }
+        if (busy) Busy(Modifier.padding(end = 12.dp), size = 20.dp)
         else if (icon != null) Icon(painterResource(icon), null, Modifier.padding(end = 8.dp).size(20.dp), tint = color)
         Text(label, style = MaterialTheme.typography.titleMedium.copy(fontSize = 19.sp, fontWeight = if (quiet) FontWeight.SemiBold else FontWeight.Bold), color = color,
             maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -270,10 +359,29 @@ fun IconTile(icon: Int, tint: Color = P.text) {
     }
 }
 
-/** A row's lead for one of Dash's apps: its first letter on a grey tile (a person gets a round [Avatar]). */
+/**
+ * A row's lead for one of Dash's chats: the icon of the app he worked in for it ([pkg]), so the list reads at a glance;
+ * without one (he used none, or it's gone), its first letter on a grey tile.
+ */
 @Composable
-fun LetterTile(name: String) {
-    Box(Modifier.size(42.dp).clip(RoundedCornerShape(14.dp)).background(P.surface), contentAlignment = Alignment.Center) {
+fun AppIcon(pkg: String?, name: String, bg: Color = P.surface) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val icon by androidx.compose.runtime.produceState(pkg?.let { APP_ICONS.get(it) }, pkg) {
+        if (pkg != null && value == null) value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching { ctx.packageManager.getApplicationIcon(pkg).toBitmap(126, 126).asImageBitmap() }.getOrNull()?.also { APP_ICONS.put(pkg, it) }
+        }
+    }
+    val i = icon
+    if (i != null) androidx.compose.foundation.Image(i, null, Modifier.size(42.dp).clip(RoundedCornerShape(14.dp)))
+    else LetterTile(name, bg)
+}
+
+private val APP_ICONS = android.util.LruCache<String, androidx.compose.ui.graphics.ImageBitmap>(64)
+
+/** A row's lead for a chat without an app's icon: its first letter on a grey tile (a person gets a round [Avatar]). */
+@Composable
+fun LetterTile(name: String, bg: Color = P.surface) {
+    Box(Modifier.size(42.dp).clip(RoundedCornerShape(14.dp)).background(bg), contentAlignment = Alignment.Center) {
         Text((name.firstOrNull { it.isLetterOrDigit() } ?: '•').uppercaseChar().toString(),
             style = MaterialTheme.typography.titleMedium.copy(fontSize = 17.sp, fontWeight = FontWeight.Bold))
     }
@@ -300,7 +408,7 @@ fun KitRow(
                 Text(title, style = MaterialTheme.typography.titleMedium.copy(fontSize = 18.sp, lineHeight = 24.sp, fontWeight = FontWeight.SemiBold),
                     color = titleColor, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 if (sub != null) Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (busy) Spinner(Modifier.padding(end = 6.dp), size = 12.dp, color = P.muted, stroke = 1.8.dp)
+                    if (busy) Busy(Modifier.padding(end = 6.dp), size = 13.dp)
                     Text(sub, style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp, lineHeight = 20.sp), color = P.muted,
                         maxLines = 2, overflow = TextOverflow.Ellipsis)
                 }
@@ -320,7 +428,11 @@ fun NotNow(onNotNow: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean
     // (only a deliberate swipe: past 40% of the row)
     val state = rememberSwipeToDismissBoxState(positionalThreshold = { it * .4f })
     val done by rememberUpdatedState(onNotNow)
-    LaunchedEffect(state.currentValue) { if (state.currentValue == SwipeToDismissBoxValue.EndToStart) done() }
+    // done, it's back at rest at once: the list keeps a row's swipe for when the row comes back (Undo, or the chat
+    // needing the owner again), and a row back still swiped would set itself aside again
+    LaunchedEffect(state.currentValue) {
+        if (state.currentValue == SwipeToDismissBoxValue.EndToStart) { done(); state.snapTo(SwipeToDismissBoxValue.Settled) }
+    }
     SwipeToDismissBox(state, enableDismissFromStartToEnd = false,
         modifier = modifier.semantics { customActions = listOf(CustomAccessibilityAction("Not now") { done(); true }) },
         backgroundContent = {
@@ -335,11 +447,12 @@ fun NotNow(onNotNow: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean
 @Composable
 fun Chevron() = Icon(painterResource(R.drawable.ic_chevron), null, Modifier.padding(start = 8.dp).size(20.dp), tint = P.faint)
 
-/** On or off, in ink. */
+/** On or off: periwinkle when on, like everything else you act on. */
 @Composable
 fun KitSwitch(on: Boolean, set: (Boolean) -> Unit) = Switch(on, set, Modifier.padding(start = 8.dp), colors = SwitchDefaults.colors(
-    checkedThumbColor = P.onInk, checkedTrackColor = P.ink, uncheckedThumbColor = P.bg,
-    uncheckedTrackColor = P.raised, uncheckedBorderColor = Color.Transparent, checkedBorderColor = Color.Transparent,
+    checkedThumbColor = OnCall, checkedTrackColor = P.call,
+    // off: an outline, so the switch reads as one in both themes
+    uncheckedTrackColor = P.raised, uncheckedBorderColor = P.faint, uncheckedThumbColor = P.muted, checkedBorderColor = Color.Transparent,
 ))
 
 /** A choice to tap, in a row of them: lavender, ringed, while it's picked. */

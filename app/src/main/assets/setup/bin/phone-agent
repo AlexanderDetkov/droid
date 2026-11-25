@@ -4,7 +4,8 @@
 #   --engine picks the agent (default claude). Codex and OpenCode run through droid-engine, which speaks the same
 #   stream-json as Claude Code, so everything below holds for every engine.
 #   stdin:  Claude Code stream-json user messages; write more at any time to talk to it mid-task,
-#           close it to let the session finish. No first message within FIRST_WAIT (3 min) ends the run.
+#           close it to let the session finish. No first message within FIRST_WAIT (3 min) ends the run, and so does
+#           its lease running out: {"type":"lease","until":EPOCH_SECONDS} lines (not passed on) keep it up until then.
 #   stdout: {"type":"agent","pid":..,"display":..,"port":..,"token":..,"new_session":..} (the live view: send the token
 #           first; new_session: the session to resume wasn't here, see has_session), then Claude Code stream-json,
 #           with the agent's {"type":"droid",...} events (the `droid` command) among it.
@@ -47,13 +48,16 @@ fail() {
 cleanup() {
   # To the end: a second Stop must not cut it short before vd-stop (the display would stay up, keeping the phone awake).
   trap '' INT TERM
-  # feed, if still waiting, ends when the app closes our stdin (as root) or with proot (--kill-on-exit).
+  # (feed, if still waiting, goes at the end)
   [ -n "$CLAUDE" ] && kill "$CLAUDE" 2>/dev/null
   # the copied events: tail checks its file every second, so its last ones are out first
   [ -n "$DROID_TAIL" ] && { sleep 1; kill "$DROID_TAIL" 2>/dev/null; rm -f "$DROID_OUT"; }
   # One call: each `android` is a round trip into Android (through Droid's helper on phones without root).
   android "sh $BASE/vd-stop.sh $MAC '$HELPER' '$AGENT_DISPLAY'" >/dev/null 2>&1
   [ -n "$AGENT_DISPLAY" ] && rm -f "/tmp/shot-$AGENT_DISPLAY.png"
+  # What's left of this run: feed, if it still waits for a message (after a Stop the app may never close our stdin,
+  # and it would wait out its lease).
+  pkill -P $$ 2>/dev/null
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
@@ -64,7 +68,9 @@ VD=$(android "sh $BASE/vd-start.sh $MAC $TOKEN $DROID_APK $$" 2>&1)
 case "$VD" in *"error=no APK"*) fail "The Droid app's APK was not found." ;; esac
 val() { echo "$VD" | sed -n "s/^$1=\([0-9]*\).*/\1/p" | head -n 1; }
 AGENT_DISPLAY=$(val displayId) HELPER=$(val pid) PORT=$(val port)
-[ -n "$PORT" ] || fail "The hidden display did not start."
+# (why, if the helper said: its last word, made safe for the JSON line)
+WHY=$(echo "$VD" | sed -n 's/^error=//p' | head -n 1 | tr -d '"\\' | cut -c1-160)
+[ -n "$PORT" ] || fail "The hidden display did not start${WHY:+: $WHY}."
 export AGENT_DISPLAY
 printf '{"type":"agent","pid":%s,"display":%s,"port":%s,"token":"%s","new_session":%s}\n' $$ "$AGENT_DISPLAY" "$PORT" "$TOKEN" $NEW_SESSION
 # The agent's `droid` command (dash, show, later) writes its events, a JSON line each, straight into this output, where
@@ -79,15 +85,31 @@ else
   DROID_TAIL=$!
 fi
 
-# A run started ahead of time (the app's prewarm, while you talk) waits here for its first message, with the hidden
-# display up, and the display keeps the phone from sleeping. The app drops an unused one after 2 minutes, but not
-# while Android has it frozen or after it was killed, so the run also gives up by itself: no first message within
-# FIRST_WAIT seconds closes Claude's stdin and it exits. Later messages pass straight through.
+# The run ends by itself when the app no longer keeps it: its hidden display keeps the phone from sleeping, and the app
+# can't always end it. Android freezes the app in the background (its timers stop), kills it (its `su` client goes,
+# but this run doesn't: stdin never reaches EOF), or the app loses track of the run; such runs stayed up for hours.
+# So the app leases the run: a {"type":"lease","until":EPOCH_SECONDS} line, renewed every minute while it wants the
+# run (working, watched) and, once it answers, set to when its held screen closes. When the lease runs out with no
+# newer one, Claude's stdin closes: it finishes what it's doing and exits, and cleanup takes the display down.
+# A message keeps it up for at least LEASE seconds. A run started ahead of time (the app's prewarm, while you talk)
+# has FIRST_WAIT seconds for its first message. Lease lines aren't passed on.
 FIRST_WAIT=180
+LEASE=150
+closed() { printf '%s\n' '{"type":"droid","op":"closed"}' > "$DROID_OUT" 2>/dev/null; exit 0; }
 feed() {
-  IFS= read -r -t "$FIRST_WAIT" line <&3 || exit 0
-  printf '%s\n' "$line"
-  exec cat <&3
+  until=$(( $(date +%s) + FIRST_WAIT ))
+  while :; do
+    left=$(( until - $(date +%s) ))
+    [ "$left" -gt 0 ] || closed
+    # (stdin closed by the app: it knows; the time up: it's told, so it sends what comes next to a new run)
+    IFS= read -r -t "$left" line <&3 || { [ "$(date +%s)" -ge "$until" ] && closed; exit 0; }
+    case "$line" in
+      '{"type":"lease","until":'*) t=${line#*'"until":'}; t=${t%%[!0-9]*}; [ -n "$t" ] && until=$t; continue ;;
+    esac
+    printf '%s\n' "$line"
+    now=$(date +%s)
+    [ $(( now + LEASE )) -gt "$until" ] && until=$(( now + LEASE ))
+  done
 }
 
 # Claude's stdin is an ordinary pipe from feed, not a named one: Android forbids the shell user named pipes (on phones
@@ -100,15 +122,18 @@ cd /root
 # how Droid runs here) and the owner's instructions (CLAUDE.md). Claude reads CLAUDE.md by itself, and keeps its own
 # memory; Codex and OpenCode read their AGENTS.md, which install.sh links to CLAUDE.md, so that link becomes both.
 SYSTEM=/root/.droid/system.md
+# Reading /tmp/screen.png shows the hidden display as it is now, in one step: a hook takes the shot just before Claude
+# reads it (see shot). The other engines have no such hook: their brief leaves that line out.
+SCREEN_HOOK='{"hooks":{"PreToolUse":[{"matcher":"Read","hooks":[{"type":"command","command":"shot --hook"}]}]}}'
 if [ "$ENGINE" = claude ]; then
   [ -s $SYSTEM ] && set -- "$@" --append-system-prompt-file $SYSTEM
-  feed | claude -p "$@" --tools Bash,Read,Write,Edit,Grep,Glob,WebSearch,WebFetch \
+  feed | claude -p "$@" --settings "$SCREEN_HOOK" --tools Bash,Read,Write,Edit,Grep,Glob,WebSearch,WebFetch \
     --disable-slash-commands --strict-mcp-config \
     --input-format stream-json --output-format stream-json --verbose &
 else
   case "$ENGINE" in codex) AG=/root/.codex/AGENTS.md ;; *) AG=/root/.config/opencode/AGENTS.md ;; esac
   mkdir -p "${AG%/*}"
-  { cat $SYSTEM 2>/dev/null; printf "\n\n# The owner's instructions\n\n"; cat /root/.claude/CLAUDE.md 2>/dev/null; } > "$AG.$$"
+  { grep -v /tmp/screen.png $SYSTEM 2>/dev/null; printf "\n\n# The owner's instructions\n\n"; cat /root/.claude/CLAUDE.md 2>/dev/null; } > "$AG.$$"
   mv -f "$AG.$$" "$AG"
   feed | python3 -I /usr/local/bin/droid-engine "$ENGINE" "$@" &
 fi

@@ -31,6 +31,11 @@ private const val WARM_USABLE = 150_000L
  * phone awake (see the README), so not for long; it stays as long as Watch is open on it.
  */
 const val HOLD_FOR = 10 * 60_000L
+/** How often a run's lease is renewed while it's wanted, and how long each lasts (see [Proc.lease]). */
+const val LEASE_EVERY = 60_000L
+const val LEASE_FOR = 150_000L
+/** A held screen's lease outlasts its countdown by this: the app closes it, the lease is only for when it can't. */
+const val LEASE_SLACK = 30_000L
 
 /**
  * How long an agent has to exit once its stdin is closed after an answer, before it is killed: nothing else would end
@@ -52,7 +57,7 @@ internal const val TOOK_OVER = "[I used your hidden screen myself since your las
  * current request was sent. [closesAt]: when a run that answered will close its screen (null while working or watched).
  */
 /** A page chat [conv]'s agent asked to look at, [id] (`droid look`), to draw on its [display]; [html] null: done with it. */
-data class Look(val conv: String, val id: String, val display: Int, val html: String?)
+data class Look(val conv: String, val id: String, val display: Int, val html: String?, val base: String? = null)
 
 data class RunInfo(
     val pid: Int? = null, val port: Int? = null, val token: String? = null,
@@ -89,6 +94,10 @@ class Runner(
     private val shown: (String) -> File = { File("shown", it) },
     /** Whether an app is in front on the run's hidden screen (its port and token; see [screenInUse]). */
     private val inUse: (Int, String) -> Boolean = { _, _ -> true },
+    /** The app in front on the run's hidden screen, which the chat keeps as the app Dash worked in (see [appInFront]). */
+    private val inFront: (Int, String) -> String? = { _, _ -> null },
+    /** Tells the run's hidden screen whether it's held for the owner: then it sleeps while no one views it (see [holdScreen]). */
+    private val holdScreen: (Int, String, Boolean) -> Unit = { _, _, _ -> },
     /** How long an agent has to exit after its answer (see [EXIT_WITHIN]). */
     private val exitWithin: Long = EXIT_WITHIN,
 ) {
@@ -143,6 +152,12 @@ class Runner(
         var watched = false
         /** The user used the screen since the agent's last turn; the next message says so. */
         var touched = false
+        /** When its held screen closes ([hold]); null while working or watched. */
+        var closesAt: Long? = null
+        /** Its screen was told it's held (see [tellHeld]). */
+        var heldScreen = false
+        /** Renews its process's lease while the run is wanted (see [lease]). */
+        var leaser: Job? = null
     }
 
     // A bug in what the runner does in the background is logged, not the end of the app (a run's own fails its chat).
@@ -223,7 +238,7 @@ class Runner(
         val id = if (convId == null) store.create(text.ifBlank { files.firstOrNull()?.name.orEmpty() }, engine()).id
             else store.get(convId)?.id ?: return null
         ownNote -= id  // a new turn: its answer gets its own notification again, unless the agent says otherwise
-        val line = if (wake) "[You woke yourself up, as you asked with droid later: $text]" else agentText(text, files, data, via)
+        val line = pageDone(id) + if (wake) "[You woke yourself up, as you asked with droid later: $text]" else agentText(text, files, data, via)
         var start: Run? = null
         val fresh = synchronized(lock) {
             // Under the lock, so a run of this chat that just ended can't mark it stopped after this.
@@ -309,6 +324,24 @@ class Runner(
     }
 
     /** The user used the chat's hidden screen (Watch's take over); the agent is told so with the next message. */
+    /** What a process's first message ends with: where chat [id]'s app lives (see [appDir]). */
+    private fun appNote(id: String) = backend.apps?.let { "\n\n[This chat's app is in ${appDir(it, id)}/]" }.orEmpty()
+
+    /** What the owner's taps on chat [id]'s pages did at once since its agent last heard (see [PageActions.did]). */
+    private val pageDid = HashMap<String, MutableList<String>>()
+
+    /** The owner's tap on [label] in chat [id]'s page did [what] at once: the agent hears it with their next message. */
+    fun pageDid(id: String, label: String, what: String) = synchronized(lock) {
+        val l = pageDid.getOrPut(id) { mutableListOf() }
+        if (l.size < 12) l += (if (label.isNotBlank()) "\u201c${label.take(60)}\u201d " else "a tap ") + what
+    }
+
+    /** What the agent hears first of the taps on its page that acted at once, and forgets them; empty for none. */
+    private fun pageDone(id: String): String = synchronized(lock) {
+        val l = pageDid.remove(id) ?: return ""
+        "[Since your last turn, on your page: " + l.joinToString("; ") + ".]\n\n"
+    }
+
     fun touched(id: String) {
         synchronized(lock) { runs[id]?.touched = true }
     }
@@ -395,7 +428,10 @@ class Runner(
             if (wait) try { backend.reply(pid, JSONObject().put("error", "Droid couldn't read ${o.optString("path")}").toString()) } catch (_: IOException) {}
             return
         }
-        putPage(id, PageInfo(pid, wait, o.optString("where", "chat").ifEmpty { "chat" }, pageTitle(html)), html)
+        val path = o.optString("path")
+        val base = appBase(backend.apps, path)
+        putPage(id, PageInfo(pid, wait, o.optString("where", "chat").ifEmpty { "chat" }, pageTitle(html), base = base.orEmpty(),
+            path = if (base != null) path else ""), html)
         pages.tryEmit(id to pid)
     }
 
@@ -407,7 +443,7 @@ class Runner(
             try { backend.reply(lid, JSONObject().put("error", "Droid couldn't read ${o.optString("path")}").toString()) } catch (_: IOException) {}
             return
         }
-        looks.tryEmit(Look(id, lid, o.optInt("display", -1), html))
+        looks.tryEmit(Look(id, lid, o.optInt("display", -1), html, appBase(backend.apps, o.optString("path"))))
     }
 
     /** Page [info] with [html] in chat [id]: a new PAGE message, or the one with its id shown again (see [withPage]). */
@@ -418,7 +454,8 @@ class Runner(
      * it (a message sent mid-turn started another turn). Returns whether it wasn't. Under [lock].
      */
     private fun busy(id: String, r: Run): Boolean {
-        r.closer?.cancel(); r.closer = null
+        r.closer?.cancel(); r.closer = null; r.closesAt = null
+        if (r.heldScreen) tellHeld(r, false)
         if (id in running.value) return false
         // on its process's screen while that is up (a message queued for the next process shows it until that one starts)
         val info = RunInfo(r.pid, r.port, r.token)
@@ -442,7 +479,42 @@ class Runner(
             synchronized(lock) { r.closer = null; release(id, r) }?.let { letExit(r, it) }
         }
         val closesAt = if (r.watched) null else System.currentTimeMillis() + holdFor
+        r.closesAt = closesAt
+        r.proc?.lease(leaseUntil(r) / 1000)  // now: if Android freezes the app after this, the run still ends on time
+        if (!r.heldScreen) tellHeld(r, true)
         screens.update { m -> m[id]?.let { m + (id to it.copy(closesAt = closesAt)) } ?: m }
+    }
+
+    /** One at a time, so a screen hears held and working in the order they happened. */
+    private val heldSignals = Dispatchers.IO.limitedParallelism(1)
+
+    /**
+     * Tells [r]'s hidden screen whether it's held after answering ([held]) or working again: held, it sleeps while no
+     * one views it, so the phone can (a hidden display awake keeps it from suspending). Under [lock].
+     */
+    private fun tellHeld(r: Run, held: Boolean) {
+        r.heldScreen = held
+        val port = r.port ?: return; val token = r.token ?: return
+        scope.launch(heldSignals) { holdScreen(port, token, held) }
+    }
+
+    /** Until when [r]'s process is wanted: a held screen until it closes (and a little), else another while. Under [lock]. */
+    private fun leaseUntil(r: Run): Long = r.closesAt?.let { it + LEASE_SLACK } ?: (System.currentTimeMillis() + LEASE_FOR)
+
+    /**
+     * Leases [proc], [run]'s process in chat [id], for as long as the run wants it: renewed every [LEASE_EVERY] while
+     * it's this chat's run, this is its process and its stdin is open. If the app can't renew it (frozen, killed) or
+     * forgot the run, the lease runs out and the run ends by itself. Under [lock].
+     */
+    private fun lease(id: String, run: Run, proc: Proc) {
+        run.leaser?.cancel()
+        run.leaser = scope.launch {
+            while (true) {
+                val until = synchronized(lock) { if (runs[id] === run && run.proc === proc && run.stdinOpen) leaseUntil(run) else null } ?: break
+                proc.lease(until / 1000)
+                delay(LEASE_EVERY)
+            }
+        }
     }
 
     /** Ends the wait of a run that answered: returns its process, whose stdin the caller closes. Under [lock]. */
@@ -487,7 +559,7 @@ class Runner(
             endWaits(id)
             store.update(id) { it.add(Kind.STATUS, "Failed: ${e.message ?: e}").copy(running = false).waitingOn(null, false) }
             runs.remove(id); running.update { it - id }; screens.update { it - id }; doing.update { it - id }
-            run.closer?.cancel(); run.exitTimer?.cancel(); run.stdinOpen = false
+            run.closer?.cancel(); run.exitTimer?.cancel(); run.leaser?.cancel(); run.stdinOpen = false
             if (run.deleted) forget = run.session
             run.proc to run.pid
         }
@@ -520,14 +592,20 @@ class Runner(
                 // The request, then what was sent while it started, in order. A stopped run gets nothing (it is killed
                 // once it reports its pid); what was sent after the Stop waits for the next.
                 run.stdinOpen = !run.stopped
-                if (run.stdinOpen) { (batch + run.queue).forEach { proc.write(userLine(it)) }; run.queue.clear() }
+                // its first message says where the chat's app lives (a process may have started before the chat was known)
+                if (run.stdinOpen) {
+                    (batch + run.queue).forEachIndexed { i, l -> proc.write(userLine(if (i == 0) l + appNote(id) else l)) }
+                    run.queue.clear()
+                    lease(id, run, proc)
+                }
             }
             try { proc.readLines { handle(id, run, proc, it) } } catch (_: IOException) {}
             val exit = proc.waitFor()
             val (gotResult, stopped) = synchronized(lock) {
                 // Gone: a Stop from now on must not kill its pid, which may be another process's by then.
                 run.proc = null; run.pid = null; run.port = null; run.token = null
-                run.stdinOpen = false; run.idle = false; run.closer?.cancel(); run.closer = null
+                run.stdinOpen = false; run.idle = false; run.closer?.cancel(); run.closer = null; run.closesAt = null
+                run.leaser?.cancel(); run.leaser = null
                 run.exitTimer?.cancel(); run.exitTimer = null
                 endWaits(id)  // what it waited on (a next process hasn't started)
                 run.gotResult to run.stopped
@@ -593,7 +671,11 @@ class Runner(
                     continue
                 }
                 is Ev.Tap -> { taps.tryEmit(Triple(id, ev.x, ev.y)); continue }
-                is Ev.Droid -> { droid(id, ev); continue }
+                is Ev.Droid -> {
+                    // its lease ran out on the phone (see Proc.lease): what's sent from now on goes to a new process
+                    if (ev.op == "closed") synchronized(lock) { if (run.proc === proc) run.stdinOpen = false } else droid(id, ev)
+                    continue
+                }
                 is Ev.Step -> {
                     woke = wentOn(id, run)
                     doing.update { m -> m + (id to Doing(ev.work, (m[id]?.n ?: 0) + 1)) }
@@ -616,6 +698,9 @@ class Runner(
                         val port = r.port; val token = r.token
                         port != null && token != null && inUse(port, token)
                     } == true
+                    // the app he worked in, left in front at the answer: the chat's icon in the list
+                    if (!ev.isError) screens.value[id]?.let { r -> val port = r.port; val token = r.token
+                        if (port != null && token != null) inFront(port, token)?.let { pkg -> store.update(id) { it.copy(app = pkg) } } }
                     val held = synchronized(lock) {
                         run.gotResult = true
                         (keep && run.stdinOpen).also { if (it) run.idle = true else run.stdinOpen = false }
@@ -631,6 +716,7 @@ class Runner(
             store.update(id) { c ->
                 (if (applied) c else c.apply(ev).withCopies(copies)).let { if (answered) it.copy(running = false) else if (woke) it.copy(running = true) else it }
             }
+            if (answered) store.saveNow()
             // Only with the answer in the transcript does the chat stop counting as running (its notification reads it),
             // unless a message came meanwhile: to this process (a new turn), or queued for the next one.
             if (answered) {

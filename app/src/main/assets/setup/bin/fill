@@ -1,0 +1,3 @@
+#!/bin/sh
+# fill [FIELD] TEXT: see shot
+exec shot --fill "$@"

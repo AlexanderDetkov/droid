@@ -51,6 +51,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.channels.Channel
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
@@ -226,9 +227,11 @@ fun chatFeel(working: Boolean, doing: Doing?, outcome: Outcome?, mood: Mood? = n
  * animations off): never bounces (at least critically damped), and rests exactly on its target once there, so a Dash at
  * rest costs nothing to draw.
  */
-class Spring(var x: Float, k: Float, damping: Float, private val calm: Boolean) {
+class Spring(var x: Float, k: Float, damping: Float, private val calm: Boolean, private val stir: () -> Unit = {}) {
     var v = 0f
+    /** Where it's going. A new one wakes a calm rig that rests ([DashRig.resting]). */
     var t = x
+        set(value) { if (value != field) { field = value; if (calm) stir() } }
     private val w = sqrt(k)
     private val z = if (calm) max(damping, 1f) else damping
     fun step(dt: Float) {
@@ -271,7 +274,7 @@ private fun mix(a: Float, b: Float, t: Float) = a + (b - a) * t
  * pose still ease, never jump.
  */
 class DashRig(val calm: Boolean, feel: Feel = Feel.IDLE) {
-    private fun s(x: Float, k: Float, z: Float) = Spring(x, k, z, calm)
+    private fun s(x: Float, k: Float, z: Float) = Spring(x, k, z, calm, ::wake)
     // body
     val frame = s(0f, 80f, .95f)        // 0 creature .. 1 the frame of a screen
     val present = s(1f, 90f, 1f)        // 0: gone (a creature shrinks away; a frame lets go of its screen)
@@ -311,6 +314,7 @@ class DashRig(val calm: Boolean, feel: Feel = Feel.IDLE) {
     var level: () -> Float = { 0f }
     /** Where he should look, in -1..1 of his own space, instead of glancing (a touch, a tap on the screen). */
     var lookAt: Offset? = null
+        set(value) { if (value != field) { field = value; wake() } }
 
     // life layer
     var time = 0f; private set
@@ -330,6 +334,25 @@ class DashRig(val calm: Boolean, feel: Feel = Feel.IDLE) {
     /** Invalidates whatever draws him; bumped by the frame loop. */
     val tick: MutableLongState = mutableLongStateOf(0L)
 
+    /** Wakes the frame loop of a calm Dash at rest: something changed him. */
+    internal val stirred = Channel<Unit>(Channel.CONFLATED)
+    private fun wake() { stirred.trySend(Unit) }
+    /** The feeling he shows now (a poke's, a beat's, or his own). */
+    private var shows = feel
+
+    /**
+     * Nothing about him will move until something changes him (calm, at rest, no poke, beat or words timing out, not
+     * listening to a voice): his frame loop can sleep until [stirred].
+     */
+    internal fun resting() = calm && poked <= 0f && beatFor <= 0f && sayFor <= 0f && !shows.pulse && !selfTaps
+
+    /** Moving fast (a gesture, a tap, a blink, a quick turn): drawn every frame. Slower life is drawn at 30 fps. */
+    internal fun quick(): Boolean {
+        if (moves.isNotEmpty() || taps.isNotEmpty() || blinkT >= 0f || poked > 0f) return true
+        for (i in all.indices) if (abs(all[i].v) > 2f) return true
+        return false
+    }
+
     /** Starts a gesture after [delay] seconds (none with reduced motion, and not the same one twice at once). */
     private fun move(kind: Mv, amp: Float = 1f, delay: Float = 0f) {
         if (calm) return
@@ -345,7 +368,7 @@ class DashRig(val calm: Boolean, feel: Feel = Feel.IDLE) {
 
     fun feel(f: Feel) {
         if (f == feel) return
-        feel = f; feelFor = 0f
+        feel = f; feelFor = 0f; wake()
         enter(f)
         if (f.call) { callT = .35f + Random.nextFloat() * .4f; callHops = 0 }   // calls soon (a list of them: not in step)
     }
@@ -354,16 +377,17 @@ class DashRig(val calm: Boolean, feel: Feel = Feel.IDLE) {
     fun poke() {
         if (calm) squash.v += 1.2f else { move(Mv.SQUISH); move(Mv.HOP, 4f, .3f) }
         if (feel != Feel.LISTENING && feel != Feel.ASLEEP && feel != Feel.DRIVING) poked = .9f
+        wake()
     }
 
     /** A step done: a small nod. */
     fun nod() = move(Mv.NOD)
 
     /** He says something (the agent's narration): a look up at you, his tip brightening, a little rise (as a frame, his head peeks up). */
-    fun say() { move(Mv.PEEK); sayFor = 1.3f }
+    fun say() { move(Mv.PEEK); sayFor = 1.3f; wake() }
 
     /** [f] for [secs], then back to his feeling. */
-    fun beat(f: Feel, secs: Float) { beatFeel = f; beatFor = secs; enter(f) }
+    fun beat(f: Feel, secs: Float) { beatFeel = f; beatFor = secs; enter(f); wake() }
 
     /** What a working agent just did: a look up for something it said, a start for an app opening, else a nod. */
     fun react(d: Doing) = when {
@@ -373,7 +397,7 @@ class DashRig(val calm: Boolean, feel: Feel = Feel.IDLE) {
     }
 
     /** Droid tapped its screen at [fx], [fy] (0..1 of the screen): a ripple there, and his eyes go to it. */
-    fun tap(fx: Float, fy: Float) { taps += Tap(fx, fy, false); glow.v += 3f }
+    fun tap(fx: Float, fy: Float) { taps += Tap(fx, fy, false); glow.v += 3f; wake() }
 
     /** Jumps to where he'd be by now (no gestures): for a rig that wasn't stepped while it couldn't be seen. */
     fun settle() {
@@ -381,16 +405,18 @@ class DashRig(val calm: Boolean, feel: Feel = Feel.IDLE) {
         targets(if (poked > 0f) Feel.HAPPY else feel, 0f)
         for (sp in all) sp.snap(sp.t)
         tick.longValue++
+        wake()
     }
 
     /** Advances the rig by [dt] seconds. False when nothing moved (calm and at rest): no need to draw again. */
     fun step(dt: Float): Boolean {
-        if (calm) for ((i, sp) in all.withIndex()) before[i] = sp.x
+        if (calm) for (i in all.indices) before[i] = all[i].x
         time += dt; feelFor += dt
         if (poked > 0f) poked -= dt
         if (beatFor > 0f) beatFor -= dt
         if (sayFor > 0f) sayFor -= dt
         val f = when { poked > 0f -> Feel.HAPPY; beatFor > 0f -> beatFeel; else -> feel }
+        shows = f
         life(dt)
         for (m in moves) m.t += dt
         moves.removeAll { it.t >= it.kind.dur }
@@ -407,7 +433,9 @@ class DashRig(val calm: Boolean, feel: Feel = Feel.IDLE) {
         for (t in taps) t.age += dt
         taps.removeAll { it.age > 3f }
         if (!calm) return true
-        return taps.isNotEmpty() || all.withIndex().any { (i, sp) -> sp.x != before[i] }
+        if (taps.isNotEmpty()) return true
+        for (i in all.indices) if (all[i].x != before[i]) return true
+        return false
     }
     private val before = FloatArray(all.size)
 
@@ -429,6 +457,7 @@ class DashRig(val calm: Boolean, feel: Feel = Feel.IDLE) {
             callT = o.callT; callHops = o.callHops
         }
         tick.longValue++
+        wake()
     }
 
     init { if (feel != Feel.IDLE) settle() }   // made in a feeling: he is in it already, not on his way from idle
@@ -576,7 +605,8 @@ fun rememberCalm(): Boolean {
 }
 
 /**
- * A rig that steps every frame while it's on screen. [setup] runs once with the new rig, which then starts settled in
+ * A rig that steps while it's on screen: every frame while he moves fast, 30 times a second for his slow life
+ * (breathing, drifting, looking about), and not at all while a calm Dash rests. [setup] runs once with the new rig, which then starts settled in
  * what it set (a Dash that appears is already in his pose, not morphing into it in front of you); [from]: instead, it
  * takes up exactly where that Dash is ([DashRig.follow]). [active]: false while he can't be seen (a closed drawer), so
  * he costs nothing there.
@@ -591,13 +621,29 @@ fun rememberDash(key: Any? = Unit, feel: Feel = Feel.IDLE, active: Boolean = tru
         // what changed while he couldn't be seen has happened already: no catching up on screen
         if (!wasActive) { rig.settle(); wasActive = true }
         var last = withFrameNanos { it }
-        while (true) withFrameNanos { now ->
+        var quick = true
+        while (true) {
+            val now = if (quick) withFrameNanos { it } else slowFrame()
             val moved = rig.step(((now - last) / 1e9f).coerceIn(0f, .05f))
             last = now
             if (moved) rig.tick.longValue = now
+            else if (rig.resting()) { rig.stirred.receive(); last = withFrameNanos { it } }
+            quick = rig.quick()
         }
     }
     return rig
+}
+
+/** The frames slow motion is drawn on: 30 a second, the same ones for everything that uses [slowFrame]. */
+private const val SLOW_FRAME_NS = 1_000_000_000L / 30
+
+/**
+ * Waits for the next of the frames slow motion is drawn on, 30 a second, and gives its time. Everything slow (Dash's
+ * life, the busy spinner) changes on the same frames, so the screen is drawn 30 times a second, not once for each.
+ */
+suspend fun slowFrame(): Long {
+    val from = withFrameNanos { it } / SLOW_FRAME_NS
+    while (true) withFrameNanos { it }.let { if (it / SLOW_FRAME_NS != from) return it }
 }
 
 /** The head's scale (in dp) for a frame [fwDp] wide (its screen plus edges), shown at [scale]. */
@@ -629,7 +675,7 @@ fun Dash(rig: DashRig, modifier: Modifier = Modifier, screen: ImageBitmap? = nul
  */
 @Composable
 fun DashScreen(rig: DashRig, frame: ImageBitmap?, width: Dp, ratio: Float, modifier: Modifier = Modifier,
-               edge: Dp = 3.dp, hook: Boolean = true, label: String = "Droid's screen, live", onClick: (() -> Unit)? = null,
+               edge: Dp = 3.dp, hook: Boolean = true, label: String = "Dash's screen, live", onClick: (() -> Unit)? = null,
                /** The scale this will be shown at (Watch growing from the chat), and how much of the hook to show. */
                scale: () -> Float = { 1f }, hookAmt: () -> Float = { if (hook) 1f else 0f }, onLight: Boolean = P.bg.luminance() > .5f) {
     val tap = remember { MutableInteractionSource() }

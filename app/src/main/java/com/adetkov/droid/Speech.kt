@@ -47,6 +47,17 @@ class Speech(val dir: File) {
     /** Smart Turn's thread, beside [transcriber]: a pause is judged while it's transcribed. */
     val turner: ExecutorService = Executors.newSingleThreadExecutor { Thread(it, "turn").apply { isDaemon = true } }
 
+    /**
+     * Loaded, the models hold about a gigabyte, which the phone's other apps need more while no one talks (watching Dash
+     * work, say, with Droid on screen): unused for [IDLE_MS] they're freed, and load again with the next word (~3 s).
+     */
+    private val idle = Executors.newSingleThreadScheduledExecutor { Thread(it, "speech-idle").apply { isDaemon = true } }
+    private var freeing: java.util.concurrent.ScheduledFuture<*>? = null
+    private fun used() = synchronized(idle) {
+        freeing?.cancel(false)
+        freeing = idle.schedule({ release(wait = true) }, IDLE_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
+    }
+
     private fun path(name: String) = dir.resolve(name).path
 
     fun vad() = Vad(config = VadModelConfig(
@@ -55,17 +66,17 @@ class Speech(val dir: File) {
     ))
 
     /** Loads the recognizer (and Smart Turn) ahead of [transcribe], so it is ready by the time the user stops talking. */
-    fun warmUp() { synchronized(asrLock) { recognizer() }; synchronized(turnLock) { turn() } }
+    fun warmUp() { synchronized(asrLock) { recognizer() }; synchronized(turnLock) { turn() }; used() }
 
     /** The probability that [samples] (ending a moment after the last word) are a finished turn, or null without Smart Turn. */
     fun finished(samples: FloatArray): Float? = synchronized(turnLock) {
         val t = turn() ?: return null
         val start = System.nanoTime()
-        t.complete(samples).also { Log.i(TAG, "turn %.2f in %d ms".format(it, (System.nanoTime() - start) / 1_000_000)) }
+        t.complete(samples).also { used(); Log.i(TAG, "turn %.2f in %d ms".format(it, (System.nanoTime() - start) / 1_000_000)) }
     }
 
     /** Loads the voice ahead of [synthesize], e.g. while the agent works on a spoken request. */
-    fun warmUpVoice() { synchronized(ttsLock) { synthesizer() } }
+    fun warmUpVoice() { synchronized(ttsLock) { synthesizer() }; used() }
 
     /**
      * Transcribes [samples], by greedy search: beam search (which hotwords would need) is 2.5–4× slower on a Pixel 6a,
@@ -81,6 +92,7 @@ class Speech(val dir: File) {
             r.getResult(stream).text.trim()
         } finally {
             stream.release()
+            used()
             Log.i(TAG, "transcribed %.1f s in %d ms".format(samples.size / MIC_RATE.toFloat(), (System.nanoTime() - start) / 1_000_000))
         }
     }
@@ -96,7 +108,7 @@ class Speech(val dir: File) {
             override fun invoke(samples: FloatArray) = if (onAudio(samples, rate)) 1 else 0
         }
         t.generateWithConfigAndCallback(text, GenerationConfig(referenceAudio = ref.samples, referenceSampleRate = ref.sampleRate), callback)
-        Unit
+        used()
     }
 
     /** Frees both models off the main thread (or on this one, if [wait]), waiting for any use in progress. */
@@ -151,6 +163,8 @@ class Speech(val dir: File) {
         const val TURN_SHA256 = "2bb026316b14a660486a75b1733cd3fbab8c2fd0314dc9af7be49f8cca967e4f"
         const val VAD_WINDOW = 512  // 32 ms at 16 kHz
         private const val THREADS = 4
+        /** How long the models stay loaded unused (see [used]). */
+        private const val IDLE_MS = 3 * 60_000L
         private const val TAG = "Droid"
         private val FILES = listOf(
             "silero_vad.onnx",

@@ -25,6 +25,12 @@ interface Proc {
     fun kill(pid: Int)
     /** False once the process has exited, e.g. a warm one that gave up waiting for its first message. */
     val alive: Boolean get() = true
+    /**
+     * Keeps the run up until [untilEpochSec]: with no message or newer lease by then it ends by itself (phone-agent's
+     * lease), so a run Droid can no longer end (frozen by Android, killed, or lost track of) doesn't keep its hidden
+     * screen, and the phone, awake for hours. Only a real run takes one.
+     */
+    fun lease(untilEpochSec: Long) {}
     /** The run's last line on stderr, which says why a run failed without a result (`su` refused, proot, ...). */
     val error: String get() = ""
 }
@@ -84,6 +90,22 @@ interface Backend {
     fun run(command: String, timeoutS: Int = 120): Pair<String, Int> = "" to 127
     /** Hands the owner's answer ([json]) to the agent's command waiting on page [pageId] (`droid show --wait`). */
     fun reply(pageId: String, json: String) {}
+    /** Where chats' apps live in Droid's Linux, a folder each (see [appDir]); null where there are none. */
+    val apps: String? get() = null
+}
+
+/** Chat [conv]'s app folder in Droid's Linux, under [apps]: the agent is told it, and its pages load their files from it. */
+fun appDir(apps: String, conv: String): String = "$apps/" + conv.replace("-", "").take(12)
+
+/**
+ * The folder of a page the agent showed from [path] if that is in an app folder (directly under [apps], or deeper):
+ * the page loads its files from there by relative path. Null for a page elsewhere, which names its files in full.
+ */
+fun appBase(apps: String?, path: String): String? {
+    if (apps == null || !path.startsWith("$apps/")) return null
+    val parts = path.removePrefix("$apps/").split('/')
+    if (parts.size < 2 || parts.any { it.isEmpty() || it == "." || it == ".." }) return null
+    return path.substringBeforeLast('/')
 }
 
 /**
@@ -91,6 +113,7 @@ interface Backend {
  * read when each call happens, since setup may switch it. The app's APK holds the hidden-display helper.
  */
 class HostBackend(private val app: Context, private val host: () -> Host) : Backend {
+    override val apps = "/root/apps"
     private val apk = app.applicationInfo.sourceDir
     private fun asset(name: String) = app.assets.open(name).use { it.readBytes().toString(Charsets.UTF_8) }
     /** The Linux whose owner's instructions this process checked (see [migrate]). */
@@ -108,11 +131,16 @@ class HostBackend(private val app: Context, private val host: () -> Host) : Back
             if (migrated != h.base) { migrate(h); migrated = h.base }
             // The scripts the agent's side of the app lives in, as this app has them (Setup's Update installs them
             // too), once per process: a newer app's `droid` command and runs work without an Update.
-            if (scripts != h.base) {
+            if (scripts != h.base) synchronized(this) { if (scripts != h.base) {
+                // This process's first run: any phone-agent up is one a Droid that's gone left (it crashed, or Android
+                // closed it, mid-task), still working on a chat now marked Interrupted, and its screen still up. It's
+                // ended first (its TERM cleanup takes the screen down), so Try again doesn't do the task twice.
+                // (Under the lock: a second start waits, and its run isn't taken for one of those.)
+                try { run("pkill -TERM -f '/usr/local/bin/phone-agen[t]'", 10) } catch (e: Exception) { Log.w("Droid", "left-over runs: $e") }
                 SCRIPTS.forEach { put(h, "usr/local/bin/$it", asset("setup/bin/$it"), "755") }
                 VD_SCRIPTS.forEach { put(h, "${h.base}/$it", asset("setup/$it"), "755") }
                 scripts = h.base
-            }
+            } }
         } catch (e: IOException) { Log.w("Droid", "system instructions: ${e.message}") }
         return HostProc(h.exec(startCommand(apk, sessionId, model, engine, h.base), mergeStderr = false), h)
     }
@@ -214,7 +242,7 @@ class HostBackend(private val app: Context, private val host: () -> Host) : Back
 }
 
 /** The scripts in assets/setup/bin that runs depend on, which [HostBackend.start] keeps up to date. */
-private val SCRIPTS = listOf("droid", "phone-agent", "droid-engine", "android", "shot", "droid-bridge", "droid-install-engine")
+private val SCRIPTS = listOf("droid", "phone-agent", "droid-engine", "android", "shot", "tap", "fill", "droid-bridge", "droid-install-engine")
 /** Run in Android by phone-agent, from beside the Linux (see install.sh). */
 private val VD_SCRIPTS = listOf("vd-start.sh", "vd-stop.sh")
 
@@ -291,6 +319,8 @@ internal class HostProc(private val p: Process, private val host: Host) : Proc {
     override fun write(line: String) = queue { stdin.write((line + "\n").toByteArray(Charsets.UTF_8)); stdin.flush() }
 
     override fun closeStdin() = queue { stdin.close() }
+
+    override fun lease(untilEpochSec: Long) = write("""{"type":"lease","until":$untilEpochSec}""")
 
     private fun queue(io: () -> Unit) = writer.execute { try { io() } catch (_: IOException) {} }
 

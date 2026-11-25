@@ -27,7 +27,7 @@ enum class Kind { USER, AGENT, NOTE, STEP, STATUS, DASH, PAGE, WAKE }
 val Kind.opensTurn get() = this == Kind.USER || this == Kind.WAKE
 
 /** Where an attachment came from, which the agent is told: a picked file, a screenshot of the app the assistant was
- * opened over, or a picture from Droid's camera. */
+ * opened over, or a picture from the phone's camera. */
 enum class Source { FILE, SCREEN, CAMERA }
 
 /** A file sent with a message: a copy in Droid's attachments folder, which the agent reads through /sdcard. */
@@ -50,6 +50,10 @@ data class Conv(
     val updatedAt: Long = createdAt,
     val running: Boolean = false,
     val pinned: Boolean = false,
+    /** The owner named it (Rename): their name wins over the one its app gives itself. */
+    val named: Boolean = false,
+    /** The app Dash last worked in for it, left in front when he answered (its package): its icon in the list. */
+    val app: String? = null,
     /** The agent this chat runs on, for good: its session only exists in that engine. */
     val engine: Engine = Engine.CLAUDE,
 ) {
@@ -59,9 +63,10 @@ data class Conv(
 
 /**
  * All conversations, persisted as one JSON file: written off the main thread [wait] ms after a change, with what changed
- * meanwhile, or at once ([saveNow]).
+ * meanwhile, or at once ([saveNow]). A working agent changes its chat at every step: a crash loses at most [wait] of
+ * them (its answer is saved at once).
  */
-class Store(private val file: File, private val wait: Long = 400) {
+class Store(private val file: File, private val wait: Long = 1500) {
     private var interrupted = false
     val convs = MutableStateFlow(load())
     private val saveRequests = Channel<Unit>(Channel.CONFLATED)
@@ -71,8 +76,8 @@ class Store(private val file: File, private val wait: Long = 400) {
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
             for (r in saveRequests) {
                 withTimeoutOrNull(wait) { urgent.receive() }  // a change that can't wait (see saveNow) cuts the wait short
-                // A failed write (e.g. disk full) must not end the loop; the next change retries.
-                try { write() } catch (_: IOException) {}
+                // A failed write (disk full, out of memory) must not end the loop: the next change retries.
+                try { write() } catch (e: Exception) { android.util.Log.w("Droid", "store: $e") } catch (e: OutOfMemoryError) { android.util.Log.w("Droid", "store: $e") }
             }
         }
         if (interrupted) save()
@@ -93,7 +98,7 @@ class Store(private val file: File, private val wait: Long = 400) {
         save()
     }
 
-    fun rename(id: String, title: String) = update(id) { it.copy(title = title.trim()) }
+    fun rename(id: String, title: String) = update(id) { it.copy(title = title.trim(), named = true) }
 
     /** Pinning doesn't count as activity: the chat keeps its place in the date groups. */
     fun setPinned(id: String, pinned: Boolean) = update(id) { it.copy(pinned = pinned) }
@@ -108,12 +113,29 @@ class Store(private val file: File, private val wait: Long = 400) {
     /** Writes the chats now rather than after the usual wait: what changed exists nowhere else (a wake-up's message). */
     fun saveNow() { saveRequests.trySend(Unit); urgent.trySend(Unit) }
 
+    /**
+     * Each chat's JSON as last written, by the chat itself: a change replaces only the chat it changes (see [update]), so
+     * the others are the same objects, and aren't serialized again.
+     */
+    private var written = java.util.IdentityHashMap<Conv, String>()
+
     private fun write() {
-        val arr = JSONArray()
-        for (c in convs.value) arr.put(JSONObject().apply {
+        val now = java.util.IdentityHashMap<Conv, String>()
+        val out = StringBuilder("[")
+        for (c in convs.value) {
+            if (out.length > 1) out.append(',')
+            out.append(now.getOrPut(c) { written[c] ?: json(c).toString() })
+        }
+        written = now
+        writeWhole(file, out.append(']').toString())
+    }
+
+    private fun json(c: Conv) = JSONObject().apply {
             put("id", c.id); put("title", c.title); put("sessionId", c.sessionId)
             put("createdAt", c.createdAt); put("updatedAt", c.updatedAt); put("running", c.running)
             if (c.pinned) put("pinned", true)
+            if (c.named) put("named", true)
+            c.app?.let { put("app", it) }
             if (c.engine != Engine.CLAUDE) put("engine", c.engine.id)
             put("messages", JSONArray().also { a ->
                 c.messages.forEach { m ->
@@ -129,9 +151,7 @@ class Store(private val file: File, private val wait: Long = 400) {
                     a.put(o)
                 }
             })
-        })
-        writeWhole(file, arr.toString())
-    }
+        }
 
     /** The saved chats. One that can't be read is left out, not the others with it; the file is kept aside first. */
     private fun load(): List<Conv> {
@@ -163,7 +183,7 @@ class Store(private val file: File, private val wait: Long = 400) {
                 Msg(kind, m.getString("t"), m.getLong("ts"), files, if (m.isNull("d")) null else m.optString("d").ifEmpty { null })
             },
             createdAt = o.getLong("createdAt"), updatedAt = o.getLong("updatedAt"),
-            running = o.getBoolean("running"), pinned = o.optBoolean("pinned"), engine = Engine.of(o.optString("engine")),
+            running = o.getBoolean("running"), pinned = o.optBoolean("pinned"), named = o.optBoolean("named"), app = o.optString("app").ifEmpty { null }, engine = Engine.of(o.optString("engine")),
         )
     }
 }

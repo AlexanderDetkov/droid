@@ -39,4 +39,4 @@ for _ in $(seq 50); do
   grep -q '^port=' "$LOG" 2>/dev/null && break
   sleep 0.1
 done
-grep -E '^(displayId|pid|port)=' "$LOG"
+grep -E '^(displayId|pid|port)=' "$LOG" || echo "error=$(grep -v '^$' "$LOG" 2>/dev/null | tail -n 1)"

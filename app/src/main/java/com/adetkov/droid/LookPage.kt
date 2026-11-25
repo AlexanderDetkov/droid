@@ -32,15 +32,19 @@ object LookPage {
     fun handle(app: DroidApp, l: Look) {
         val html = l.html
         if (html == null) { main.post { hide(l.id) }; return }
-        fun reply(error: String?) = Thread {
-            try { app.backend.reply(l.id, JSONObject().apply { if (error == null) put("ok", true) else put("error", error) }.toString()) }
-            catch (e: IOException) { Log.w("Droid", "look: ${e.message}") }
+        fun reply(error: String?, problems: List<String> = emptyList()) = Thread {
+            try {
+                app.backend.reply(l.id, JSONObject().apply {
+                    if (error == null) put("ok", true).put("problems", org.json.JSONArray(problems)) else put("error", error)
+                }.toString())
+            } catch (e: IOException) { Log.w("Droid", "look: ${e.message}") }
         }.start()
         if (!canOverlay(app)) { reply("Droid isn't allowed to draw over apps, so it can't draw the page"); return }
-        main.post { show(app, l.conv, l.id, l.display, html, ::reply) }
+        main.post { show(app, l.conv, l.id, l.display, html, l.base) { error, problems -> reply(error, problems) } }
     }
 
-    private fun show(app: DroidApp, conv: String, id: String, display: Int, html: String, done: (String?) -> Unit) {
+    private fun show(app: DroidApp, conv: String, id: String, display: Int, html: String, base: String?, finish: (String?, List<String>) -> Unit) {
+        val done = { error: String? -> finish(error, emptyList()) }
         hide(null)
         val d = app.getSystemService(DisplayManager::class.java).getDisplay(display) ?: return done("Droid can't reach display $display")
         val ctx = try { app.createDisplayContext(d).createWindowContext(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, null) }
@@ -84,12 +88,28 @@ object LookPage {
             // the page tells whether it ends with a footer once laid out; without one, the talk bar is under it
             main.postDelayed({
                 if (shown?.first == id && !web.hasFooter) { lp.bottomMargin = bottom + talk; web.layoutParams = lp; bar.visibility = android.view.View.VISIBLE }
-                main.postDelayed({ if (shown?.first == id && !told) { told = true; done(null) } }, 500)
+                // laid out where it will be: what the page notices of its own layout (droid.js _lint) goes with the answer
+                main.postDelayed({
+                    if (shown?.first == id && !told) web.evaluateJavascript("JSON.stringify(window.droid && droid._lint ? droid._lint() : [])") { js ->
+                        if (told) return@evaluateJavascript
+                        told = true
+                        finish(null, lintProblems(js))
+                    }
+                }, 500)
             }, 700)
         }
-        web.show(answerDocument(ctx, html, dark, PageMode.SCREEN), namedPaths(html))
+        // a page (a document of its own, as an app folder's index.html is) as the chat shows a page; else as an answer
+        val page = Regex("<(!doctype|html|head|body)\\b", RegexOption.IGNORE_CASE).containsMatchIn(html.take(4000)) || base != null
+        web.show(if (page) pageDocument(ctx, html, dark, PageMode.SCREEN) else answerDocument(ctx, html, dark, PageMode.SCREEN), namedPaths(html), base)
         main.postDelayed({ hide(id) }, 60_000)
     }
+
+    /** What evaluateJavascript gave for droid._lint() (a JSON string of a JSON array), as a list; empty if unreadable. */
+    internal fun lintProblems(js: String?): List<String> = try {
+        val inner = org.json.JSONTokener(js ?: "").nextValue() as? String ?: return emptyList()
+        val a = org.json.JSONArray(inner)
+        (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() }
+    } catch (_: org.json.JSONException) { emptyList() }
 
     /** Takes page [id] away ([id] null: whichever is up). On the main thread. */
     fun hide(id: String?) {

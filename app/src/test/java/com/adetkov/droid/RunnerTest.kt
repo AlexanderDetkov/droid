@@ -202,6 +202,19 @@ class RunnerTest {
     private fun answered(runner: Runner, id: String) =
         id !in runner.running.value && id in runner.screens.value && runner.screens.value[id]?.port != null
 
+    @Test fun aChatKeepsTheAppDashAnsweredIn() {
+        // the app left in front on his screen at the answer is the chat's (its icon in the list); none keeps the last one
+        val store = store()
+        var front: String? = "com.whatsapp"
+        val runner = Runner(store, MultiBackend(), holdFor = 60_000, inFront = { _, _ -> front })
+        val id = runner.send(null, "one")!!
+        until("answered in an app") { answered(runner, id) && store.get(id)!!.app == "com.whatsapp" }
+        front = null
+        runner.send(id, "two")
+        until("second answer") { store.get(id)!!.messages.last().text == "ok 2" }
+        assertEquals("com.whatsapp", store.get(id)!!.app)
+    }
+
     @Test fun aReplyWhileTheScreenIsHeldGoesToTheSameRun() {
         val backend = MultiBackend()
         val store = store()
@@ -282,6 +295,47 @@ class RunnerTest {
         runner.closeScreens()
     }
 
+    @Test fun aProcesssFirstMessageSaysWhereTheChatsAppLives() {
+        val multi = MultiBackend()
+        val backend = object : Backend by multi { override val apps = "/root/apps" }
+        val runner = Runner(store(), backend, holdFor = 60_000)
+        val id = runner.send(null, "one")!!
+        until("answer") { answered(runner, id) }
+        runner.send(id, "two")
+        until("both written") { multi.started[0].writes.size == 2 }
+        val dir = appDir("/root/apps", id)
+        assertTrue(dir, dir.matches(Regex("/root/apps/[0-9a-f]{12}")))
+        // said on the process's first message only
+        assertEquals(userLine("one\n\n[This chat's app is in $dir/]"), multi.started[0].writes[0])
+        assertEquals(userLine("two"), multi.started[0].writes[1])
+        runner.closeScreens()
+    }
+
+    @Test fun aPageShownFromAnAppFolderLoadsItsFilesFromThere() {
+        assertEquals("/root/apps/4f2a9c81e6b0", appBase("/root/apps", "/root/apps/4f2a9c81e6b0/index.html"))
+        assertEquals("/root/apps/4f2a9c81e6b0/week", appBase("/root/apps", "/root/apps/4f2a9c81e6b0/week/index.html"))
+        assertEquals(null, appBase("/root/apps", "/root/app.html"))
+        assertEquals(null, appBase("/root/apps", "/root/apps/index.html"))  // not in a folder of its own
+        assertEquals(null, appBase("/root/apps", "/root/apps/../.claude/x.html"))
+        assertEquals(null, appBase(null, "/root/apps/4f2a9c81e6b0/index.html"))
+    }
+
+    @Test fun theNextMessageSaysWhatTapsOnThePageDidAtOnce() {
+        val backend = MultiBackend()
+        val runner = Runner(store(), backend, holdFor = 60_000)
+        val id = runner.send(null, "one")!!
+        until("answer") { answered(runner, id) }
+        runner.pageDid(id, "Call back", "opened tel:+17145550198")
+        runner.pageDid(id, "", "ran `android 'am start -a android.intent.action.DISMISS_TIMER'`")
+        runner.send(id, "thanks")
+        runner.send(id, "and one more")
+        until("all written") { backend.started[0].writes.size == 3 }
+        assertEquals(userLine("[Since your last turn, on your page: \u201cCall back\u201d opened tel:+17145550198; a tap ran " +
+            "`android 'am start -a android.intent.action.DISMISS_TIMER'`.]\n\nthanks"), backend.started[0].writes[1])
+        assertEquals(userLine("and one more"), backend.started[0].writes[2])
+        runner.closeScreens()
+    }
+
     @Test fun aMessageSentWhileTheRunStartsGoesToItAfterTheFirst() {
         val backend = MultiBackend(go = CountDownLatch(1))
         val store = store()
@@ -306,8 +360,12 @@ class RunnerTest {
         private val inbox = LinkedBlockingQueue<String>()
         private val eof = String()
 
+        /** The leases it was given (epoch seconds), in order. */
+        val leases: MutableList<Long> = Collections.synchronizedList(mutableListOf())
+
         override fun write(line: String) { writes += line; inbox.put(line) }
         override fun closeStdin() { inbox.put(eof) }
+        override fun lease(untilEpochSec: Long) { leases += untilEpochSec }
         override fun waitFor() = 0
         override fun kill(pid: Int) { killedPid = pid; exit.countDown() }
         override fun readLines(onLine: (String) -> Unit) {
@@ -330,6 +388,70 @@ class RunnerTest {
         override fun start(sessionId: String?, model: String, engine: Engine): Proc =
             LingerProc(answers.getOrElse(started.size) { CountDownLatch(0) }).also { started += it }
         override fun forget(sessionId: String, engine: Engine) {}
+    }
+
+    /**
+     * A run is leased while it's wanted, so it ends by itself if the app can't end it (Android froze or killed it): for a
+     * while as it works, then, held after its answer, until its screen closes (and a little); none once it's let go.
+     */
+    @Test fun aRunIsLeasedUntilItsScreenClosesSoItEndsEvenIfTheAppCant() {
+        val answer = CountDownLatch(1)
+        val backend = LingerBackend(answer)
+        val store = store()
+        val runner = Runner(store, backend, holdFor = 60_000)
+        val sent = System.currentTimeMillis()
+        val id = runner.send(null, "one")!!
+        until("leased as it works") { backend.started.size == 1 && backend.started[0].leases.isNotEmpty() }
+        val proc = backend.started[0]
+        assertTrue("for a while", proc.leases[0] * 1000 in (sent + LEASE_FOR - 2000)..(System.currentTimeMillis() + LEASE_FOR + 1000))
+        answer.countDown()
+        until("held") { id !in runner.running.value && runner.screens.value[id]?.closesAt != null }
+        val closesAt = runner.screens.value[id]!!.closesAt!!
+        until("leased until its screen closes") { proc.leases.last() == (closesAt + LEASE_SLACK) / 1000 }
+        runner.closeScreens()
+        val n = proc.leases.size
+        proc.exit.countDown()
+        until("exited") { runner.screens.value.isEmpty() }
+        assertEquals("no lease once let go", n, proc.leases.size)
+    }
+
+    /** A screen held after its answer is told so (it sleeps while unwatched), and told it's working when a message comes. */
+    @Test fun aHeldScreenIsToldItsHeldAndThenWorkingAgain() {
+        val told: MutableList<Pair<Int, Boolean>> = Collections.synchronizedList(mutableListOf())
+        val backend = LingerBackend()
+        val runner = Runner(store(), backend, holdFor = 60_000, holdScreen = { port, _, held -> told += port to held })
+        val id = runner.send(null, "one")!!
+        until("held, and told") { runner.screens.value[id]?.closesAt != null && told.size == 1 }
+        assertEquals(8708 to true, told[0])
+        runner.watching(id, true); runner.watching(id, false)  // held all along: nothing new to tell
+        runner.send(id, "two")
+        until("working, and told") { told.size == 2 }
+        assertEquals(8708 to false, told[1])
+        until("held again") { id !in runner.running.value && told.size == 3 }
+        assertEquals(8708 to true, told[2])
+        runner.closeScreens()
+        backend.started[0].exit.countDown()
+        until("exited") { runner.screens.value.isEmpty() }
+    }
+
+    /** A run whose lease ran out on the phone says so: a message after that starts a new run, not one nobody reads. */
+    @Test fun aMessageAfterTheRunClosedGoesToANewRun() {
+        val store = store()
+        val backend = object : Backend {
+            val started: MutableList<LingerProc> = Collections.synchronizedList(mutableListOf())
+            override fun start(sessionId: String?, model: String, engine: Engine): Proc =
+                LingerProc(CountDownLatch(0), if (started.isEmpty()) listOf("""{"type":"droid","op":"closed"}""") else emptyList()).also { started += it }
+            override fun forget(sessionId: String, engine: Engine) {}
+        }
+        val runner = Runner(store, backend, holdFor = 60_000)
+        val id = runner.send(null, "one")!!
+        until("answered") { id !in runner.running.value && store.get(id)!!.messages.last().text == "re: one" }
+        runner.send(id, "two")
+        backend.started[0].exit.countDown()
+        until("a new run") { backend.started.size == 2 && backend.started[1].writes.isNotEmpty() }
+        assertEquals(listOf(userLine("two")), backend.started[1].writes.toList())
+        until("answered again") { store.get(id)!!.messages.last().text == "re: two" }
+        backend.started[1].exit.countDown()
     }
 
     @Test fun anAnswerThatEndsTheRunEndsTheWorkWhileItsAgentExits() {

@@ -33,6 +33,26 @@ class DashTest {
         assertTrue("a calm Dash at rest still moves", !r.step(dt))
     }
 
+    @Test fun aCalmDashAtRestSleepsUntilSomethingChangesHim() {
+        val r = DashRig(calm = true)
+        fun woken() = r.stirred.tryReceive().isSuccess.also { while (r.stirred.tryReceive().isSuccess) Unit }
+        repeat(120) { r.step(dt) }
+        woken()
+        assertTrue(r.resting()); assertFalse(r.step(dt))
+        r.feel(Feel.HAPPY); assertTrue("a new feeling wakes him", woken())
+        repeat(120) { r.step(dt) }; woken()
+        r.present.t = .5f; assertTrue("a target set from outside wakes him", woken())
+        r.present.t = .5f; assertFalse("the same target again doesn't", woken())
+        repeat(120) { r.step(dt) }
+        r.poke(); assertTrue("a poke wakes him", woken())
+        repeat(30) { r.step(dt) }
+        assertFalse("not at rest until the poke's moment of happy is over", r.resting())
+        repeat(120) { r.step(dt) }
+        assertTrue(r.resting())
+        r.feel(Feel.LISTENING); r.step(dt)
+        assertFalse("listening follows the voice", r.resting())
+    }
+
     @Test fun reducedMotionDoesNotHopOrBounce() {
         val r = DashRig(calm = true, Feel.CELEBRATE)
         var high = 0f

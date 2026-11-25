@@ -98,9 +98,6 @@ dependencies {
     implementation(libs.androidx.material3)
     implementation(files(sherpaOnnx))  // on-device speech; Setup downloads the models
     implementation(libs.commons.compress)  // unpacks the voice models (tar.bz2)
-    implementation(libs.androidx.camera.camera2)  // Droid's camera: a live view in the chat and the assistant
-    implementation(libs.androidx.camera.lifecycle)
-    implementation(libs.androidx.camera.view)
     implementation(libs.androidx.webkit)  // pages the agent makes: a message channel only Droid's pages can use
 
     testImplementation(libs.junit)

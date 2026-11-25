@@ -114,6 +114,43 @@ const val NO_APP = Int.MIN_VALUE
  * when it can't tell (no answer within a second and a half, or not the run's helper): then the screen is treated as
  * in use, as it always was.
  */
+/** The app in front on the run's hidden screen (its package), or null when none is (or the helper can't be reached). */
+fun appInFront(port: Int, token: String): String? = try {
+    Socket().use { s ->
+        openScreen(s, port, token, 1, 1)
+        val inp = DataInputStream(s.getInputStream().buffered())
+        var app: String? = null
+        var done = false
+        while (!done) {
+            val n = inp.readInt()
+            when {
+                n == NO_APP -> done = true
+                n in -256..-1 -> { app = String(ByteArray(-n).also(inp::readFully), Charsets.UTF_8); done = true }
+                n in 1..8_000_000 -> inp.readFully(ByteArray(n))  // a frame
+                else -> done = true
+            }
+        }
+        app
+    }
+} catch (_: IOException) { null }
+
+/**
+ * Tells the run's helper at [port] whether the app holds its screen for the owner ([held]): held and unwatched, it
+ * sleeps (see VdHelper.held). Waits for the helper to take it: the connection ends only once it read the line.
+ */
+fun holdScreen(port: Int, token: String, held: Boolean) {
+    try {
+        Socket().use { s ->
+            openScreen(s, port, token, 1, 1)
+            s.getOutputStream().apply { write("h ${if (held) 1 else 0}\n".toByteArray()); flush() }
+            s.shutdownOutput()
+            val inp = s.getInputStream()
+            val buf = ByteArray(8192)
+            while (inp.read(buf) >= 0) Unit  // its first answer, and a frame: until it closes
+        }
+    } catch (_: IOException) {}
+}
+
 fun screenInUse(port: Int, token: String): Boolean = try {
     Socket().use { s ->
         openScreen(s, port, token, 1, 1)

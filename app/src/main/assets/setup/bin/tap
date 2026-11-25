@@ -1,0 +1,3 @@
+#!/bin/sh
+# tap LABEL | tap X Y: see shot
+exec shot --tap "$@"

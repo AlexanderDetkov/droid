@@ -43,6 +43,8 @@ class StreamTest {
         assertEquals(listOf(Ev.Tap(7, 8)), taps("input touchscreen tap 7 8"))
         assertEquals(emptyList<Ev.Tap>(), taps("android input swipe 1 2 3 4 500"))
         assertEquals(emptyList<Ev.Tap>(), taps("echo tap 1 2"))
+        assertEquals(listOf(Ev.Tap(540, 1880)), taps("tap 540 1880"))
+        assertEquals(emptyList<Ev.Tap>(), taps("tap Send"))  // by name: where isn't in the command
         assertEquals(emptyList<Ev.Tap>(), taps("android input tap 99999999999 2"))  // no Int: no tap, and no crash
     }
 
@@ -56,6 +58,10 @@ class StreamTest {
         assertEquals(Work.SCROLL, bash("android 'input -d 4 swipe 540 1600 540 600 300'"))
         assertEquals(Work.TAP, bash("android 'input -d 4 tap 912 472' && sleep 1 && shot"))
         assertEquals(Work.BACK, bash("android 'input -d 4 keyevent 4'"))
+        assertEquals(Work.TAP, bash("tap 'Send'"))
+        assertEquals(Work.TAP, bash("tap Compose && shot --text"))
+        assertEquals(Work.TYPE, bash("fill 'Привет, Sam 👋'"))
+        assertEquals(Work.LOOK, work("Read", """{"file_path":"/tmp/screen.png"}"""))
         assertEquals(Work.LOOK, bash("shot"))
         assertEquals(Work.LOOK, bash("sleep 1; shot"))
         assertEquals(Work.LOOK, bash("android 'uiautomator dump /sdcard/ui.xml'"))

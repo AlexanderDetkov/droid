@@ -19,6 +19,8 @@ sealed interface Ev {
 internal const val NEW_SESSION = "New session: the agent doesn't remember this chat's earlier messages"
 
 fun parseLine(line: String): List<Ev> {
+    // Tool results (a screenshot's is megabytes) tell the app nothing: not worth parsing.
+    if (line.startsWith("{\"type\":\"user\"")) return emptyList()
     val o = try { JSONObject(line) } catch (e: Exception) { return emptyList() }
     val out = ArrayList<Ev>()
     when (o.optString("type")) {
@@ -47,8 +49,10 @@ fun parseLine(line: String): List<Ev> {
     return out
 }
 
-/** `android input [-d N] tap X Y` (or `input tap X Y`) in a tool's command: where the agent tapped. */
-private val TAP = Regex("""\binput\b(?:\s+-d\s+\d+)?(?:\s+touchscreen)?\s+tap\s+(\d+)\s+(\d+)""")
+/** `android input [-d N] tap X Y` (or `input tap X Y`, or `tap X Y`) in a tool's command: where the agent tapped. */
+private val TAP = Regex("""(?:\binput\b(?:\s+-d\s+\d+)?(?:\s+touchscreen)?\s+|(?:^|[;&|(]\s*))tap\s+(\d+)\s+(\d+)""")
+/** `tap LABEL`: a tap where the command doesn't say. */
+private val TAP_NAMED = Regex("""(?:^|[;&|(]\s*)tap\s""")
 
 private fun tapIn(tool: JSONObject): Ev.Tap? {
     val cmd = tool.optJSONObject("input")?.optString("command").orEmpty()
@@ -61,7 +65,7 @@ private fun tapIn(tool: JSONObject): Ev.Tap? {
 enum class Work { THINK, LOOK, TAP, TYPE, SCROLL, OPEN, BACK, WAIT, READ, WEB, WRITE, RUN }
 
 private val OPEN = Regex("""\bam\s+start\b|\bmonkey\s+-p\b""")
-private val TYPE = Regex("""\binput\b(?:\s+-d\s+\d+)?\s+(?:text\b|keyevent\s+(?:KEYCODE_)?(?:66|67|61|ENTER|DEL|TAB)\b)""")
+private val TYPE = Regex("""\binput\b(?:\s+-d\s+\d+)?\s+(?:text\b|keyevent\s+(?:KEYCODE_)?(?:66|67|61|ENTER|DEL|TAB)\b)|(?:^|[;&|(]\s*)fill\b""")
 private val SCROLL = Regex("""\binput\b(?:\s+-d\s+\d+)?(?:\s+touchscreen)?\s+(?:swipe|draganddrop|scroll|roll)\b""")
 private val BACK = Regex("""\binput\b(?:\s+-d\s+\d+)?\s+keyevent\b""")
 private val LOOK = Regex("""(?:^|[;&|(]\s*)shot\b|\buiautomator\s+dump\b|\bscreencap\b""")
@@ -86,7 +90,7 @@ internal fun workOf(tool: JSONObject): Work {
                 OPEN.containsMatchIn(cmd) -> Work.OPEN
                 TYPE.containsMatchIn(cmd) -> Work.TYPE
                 SCROLL.containsMatchIn(cmd) -> Work.SCROLL
-                TAP.containsMatchIn(cmd) -> Work.TAP
+                TAP.containsMatchIn(cmd) || TAP_NAMED.containsMatchIn(cmd) -> Work.TAP
                 BACK.containsMatchIn(cmd) -> Work.BACK
                 LOOK.containsMatchIn(cmd) -> Work.LOOK
                 WAIT.containsMatchIn(cmd) -> Work.WAIT
@@ -109,7 +113,7 @@ private fun stepText(tool: JSONObject): String {
     val file = input?.optString("file_path").orEmpty().substringAfterLast('/').lowercase()
     if (file.isNotEmpty()) when (name) {
         "Read" -> return when {
-            file.startsWith("shot") -> "Looking at the screen"
+            file.startsWith("shot") || file == "screen.png" -> "Looking at the screen"
             file.substringAfterLast('.') in setOf("png", "jpg", "jpeg", "webp", "gif", "heic") -> "Looking at a picture"
             else -> "Checking my notes"
         }

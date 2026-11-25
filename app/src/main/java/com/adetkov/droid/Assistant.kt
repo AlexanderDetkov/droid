@@ -102,8 +102,8 @@ import kotlin.concurrent.thread
  * progress and answer show in the panel, and the answer is read aloud. Tap outside or Back to close it; the task
  * keeps running and notifies when done. The keyboard button types the request instead (what was heard so far is kept
  * to edit); a typed request waits for the unlock on the lock screen, and its answer isn't read aloud. Opened over an
- * app, the first request takes a screenshot of it along (see [AssistService]), unless the user takes it off. Or the user turns on Droid's camera ([Camera]) and points it while
- * they talk: its picture goes instead.
+ * app, the first request takes a screenshot of it along (see [AssistService]), unless the user takes it off. Or the user takes a picture with the phone's camera
+ * (the Camera chip): it goes instead.
  */
 class AssistActivity : ComponentActivity() {
     /** Bumped by each long-press, so the panel listens again. */
@@ -118,7 +118,7 @@ class AssistActivity : ComponentActivity() {
     var pending by mutableStateOf<String?>(null)  // a finished request waiting for the unlock
     var notice by mutableStateOf<String?>(null)
     var sentShot by mutableStateOf<Attachment?>(null)  // went with the request on show
-    var camOn by mutableStateOf(false)  // the camera, not the screen, goes with the request
+    var photo by mutableStateOf<Attachment?>(null)  // a picture from the phone's camera: it goes with the request, not the screen
     var typing by mutableStateOf(false)  // the keyboard instead of the voice, for this request
     var draft by mutableStateOf("")
     var typed = false  // the request on show was typed: its answer isn't read aloud
@@ -153,7 +153,7 @@ class AssistActivity : ComponentActivity() {
         // panel stays alive, maybe for hours. (This long-press's screenshot comes after: the session saves it first.)
         shot?.let(::discard)
         shot = null; withShot = true
-        convId = null; heard = ""; pending = null; notice = null; sentShot = null; camOn = false; typing = false; draft = ""; typed = false
+        convId = null; heard = ""; pending = null; notice = null; sentShot = null; photo?.let(::discard); photo = null; typing = false; draft = ""; typed = false
         invocation++
     }
 
@@ -209,8 +209,8 @@ private fun AssistActivity.Panel(invocation: Int, testWav: String?, modifier: Mo
     val match = app.voiceMatch
     val scope = rememberCoroutineScope()
 
-    val camera = remember { Camera() }
     val withCamera = rememberWith(Manifest.permission.CAMERA) { notice = it }
+    val camera = rememberCamera { photo?.let(::discard); photo = it; withShot = false }
     val shown = remember { MutableTransitionState(false).apply { targetState = true } }
 
     val conv = convs.firstOrNull { it.id == convId }
@@ -229,27 +229,19 @@ private fun AssistActivity.Panel(invocation: Int, testWav: String?, modifier: Mo
         heard = text
         // The screenshot is of what the user looked at when they asked first; a follow-up doesn't take it again.
         val s = shot.also { shot = null }
-        val screen = s?.takeIf { withShot && !camOn }
+        val screen = s?.takeIf { withShot && photo == null }
         if (screen == null) s?.let(::discard)
-        val photo = if (camOn) camera.picture() else null
-        camOn = false
-        sentShot = screen
+        val pic = photo.also { photo = null }
+        sentShot = pic ?: screen
         speaker.prepare()
         // What the agent hears of how it was asked: typed or said (and read back), over which app, or on the lock screen
         val via = (if (typed) "I typed this" else "I said this") +
             (if (locked) " on the lock screen" else app.assistOver?.let { " in the assistant, over $it" } ?: " in the assistant") +
             (if (typed) "" else ", and your answer is read aloud to me")
-        if (photo == null) { convId = ownerSend(app, convId, text, listOfNotNull(screen), via); return }
-        // Saved off the main thread; the request goes once it is, even if the panel is closed by then.
-        val conv = convId
-        thread(name = "photo") {
-            val a = savePhoto(app, photo)
-            runOnUiThread { sentShot = a; convId = ownerSend(app, conv, text, listOfNotNull(a), via) }
-        }
+        convId = ownerSend(app, convId, text, listOfNotNull(pic ?: screen), via)
     }
     fun unlockAndSend(why: String = "Unlock to send") = unlocked({ pending?.let(::send) }, { notice = why })
     fun deliver(text: String, audio: FloatArray) {
-        if (camOn) camera.picture()  // what they pointed at while talking: it stays on screen while they unlock
         heard = text
         pending = text
         notice = null
@@ -285,7 +277,6 @@ private fun AssistActivity.Panel(invocation: Int, testWav: String?, modifier: Mo
             onFinal = ::deliver,
             onNothing = { notice = "Didn't catch that"; app.runner.dropWarm() },
             onError = { notice = it; app.runner.dropWarm() },
-            onPause = { if (camOn) camera.mark() },
         )
     }
     /** Runs [action] with [permission], asked for through [with]: its dialog doesn't show over the lock screen, so then after the unlock. */
@@ -313,15 +304,12 @@ private fun AssistActivity.Panel(invocation: Int, testWav: String?, modifier: Mo
     /** Sends what was typed, as a spoken request; a voice match can't vouch for it, so when locked it waits for the unlock. */
     fun submit() {
         val text = draft.trim().ifEmpty { return }
-        if (camOn) camera.picture()  // the frame now (or the one tapped), on screen while they unlock
         typing = false; draft = ""; typed = true
         heard = text; pending = text; notice = null
         unlockAndSend()
     }
-    /** Turns the camera on in place of the screen, and listens if it isn't already (or being typed to). */
-    fun openCamera() = allowing(Manifest.permission.CAMERA, withCamera, "camera") {
-        camera.reset(); camOn = true; withShot = false; if (!voice.listening && !typing && pending == null) talk()
-    }
+    /** The phone's camera, its picture to go in place of the screen (after the unlock, on the lock screen). */
+    fun openCamera() = unlocked({ allowing(Manifest.permission.CAMERA, withCamera, "camera") { voice.cancel(); camera() } }, { notice = "Unlock to use the camera" })
     fun openChat() = unlocked({
         startActivity(Intent(this, MainActivity::class.java).putExtra(EXTRA_CONV, convId).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP))
         voice.cancel(); speaker.stop(); finish()
@@ -345,8 +333,8 @@ private fun AssistActivity.Panel(invocation: Int, testWav: String?, modifier: Mo
     BackHandler(shown.targetState) { close() }
 
     val scrim by animateFloatAsState(if (shown.targetState) .55f else 0f, tween(220), label = "scrim")
-    // Dash's frame around your screen or the camera: what goes with the request. It lets go when that is off or sent.
-    val framed by animateFloatAsState(if (shown.targetState && (camOn || shot != null && withShot)) 1f else 0f,
+    // Dash's frame around your screen: it goes with the request. It lets go when that is off, replaced by a picture, or sent.
+    val framed by animateFloatAsState(if (shown.targetState && shot != null && withShot && photo == null) 1f else 0f,
         spring(dampingRatio = .9f, stiffness = 260f), label = "framed")
     val rig = rememberDash(Unit)
     rig.level = { voice.level }
@@ -369,10 +357,6 @@ private fun AssistActivity.Panel(invocation: Int, testWav: String?, modifier: Mo
     LaunchedEffect(doing?.n) { if (doing != null && doing.n > 0) rig.react(doing) }
     Box(modifier.fillMaxSize().background(Color.Black.copy(alpha = scrim))
         .clickable(remember { MutableInteractionSource() }, indication = null, onClick = ::close)) {
-        // The camera fills the screen behind the panel; a tap on it takes the picture (again, if one was taken).
-        AnimatedVisibility(camOn, Modifier.fillMaxSize(), enter = fadeIn(tween(160)), exit = fadeOut(tween(200))) {
-            CameraView(camera, onTap = camera::take, Modifier.fillMaxSize().testTag("camera"), hint = false)
-        }
         Box(Modifier.fillMaxSize().drawBehind {
             val fr = framed.coerceIn(0f, 1f)
             if (fr > .01f) {
@@ -385,7 +369,6 @@ private fun AssistActivity.Panel(invocation: Int, testWav: String?, modifier: Mo
             enter = slideInVertically(spring(stiffness = Spring.StiffnessMediumLow)) { it } + fadeIn(),
             exit = slideOutVertically(tween(200)) { it } + fadeOut(tween(200))) {
           Column(horizontalAlignment = Alignment.CenterHorizontally) {
-          if (camOn) CameraHint(camera, Modifier.padding(bottom = 10.dp))
             // Droid's four rows, in a sheet over the app you're in: Dash's line, what goes with the request, the page or
             // answer, and the bar.
             Column(
@@ -420,13 +403,13 @@ private fun AssistActivity.Panel(invocation: Int, testWav: String?, modifier: Mo
                 // while he works his words hold still; what he's doing is the grey line under them
                 DashLine(words, rig = rig, modifier = Modifier.testTag("dash"),
                     sub = if (working && waiting == null) conv?.let { latestStep(it.messages) } ?: "Getting started" else null)
-                // What goes with the request: before it goes, the screen (over an app) or the camera; then what went.
+                // What goes with the request: before it goes, the screen (over an app) or a picture; then what went.
                 val canTalk = !working
                 val went = sentShot
                 if (went != null) Row(Modifier.padding(start = 20.dp, end = 20.dp, top = 14.dp)) { SentChip(went, Modifier) }
                 else if (shot != null || canTalk) Row(Modifier.padding(start = 20.dp, end = 20.dp, top = 14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    shot?.let { ScreenChip(it, on = withShot, onToggle = { withShot = !withShot; if (withShot) camOn = false }) }
-                    if (canTalk) CameraChip(on = camOn, onToggle = { if (camOn) camOn = false else openCamera() })
+                    shot?.takeIf { photo == null }?.let { ScreenChip(it, on = withShot, onToggle = { withShot = !withShot }) }
+                    if (canTalk) CameraChip(photo, onToggle = { val p = photo; if (p != null) { discard(p); photo = null; withShot = true } else openCamera() })
                 }
                 // what Dash hears, big, until it goes (then it's the chat's)
                 if (heard.isNotEmpty() && !typing && !sent) YouBubble(heard, Modifier.padding(top = 8.dp).testTag("heard"), big = true)
@@ -440,7 +423,7 @@ private fun AssistActivity.Panel(invocation: Int, testWav: String?, modifier: Mo
                     val dark = P.dark
                     val actions = remember(cid, info.id) { pageActions(cid, info.id) }
                     Box(Modifier.padding(start = 20.dp, end = 20.dp, top = 16.dp)) {
-                        InlinePage("assist:${info.id}:${waiting.text.hashCode()}", "page:$cid:${info.id}", dark,
+                        InlinePage("assist:${info.id}:${waiting.text.hashCode()}", chatOrigin(cid, info), dark,
                             { cx -> pageDocument(cx, waiting.text, dark, PageMode.FLOAT) }, namedPaths(waiting.text), actions,
                             Modifier.testTag("page"), mode = PageMode.FLOAT, maxHeight = 420.dp)
                     }
@@ -455,7 +438,7 @@ private fun AssistActivity.Panel(invocation: Int, testWav: String?, modifier: Mo
                             val index = conv.messages.indexOfLast { it.kind == Kind.AGENT }
                             val actions = remember(cid, index) { pageActions(cid, null) }
                             CompositionLocalProvider(LocalListDrag provides drag) {
-                                InlinePage("a:$cid:$index:${answer.hashCode()}", "answer:$cid:$index", dark, { cx -> answerDocument(cx, answer, dark) },
+                                InlinePage("a:$cid:$index:${answer.hashCode()}", chatOrigin(cid), dark, { cx -> answerDocument(cx, answer, dark) },
                                     namedPaths(answer), actions)
                             }
                         } else CompositionLocalProvider(LocalContentColor provides P.text) { Markdown(answerText(answer)) }
@@ -490,7 +473,7 @@ private fun TypedRequest(text: String, onText: (String) -> Unit, onSend: () -> U
         verticalAlignment = Alignment.CenterVertically) {
         if (onTalk != null) IconBtn(R.drawable.ic_mic, "Talk instead", onTalk, Modifier.testTag("mic"), tint = CallText, size = 56.dp, iconSize = 22.dp)
         Box(Modifier.weight(1f).padding(vertical = 8.dp)) {
-            if (field.text.isEmpty()) Text("Message Droid", style = style.copy(color = P.muted))
+            if (field.text.isEmpty()) Text("Message Dash", style = style.copy(color = P.muted))
             BasicTextField(field, { field = it; onText(it.text) }, Modifier.fillMaxWidth().focusRequester(focus).testTag("typed"),
                 textStyle = style, cursorBrush = SolidColor(P.call), maxLines = 6,
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Send),
@@ -503,7 +486,7 @@ private fun TypedRequest(text: String, onText: (String) -> Unit, onSend: () -> U
     }
 }
 
-/** The phone-shaped picture of a screenshot, or of a photo from the full-screen camera. */
+/** The phone-shaped picture of a screenshot, or a photo from the camera. */
 @Composable
 private fun ChipThumb(path: String, on: Boolean = true) = Thumb(path, 64, Modifier.padding(end = 8.dp).size(width = 15.dp, height = 28.dp)
     .clip(RoundedCornerShape(4.dp)).border(1.dp, P.hairline, RoundedCornerShape(4.dp)).graphicsLayer { alpha = if (on) 1f else .35f })
@@ -516,12 +499,13 @@ private fun ScreenChip(shot: Attachment, on: Boolean, onToggle: () -> Unit) =
         PickText("Your screen", on)
     }
 
-/** Droid's camera, a pick: on, it fills the screen behind the panel, in Dash's ring, and its picture goes with the request. */
+/** The camera, a pick: a tap takes a picture with the phone's camera, which then goes with the request (a tap again drops it). */
 @Composable
-private fun CameraChip(on: Boolean, onToggle: () -> Unit) =
-    Pick(on, onToggle, Modifier.testTag("camera_chip"), if (on) "Don't send the camera" else "Show Droid your camera") {
-        Icon(painterResource(R.drawable.ic_camera), null, Modifier.padding(end = 8.dp).size(20.dp), tint = if (on) CallText else P.text)
-        PickText("Camera", on)
+private fun CameraChip(photo: Attachment?, onToggle: () -> Unit) =
+    Pick(photo != null, onToggle, Modifier.testTag("camera_chip"), if (photo != null) "Don't send the picture" else "Take a picture to send") {
+        if (photo != null) Thumb(photo.path, 96, Modifier.padding(end = 8.dp).size(24.dp).clip(RoundedCornerShape(6.dp)))
+        else Icon(painterResource(R.drawable.ic_camera), null, Modifier.padding(end = 8.dp).size(20.dp), tint = P.text)
+        PickText(if (photo != null) "Picture" else "Camera", photo != null)
     }
 
 /** What went with the request: the screenshot or the photo. */

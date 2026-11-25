@@ -99,6 +99,8 @@ class Helper(unittest.TestCase):
         self.vd = os.path.join(self.host, 'data/local/tmp/droid/vd/5')
         os.makedirs(self.vd)
         self.note = ''      # what the helper says besides its answer: 'changing', or nothing
+        self.filled = None  # the fill request it got: (field, text)
+        self.fill_says = '“To” now holds: Sam'
         self.answer = True  # whether it answers at all
         with open(DUMP, 'rb') as f:
             self.dump = f.read().replace(b'display id="2"', b'display id="5"')
@@ -124,8 +126,16 @@ class Helper(unittest.TestCase):
                         f.write(body)
                     with open(os.path.join(self.vd, kind + '.done'), 'w') as f:
                         f.write(self.note)
+            req = os.path.join(self.vd, 'fill.req')
+            if os.path.exists(req):
+                with open(req, encoding='utf-8') as f:
+                    field, _, text = f.read().partition('\n')
+                os.unlink(req)
+                self.filled = (field, text)
+                with open(os.path.join(self.vd, 'fill.done'), 'w', encoding='utf-8') as f:
+                    f.write(self.note + self.fill_says + '\n')
 
-    def shot(self, *args):
+    def shot(self, *args, stdin=None):
         stand = os.path.join(self.host, 'bin')
         os.makedirs(stand, exist_ok=True)
         with open(os.path.join(stand, 'android'), 'w') as f:  # what the fallback would ask Android for
@@ -133,7 +143,7 @@ class Helper(unittest.TestCase):
         os.chmod(os.path.join(stand, 'android'), 0o755)
         env = {'PATH': stand + ':/usr/bin:/bin', 'DROID_HOST': self.host, 'AGENT_DISPLAY': '5'}
         start = time.monotonic()
-        r = subprocess.run(['sh', SHOT, *args], env=env, capture_output=True, text=True, timeout=20)
+        r = subprocess.run(['sh', SHOT, *args], env=env, capture_output=True, text=True, timeout=20, input=stdin)
         return r.returncode, (r.stdout + r.stderr).strip(), time.monotonic() - start
 
     def test_a_picture_at_the_same_path_each_time(self):
@@ -166,6 +176,76 @@ class Helper(unittest.TestCase):
             self.assertEqual(f.read(), 'android uiautomator dump --windows /data/local/tmp/droid/vd/5/ui.xml\n')
         self.assertIn("no text: Android couldn't read the hidden display", out)  # the stand-in wrote nothing
         self.assertFalse(os.path.exists(os.path.join(self.vd, 'text.req')))  # nothing left for a later helper
+
+    def android_said(self):
+        try:
+            with open(os.path.join(self.host, 'android.log')) as f:
+                return f.read()
+        except FileNotFoundError:
+            return ''
+
+    def test_tap_taps_what_text_lists_by_that_name(self):
+        code, out, _ = self.shot('--tap', 'timer')  # any case
+        self.assertEqual((code, out), (0, 'tapped Timer  @540,2295'))
+        self.assertEqual(self.android_said(), 'android input tap 540 2295\n')
+
+    def test_tap_a_place(self):
+        code, out, _ = self.shot('--tap', '12', '34')
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.android_said(), 'android input tap 12 34\n')
+
+    def test_tap_never_guesses(self):
+        code, out, _ = self.shot('--tap', 'Clock')  # the app's title and its tab
+        self.assertEqual(code, 1)
+        self.assertEqual(out.splitlines(), ['“Clock” is in 2 places: tap one by where it is (tap X Y)',
+                                            '  Clock  @138,83', '  Clock  @324,2295  [selected]'])
+        code, out, _ = self.shot('--tap', 'Stop')  # part of a name isn't enough
+        self.assertEqual((code, out.splitlines()), (1, ['no “Stop” on the screen, only:', '  Stopwatch  @756,2295']))
+        code, out, _ = self.shot('--tap', 'Snooze')  # none: what there is
+        self.assertEqual(code, 1)
+        self.assertEqual(out.splitlines()[:2], ['no “Snooze” on the screen. It shows:', 'Clock  @138,83'])
+        self.assertEqual(self.android_said(), '')
+
+    def test_fill_asks_the_helper_with_the_field_and_the_text(self):
+        code, out, _ = self.shot('--fill', 'To', 'Sam')
+        self.assertEqual((code, out), (0, '“To” now holds: Sam'))
+        self.assertEqual(self.filled, ('To', 'Sam'))
+        text = 'Привет 👋\nsecond line'
+        self.fill_says = 'the field now holds: ' + text
+        code, out, _ = self.shot('--fill', text)  # no field: the one with the cursor; any language, lines and all
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.filled, ('', text))
+
+    def test_fill_fails_when_the_helper_couldnt(self):
+        self.fill_says = 'no field “Bcc”. Fields:\n  “To”  @540,300'
+        code, out, _ = self.shot('--fill', 'Bcc', 'x')
+        self.assertEqual(code, 1)
+        self.assertEqual(out.splitlines()[0], 'no field “Bcc”. Fields:')
+
+    def test_reading_the_screen_takes_a_shot_first(self):
+        import json
+        read = json.dumps({'tool_name': 'Read', 'tool_input': {'file_path': '/tmp/screen.png'}})
+        code, out, _ = self.shot('--hook', stdin=read)
+        self.assertEqual(code, 0, out)
+        said = json.loads(out)['hookSpecificOutput']
+        self.assertEqual((said['permissionDecision'], said['updatedInput']), ('allow', {'file_path': '/tmp/shot-5.png'}))
+        with open('/tmp/shot-5.png', 'rb') as f:
+            self.assertEqual(f.read(), b'\x89PNG picture')
+        os.unlink('/tmp/shot-5.png')
+        self.note = 'changing\n'
+        said = json.loads(self.shot('--hook', stdin=read)[1])['hookSpecificOutput']
+        self.assertIn('still changing', said['additionalContext'])
+        os.unlink('/tmp/shot-5.png')
+        self.answer = False  # no picture: the Read doesn't happen, and says why
+        said = json.loads(self.shot('--hook', stdin=read)[1])['hookSpecificOutput']
+        self.assertEqual(said['permissionDecision'], 'deny')
+        self.assertIn("didn't answer", said['permissionDecisionReason'])
+
+    def test_any_other_read_goes_on_untouched(self):
+        import json
+        code, out, took = self.shot('--hook', stdin=json.dumps({'tool_name': 'Read', 'tool_input': {'file_path': '/root/notes.md'}}))
+        self.assertEqual((code, out), (0, ''))
+        self.assertLess(took, 1)
 
 
 if __name__ == '__main__':
