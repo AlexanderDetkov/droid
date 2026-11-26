@@ -34,6 +34,8 @@ You need Android 14 or later.
 
 1. On your phone, download [droid-arm64.apk](https://github.com/AlexanderDetkov/droid/releases/latest/download/droid-arm64.apk)
    and open it. When Android asks, allow installing apps from your browser, then tap Install.
+   If you use [Obtainium](https://obtainium.imranr.dev), [add Droid to it](https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/AlexanderDetkov/droid)
+   instead, and it installs each new version for you.
 2. Open Droid and follow Dash. Without root, he walks you through turning on Wireless debugging and pairing once.
    When Android asks, tick **Always allow on this network**, so Droid starts by itself after a restart.
 3. Pick an AI. Setup takes about five minutes.
