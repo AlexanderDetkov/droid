@@ -49,9 +49,9 @@ object DevSettings {
 
     /**
      * adbd runs only while USB or Wireless debugging is on, which only Developer options turn on. Readable where the
-     * settings aren't (not on an emulator, where adbd always runs, nor in [settingsHiddenForTest]).
+     * settings aren't. Not on an emulator, where adbd always runs, nor in [settingsHiddenForTest].
      */
-    private fun adbdRunning(): Boolean = !settingsHiddenForTest && !isEmulator &&
+    private fun adbdRunning(): Boolean = !settingsHiddenForTest && Build.HARDWARE != "ranchu" && Build.HARDWARE != "goldfish" &&
         runCatching { ProcessBuilder("getprop", "init.svc.adbd").start().inputStream.bufferedReader().readText().trim() == "running" }
             .getOrDefault(false)
 
@@ -64,12 +64,14 @@ object DevSettings {
     fun intent(ctx: Context, key: String? = null): Intent =
         Intent(ctx, DevOptionsActivity::class.java).putExtra(DevOptionsActivity.EXTRA_KEY, key)
 
+    // Both in a Settings task of their own (CLEAR_TASK): a page left from before (About phone, where Build number was
+    // tapped) could otherwise be what shows when Developer options' page closes, and hide that it did.
     internal fun developerOptions(key: String?) = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
-        .apply { key?.let { putExtra(":settings:fragment_args_key", it) } }.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        .apply { key?.let { putExtra(":settings:fragment_args_key", it) } }.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
 
     /** About phone at Build number, which turns Developer options on (Samsung keeps it in Software information). */
     internal fun aboutPhone() = Intent(Settings.ACTION_DEVICE_INFO_SETTINGS)
-        .putExtra(":settings:fragment_args_key", "build_number").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        .putExtra(":settings:fragment_args_key", "build_number").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
 }
 
 /**
@@ -87,6 +89,14 @@ class DevOptionsActivity : Activity() {
         DevSettings.developerSeen = true
         finish()
     }
+    /**
+     * Still in front a moment after coming back to it: Settings closed their page, so they're off. (Not at once: as
+     * Settings opens a page it may rebuild its task, and this shows for an instant in between.)
+     */
+    private val bounced = Runnable {
+        DevSettings.developerSeen = false
+        go(DevSettings.aboutPhone())
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -103,6 +113,7 @@ class DevOptionsActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
+        main.removeCallbacks(bounced)
         if (openedAt > 0) paused = true
     }
 
@@ -115,15 +126,13 @@ class DevOptionsActivity : Activity() {
         super.onResume()
         if (!paused || isFinishing) return  // (first shown, before Settings opened)
         main.removeCallbacks(stayed)
-        // Back in front: right away, Settings closed their page (they're off); later, the owner came back
-        if (SystemClock.uptimeMillis() - openedAt < BOUNCE_MS) {
-            DevSettings.developerSeen = false
-            go(DevSettings.aboutPhone())
-        } else finish()
+        // Back in front: right away, Settings closed their page (they're off), if it stays so; later, the owner came back
+        if (SystemClock.uptimeMillis() - openedAt < BOUNCE_MS) main.postDelayed(bounced, FRONT_MS) else finish()
     }
 
     override fun onDestroy() {
         main.removeCallbacks(stayed)
+        main.removeCallbacks(bounced)
         super.onDestroy()
     }
 
@@ -138,5 +147,7 @@ class DevOptionsActivity : Activity() {
         private const val BOUNCE_MS = 2000L
         /** Out of sight this long: Settings' page is up and staying. */
         private const val SETTLE_MS = 700L
+        /** Back in front this long: Settings' page closed. */
+        private const val FRONT_MS = 500L
     }
 }

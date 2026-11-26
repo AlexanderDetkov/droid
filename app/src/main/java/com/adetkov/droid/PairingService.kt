@@ -57,6 +57,8 @@ class PairingService : Service() {
 
     private fun begin() {
         nm.createNotificationChannel(NotificationChannel(CHANNEL, "Pairing", NotificationManager.IMPORTANCE_HIGH))
+        // (what an earlier look saw of Wireless debugging may be over: this one's says within a second or two)
+        if (discovery == null) DevSettings.wirelessSeen = null
         shown = step()
         val (title, text) = STEPS[shown]
         startForeground(ID, note(title, text, ask = false), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)

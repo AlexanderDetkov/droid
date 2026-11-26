@@ -55,10 +55,14 @@ phone can use on itself, as Shizuku does. So Droid runs the same agent either wa
   for `adb_wifi_enabled` too), so there a 0 means "can't tell" and only a 1 counts. Wireless debugging is on while this
   phone announces `_adb-tls-connect._tcp`; Developer options are on while adbd runs (`init.svc.adbd`) or Wireless
   debugging does, and otherwise by how Settings takes their page: while they're off it closes it at once.
-  `DevOptionsActivity`, a window-less screen every "Open Settings" goes through, opens the page and watches: back in
-  front within 2 s means off, so it opens About phone at Build number instead; out of sight means on. Pairing's steps
+  `DevOptionsActivity`, a window-less screen every "Open Settings" goes through, opens the page (in a Settings task of its own) and watches: back in
+  front within 2 s, and still there half a second later, means off (Settings may rebuild its task as it opens a page,
+  and this shows for an instant in between), so it opens About phone at Build number instead; out of sight means on.
+  Android 17's own Settings closes the page at once while they're off (`DevelopmentSettingsDashboardFragment.onCreate`). Pairing's steps
   come from these, and `AdbHelper` looks for the announcement before switching Wireless debugging on, and off again
-  only if it switched it on. A debug build acts so on any Android with `adb shell setprop debug.droid.hidesettings 1`.
+  only if it switched it on. A debug build acts so on any Android with `adb shell setprop debug.droid.hidesettings 1`, and
+  [`tools/setup_e2e.py`](../tools/setup_e2e.py) runs the whole setup on an emulator as a person does (Android 14, 15
+  and 16, with and without that).
 - **The helper** ([`Bridge.java`](../app/src/main/java/com/adetkov/droid/Bridge.java)): over one adb connection
   (`_adb-tls-connect._tcp`), Droid grants itself `WRITE_SECURE_SETTINGS` and starts `app_process … Bridge` as the shell
   user in its own session. The bridge runs shell commands for the app on 127.0.0.1, streaming stdin, stdout, stderr and

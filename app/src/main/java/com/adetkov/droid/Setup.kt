@@ -177,6 +177,7 @@ class Setup(private val app: DroidApp) {
      * asks for its code in a notification, then starts Droid's helper. See [PairingService].
      */
     fun pair() {
+        DevSettings.wirelessSeen = null  // (an earlier look's may be over; the pairing's own says, see PairingService)
         val step = PairingService.step(app)
         state.update { it.copy(error = null, pairing = PairingService.STEPS[step].first, pairStep = step) }
         PairingService.start(app)
@@ -545,7 +546,11 @@ class Setup(private val app: DroidApp) {
      * installed before vd-start.sh). Only under [checking]: checks share their address.
      */
     private fun startDisplay(): DisplayCheck? {
-        val script = app.assets.open("setup/vd-check.sh").bufferedReader().use { it.readText() }
+        fun asset(name: String) = app.assets.open("setup/$name").bufferedReader().use { it.readText() }
+        // The scripts a task runs, as this app has them (a task writes them too, as it starts): what's checked is what runs
+        for (f in listOf("vd-start.sh", "vd-stop.sh"))
+            exec(host, "[ -d ${host.base} ] && cat > ${host.base}/$f.\$\$ && chmod 755 ${host.base}/$f.\$\$ && mv ${host.base}/$f.\$\$ ${host.base}/$f", stdin = asset(f))
+        val script = asset("vd-check.sh")
         // (a made-up address phone-agent never uses: its are 02:00:00:…)
         val r = exec(host, "sh -s ${host.base} $CHECK_MAC ${shellQuote(app.applicationInfo.sourceDir)}", stdin = script, timeoutS = 45)
         val lines = r.out.lines()
