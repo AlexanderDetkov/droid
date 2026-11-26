@@ -12,9 +12,9 @@ Free AI, the hidden display check, and one task that opens an app on the hidden 
   --on    Developer options and Wireless debugging on before setup starts (Android allows turning them on with adb)
   --task  then run a task: open Clock and read the alarms
   --break-proof  Droid's Android/data folder a plain file, as when one left from an earlier install can't be written
+  --pkg   the package to set up, for a test copy built with another applicationId beside a Droid in use
 
 Prints each step as it goes, and a JSON summary last; exits 1 on a failure, with a screenshot in --out.
-Android 17 emulators need tools/emulator17.sh to stay up.
 """
 import argparse, json, re, subprocess, sys, time, os
 
@@ -22,9 +22,10 @@ ap = argparse.ArgumentParser()
 ap.add_argument("serial"); ap.add_argument("apk")
 ap.add_argument("--hide", action="store_true"); ap.add_argument("--on", action="store_true")
 ap.add_argument("--task", action="store_true"); ap.add_argument("--out", default="/tmp")
-ap.add_argument("--break-proof", action="store_true")  # Droid's Android/data folder unusable, as one left from an earlier install
+ap.add_argument("--break-proof", action="store_true")
+ap.add_argument("--pkg", default="com.adetkov.droid")  # a test copy's (an applicationIdSuffix build), beside a Droid in use  # Droid's Android/data folder unusable, as one left from an earlier install
 a = ap.parse_args()
-PKG = "com.adetkov.droid"
+PKG = a.pkg
 T0 = time.time()
 log = []
 
@@ -163,12 +164,19 @@ if a.on:
 step(f"Developer options {setting('development_settings_enabled')}, Wireless debugging {setting('adb_wifi_enabled')} (as Android has them)")
 
 # 2. Hello, then Open Settings: Settings opens where the first step is
-sh(f"am start -n {PKG}/.MainActivity")
+sh(f"am start -n {PKG}/com.adetkov.droid.MainActivity")
 tap_text("Start", wait=90)
 if a.break_proof:
     sh(f"rm -rf /sdcard/Android/data/{PKG}/files; touch /sdcard/Android/data/{PKG}/files")
     step("Droid's Android/data/files is now a plain file: its helper's proof can't be written there")
-wait_for(lambda: find("Open Settings"), "the Connect page", 20)
+# (a tap while Droid's first screen is still coming up does nothing: tapped again, as a person would)
+for _ in range(4):
+    if wait_for(lambda: find("Open Settings") or (find("Start") and ("again",)), "the Connect page", 20)[0] != "again":
+        break
+    time.sleep(3)
+    tap_text("Start")
+else:
+    fail("Start didn't lead to the Connect page")
 step(f"Connect page: {droid_words()!r}")
 tap_text("Open Settings")
 time.sleep(4)
@@ -214,7 +222,7 @@ while time.time() < deadline and not code_typed:
                  "Settings to take Developer options as on", 30)
         build_taps = 7
         step(f"Build number tapped: Developer options {setting('development_settings_enabled')}")
-        sh(f"am start -n {PKG}/.MainActivity")
+        sh(f"am start -n {PKG}/com.adetkov.droid.MainActivity")
         time.sleep(3)
         continue
     if "Development" in t:
@@ -232,11 +240,19 @@ while time.time() < deadline and not code_typed:
             near = min(sw, key=lambda n: abs(n[2] - row[2]), default=None)
             tap(*((near[1], near[2]) if near and abs(near[2] - row[2]) < 120 else (970, row[2] + 24)))
             time.sleep(2)
-            ok = wait_for(lambda: find("Allow wireless debugging on this network?") or (setting("adb_wifi_enabled") == "1" and "x"), "the allow dialog", 15)
-            if ok != "x":
-                tap_text("Always allow on this network")
-                time.sleep(0.5)
-                tap_text("Allow")
+            # Android asks once whether to allow it at all (OK), and on a Wi-Fi it doesn't trust yet whether to allow it there
+            for _ in range(2):
+                ok = wait_for(lambda: find("Allow wireless debugging on this network?") or find("Allow wireless debugging?")
+                              or (setting("adb_wifi_enabled") == "1" and ("x",)), "the allow dialog", 15)
+                if ok[0] == "x":
+                    break
+                if ok[0] == "Allow wireless debugging?":
+                    tap_text("OK")
+                else:
+                    tap_text("Always allow on this network")
+                    time.sleep(0.5)
+                    tap_text("Allow")
+                time.sleep(2)
             wait_for(lambda: setting("adb_wifi_enabled") == "1", "Wireless debugging on", 15)
             step("Wireless debugging turned on")
             time.sleep(3)

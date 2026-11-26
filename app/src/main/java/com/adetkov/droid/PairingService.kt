@@ -192,7 +192,7 @@ class PairingService : Service() {
             // (where Build number is: Samsung's in Software information; and Android 17 can't tell Droid they're on)
             "Turn on Developer options" to (if (Build.MANUFACTURER.equals("samsung", ignoreCase = true)) "In Software information, tap Build number seven times."
                 else "Tap Build number seven times.") + " Already on? Then Settings opens right on them.",
-            "Turn on Wireless debugging" to "Tick Always allow, then Allow. That's \"Always allow on this network\", so it stays on after a restart.",
+            "Turn on Wireless debugging" to "Allow it. Asked about this network? Tick Always allow, so it stays on after a restart.",
             "Get a pairing code" to "Tap Wireless debugging's name, then Pair device with pairing code.",
         )
         const val CODE_STEP = 3

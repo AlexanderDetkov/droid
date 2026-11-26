@@ -197,7 +197,7 @@ class Setup(private val app: DroidApp) {
      */
     fun comeBack() {
         if (app.resumed) return
-        run("am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -n ${app.packageName}/.MainActivity")
+        run("am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -n ${app.packageName}/${MainActivity::class.java.name}")
     }
 
     /** First run: the install starts by itself once Droid is connected, but not after Remove (the step before uninstalling). */
