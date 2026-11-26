@@ -33,7 +33,7 @@ import kotlin.math.sqrt
 /**
  * Speech-to-text on the phone: records until the user has finished talking, showing a live transcript, then
  * transcribes the whole utterance with Parakeet. Silero VAD hears the pauses; at each one, Smart Turn ([Turn]) and the
- * transcript decide whether that's the end: then a short silence ends it, if neither thinks so a long one, else 1.2 s.
+ * transcript decide whether that's the end: then 0.9 s of silence ends it, if neither thinks so 2.5 s, else 1.2 s.
  * Call from the main thread; callbacks arrive there.
  */
 class Voice(private val speech: Speech, private val audio: AudioManager) {
@@ -96,7 +96,7 @@ class Voice(private val speech: Speech, private val audio: AudioManager) {
             // Short commands often come without a period: when Smart Turn is sure, the last word alone may vouch.
             val sure = p > SURE && text != null && readsFinished(text, stop = false)
             return when {
-                sounds && (reads == true || sure) -> PAUSE  // both say it's finished: now
+                sounds && (reads == true || sure) -> DONE_SILENCE  // both say it's finished
                 !sounds && reads != true -> LONG_SILENCE  // neither does: a thought is on its way
                 else -> END_SILENCE
             }.also { Log.i("Droid", "pause: sounds finished %.2f, reads finished %s: ends after %d ms (judged in %d ms)".format(
@@ -209,7 +209,13 @@ class Voice(private val speech: Speech, private val audio: AudioManager) {
         private const val SPEECH_PROB = 0.5f
         private const val SURE = 0.95f                      // Smart Turn this sure needs no period (see [judge])
         private const val MIN_SPEECH_FRAMES = 8              // ~0.25 s of speech before it counts
-        private const val END_SILENCE = MIC_RATE * 6 / 5     // stop 1.2 s after the user stops talking...
+        // When both said a pause was the end, it once ended as soon as they had answered: 0.6 s after the last word on
+        // an idle Pixel 6a, later on a busy one. That cut people off mid-request, at a pause after words that sounded
+        // finished ("Remove from my calendar meeting" | "at nine am"). On public speech, waiting 0.9 s cuts 5% of long
+        // passages short instead of 24%, and 0.4% of short requests instead of 1.0%, for 0.3 s more on the requests
+        // that end this way (docs/how-it-works.md, End of turn).
+        private const val DONE_SILENCE = MIC_RATE * 9 / 10   // stop 0.9 s after the user stops talking, when it sounds done...
+        private const val END_SILENCE = MIC_RATE * 6 / 5     // ...1.2 s when only one of them thinks so...
         private const val LONG_SILENCE = MIC_RATE * 5 / 2    // ...or 2.5 s, when they don't sound or read done
         private const val PAUSE = MIC_RATE / 4               // a pause this long gets a fresh transcript and a judgment
         private const val NO_SPEECH_TIMEOUT = MIC_RATE * 7   // give up if nothing is said for 7 s
