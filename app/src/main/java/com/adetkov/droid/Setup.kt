@@ -519,7 +519,8 @@ class Setup(private val app: DroidApp) {
         val s = state.value
         val props = parseProps(runCatching { ProcessBuilder("getprop").start().inputStream.bufferedReader().readText() }.getOrDefault(""))
         val versions = if (!s.connected || !s.installed) emptyList() else buildList {
-            startDisplay()?.let { d ->
+            // (one display check at a time: they share their address, and each clears what a cut-short one left)
+            synchronized(checking) { startDisplay() }?.let { d ->
                 add("Hidden display" to (d.error?.let { "won't start: $it" } ?: "starts") + d.notes.joinToString("") { "; $it" })
             }
             run("cat ${host.rootfs}/etc/alpine-release").takeIf { it.code == 0 }?.let { add("Alpine" to it.out.trim()) }
@@ -539,21 +540,20 @@ class Setup(private val app: DroidApp) {
     private class DisplayCheck(val error: String?, val notes: List<String>)
 
     /**
-     * Starts and ends a hidden display as a task does (vd-start.sh, vd-stop.sh; the helper also ends with this command's
-     * shell), or null if that couldn't be asked (Android out of reach, or a Linux installed before those scripts).
+     * Starts a hidden display as a task does, asks it for a screenshot, and ends it (vd-check.sh, run from the app's
+     * assets: Linux installed before it had none); null if that couldn't be asked (Android out of reach, or a Linux
+     * installed before vd-start.sh). Only under [checking]: checks share their address.
      */
     private fun startDisplay(): DisplayCheck? {
-        val b = host.base
-        val apk = shellQuote(app.applicationInfo.sourceDir)
-        // (a made-up address phone-agent never uses: its are 02:00:00:…; what a check cut short left under it goes first)
-        val r = probe("[ -f $b/vd-start.sh ] || exit 3; sh $b/vd-stop.sh $CHECK_MAC; OUT=\$(sh $b/vd-start.sh $CHECK_MAC check $apk \$\$); echo \"\$OUT\"; " +
-            "sh $b/vd-stop.sh $CHECK_MAC '' \"\$(echo \"\$OUT\" | sed -n 's/^displayId=//p')\"")
+        val script = app.assets.open("setup/vd-check.sh").bufferedReader().use { it.readText() }
+        // (a made-up address phone-agent never uses: its are 02:00:00:…)
+        val r = exec(host, "sh -s ${host.base} $CHECK_MAC ${shellQuote(app.applicationInfo.sourceDir)}", stdin = script, timeoutS = 45)
         val lines = r.out.lines()
         fun value(key: String) = lines.firstOrNull { it.startsWith("$key=") }?.substringAfter('=')
         val notes = lines.filter { it.startsWith("note=") }.map { it.removePrefix("note=") }
         return when {
-            value("port") != null -> DisplayCheck(null, notes)
             value("error") != null -> DisplayCheck(value("error")!!.ifBlank { "no reason given" }, notes)
+            value("answered") != null -> DisplayCheck(null, notes)
             else -> null
         }
     }

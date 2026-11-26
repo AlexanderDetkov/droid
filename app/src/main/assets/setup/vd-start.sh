@@ -58,6 +58,11 @@ else
   LAST=$(grep -vE '^(pid=|$)' "$LOG" 2>/dev/null | tail -n 1)
   if [ -n "$WHY" ]; then echo "error=$WHY"
   elif [ -z "$PID" ]; then ERR=$(echo "$ERR" | grep -v '^$' | tail -n 1); echo "error=its helper didn't start${ERR:+: $ERR}"
-  elif [ ! -d "/proc/$PID" ]; then echo "error=its helper ended${LAST:+ after: $LAST}"
+  elif [ ! -d "/proc/$PID" ]; then
+    # Ended without a word: why Android ended it, where its log says (a crash's signal, or a kill)
+    SYS=$(logcat -d -b crash -b main -b system -t 3000 2>/dev/null | grep -E "[ (]$PID[ ):]" |
+      grep -E "Fatal signal|Abort message|FATAL EXCEPTION|Killing|[Kk]ill |died|lowmemorykiller|lmkd" | tail -n 1 |
+      sed -E 's/^[0-9-]+ [0-9:.]+ +[0-9]+ +[0-9]+ [A-Z] //')
+    echo "error=its helper ended${SYS:+: $SYS}${LAST:+ (its last words: $LAST)}"
   else echo "error=no answer from its helper in 15 s${LAST:+, last: $LAST}"; fi
 fi
