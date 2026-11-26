@@ -172,13 +172,31 @@ fun SetupScreen(setup: Setup, firstRun: Boolean, onClose: () -> Unit) {
 
             Row(Modifier.padding(top = 16.dp).fillMaxWidth().clip(RoundedCornerShape(16.dp)).border(1.dp, P.hairline, RoundedCornerShape(16.dp)).padding(16.dp)) {
                 Icon(painterResource(R.drawable.ic_shield), null, Modifier.size(20.dp), tint = P.muted)
-                Text(
-                    (if (s.access == Access.ROOT) "Droid gives the agent a root shell on this phone, with web access. "
-                    else "Droid gives the agent a shell on this phone with adb's rights (your apps and settings, not their private data), with web access. ") +
-                        "Anything it reads (web pages, messages, files) could try to steer it, so give it tasks you'd trust it with." +
-                        (if (s.access == Access.ROOT) "" else " Without root, Droid keeps USB debugging on, which some banking apps refuse to run with."),
-                    Modifier.padding(start = 12.dp), style = MaterialTheme.typography.bodySmall, color = P.muted,
-                )
+                Column(Modifier.padding(start = 12.dp)) {
+                    Text(
+                        (if (s.access == Access.ROOT) "Droid gives the agent a root shell on this phone, with web access. "
+                        else "Droid gives the agent a shell on this phone with adb's rights (your apps and settings, not their private data), with web access. ") +
+                            "Anything it reads (web pages, messages, files) could try to steer it, so give it tasks you'd trust it with." +
+                            (if (s.access == Access.ROOT) "" else " Without root, Droid keeps USB debugging on, which some banking apps refuse to run with."),
+                        style = MaterialTheme.typography.bodySmall, color = P.muted,
+                    )
+                    // With root, whether the agent may change Android's /dev too (enter.sh), from its next task
+                    if (s.access == Access.ROOT) {
+                        val prefs = (ctx.applicationContext as DroidApp).prefs
+                        val protect by prefs.protectDev.collectAsState()
+                        HorizontalDivider(Modifier.padding(vertical = 12.dp), color = P.hairline)
+                        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable { prefs.setProtectDev(!protect) }.testTag("setup_protect_dev"),
+                            verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Protect Android's /dev", style = MaterialTheme.typography.bodyMedium, color = P.text)
+                                Text(if (protect) "The agent uses its devices, but can't add, delete or replace them"
+                                    else "The agent can change it too: one wrong command can break Android until a restart",
+                                    style = MaterialTheme.typography.bodySmall, color = P.muted)
+                            }
+                            KitSwitch(protect, prefs::setProtectDev)
+                        }
+                    }
+                }
             }
 
             // Whatever is there, even half installed, but only while Droid can reach it

@@ -45,6 +45,14 @@ fi
 $M -t proc proc $R/proc
 $M -o bind /sys $R/sys
 $M -o rbind /dev $R/dev
+# Android's /dev itself, so read-only here, with every mount under it: its devices still open for reading and
+# writing, but nothing in here can create, delete or replace a file in it. (An agent's `sed -i ... /dev/null` once
+# replaced the phone's /dev/null with a plain file, and every app and shell command that wrote to it failed until a
+# reboot.) DROID_DEV=rw leaves it writable: Setup's "Protect Android's /dev", turned off, for the agent's runs only.
+# Always remount,bind,ro: a plain remount,ro would make Android's /dev read-only everywhere.
+[ "$DROID_DEV" = rw ] || for m in $(cut -d' ' -f5 /proc/self/mountinfo); do
+  case "$m" in "$R/dev" | "$R/dev/"*) $M -o remount,bind,ro "$m" ;; esac
+done
 [ -d /storage/emulated/0 ] && mkdir -p $R/sdcard && $M -o bind /storage/emulated/0 $R/sdcard
 
 # Android's environment (BOOTCLASSPATH etc.), for the `android` command inside the chroot.

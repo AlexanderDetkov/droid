@@ -138,11 +138,12 @@ class HostBackend(private val app: Context, private val host: () -> Host) : Back
                 // (Under the lock: a second start waits, and its run isn't taken for one of those.)
                 try { run("pkill -TERM -f '/usr/local/bin/phone-agen[t]'", 10) } catch (e: Exception) { Log.w("Droid", "left-over runs: $e") }
                 SCRIPTS.forEach { put(h, "usr/local/bin/$it", asset("setup/bin/$it"), "755") }
-                VD_SCRIPTS.forEach { put(h, "${h.base}/$it", asset("setup/$it"), "755") }
+                BASE_SCRIPTS.forEach { put(h, "${h.base}/$it", asset("setup/$it"), "755") }
                 scripts = h.base
             } }
         } catch (e: IOException) { Log.w("Droid", "system instructions: ${e.message}") }
-        return HostProc(h.exec(startCommand(apk, sessionId, model, engine, h.base), mergeStderr = false), h)
+        val devWritable = h === RootHost && (app.applicationContext as? DroidApp)?.prefs?.protectDev?.value == false
+        return HostProc(h.exec(startCommand(apk, sessionId, model, engine, h.base, devWritable), mergeStderr = false), h)
     }
 
     /**
@@ -243,8 +244,8 @@ class HostBackend(private val app: Context, private val host: () -> Host) : Back
 
 /** The scripts in assets/setup/bin that runs depend on, which [HostBackend.start] keeps up to date. */
 private val SCRIPTS = listOf("droid", "phone-agent", "droid-engine", "android", "shot", "tap", "fill", "droid-bridge", "droid-install-engine")
-/** Run in Android by phone-agent, from beside the Linux (see install.sh). */
-private val VD_SCRIPTS = listOf("vd-start.sh", "vd-stop.sh")
+/** Beside the Linux, in Android (see install.sh): its way in, and the hidden display's start and stop, run by phone-agent. */
+private val BASE_SCRIPTS = listOf("enter.sh", "vd-start.sh", "vd-stop.sh")
 
 /** The most of a command's output a page gets back (droid.run). */
 private const val MAX_OUTPUT = 1_000_000
@@ -278,12 +279,16 @@ internal fun isOldDefaultInstructions(text: String): Boolean =
     MessageDigest.getInstance("SHA-256").digest(text.trim().toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) } ==
         "9bd4eba46497828d598d774c4ad4c26eff8b0b130056fc9a34d77b4535dc3cc6"
 
-/** The host command that starts a run. Claude gets no --engine, so an older phone-agent in the rootfs still works. */
-internal fun startCommand(apk: String, sessionId: String?, model: String, engine: Engine, base: String = RootHost.base): String {
+/**
+ * The host command that starts a run. Claude gets no --engine, so an older phone-agent in the rootfs still works.
+ * [devWritable]: the owner turned off "Protect Android's /dev", so with root the run may change it (see enter.sh).
+ */
+internal fun startCommand(apk: String, sessionId: String?, model: String, engine: Engine, base: String = RootHost.base,
+                          devWritable: Boolean = false): String {
     val e = if (engine == Engine.CLAUDE) "" else " --engine ${engine.id}"
     val resume = sessionId?.takeIf { engine.sessionId.matches(it) }?.let { " --resume $it" }.orEmpty()
     val m = model.takeIf { engine.validModel(it) && it.isNotEmpty() }?.let { " --model $it" }.orEmpty()
-    return "DROID_APK='$apk' $base/enter.sh phone-agent$e$resume$m"
+    return "${if (devWritable) "DROID_DEV=rw " else ""}DROID_APK='$apk' $base/enter.sh phone-agent$e$resume$m"
 }
 
 /**

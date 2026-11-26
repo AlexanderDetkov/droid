@@ -36,6 +36,11 @@ class EngineTest {
         assertEquals("DROID_APK='/a' ${RootHost.base}/enter.sh phone-agent", startCommand("/a", null, "gpt-5", Engine.CLAUDE))
     }
 
+    @Test fun devIsWritableOnlyWhenTheOwnerSaysSo() {
+        assertEquals("DROID_DEV=rw DROID_APK='/a' ${RootHost.base}/enter.sh phone-agent", startCommand("/a", null, "", Engine.CLAUDE, devWritable = true))
+        assertFalse("DROID_DEV" in startCommand("/a", null, "", Engine.CLAUDE))
+    }
+
     @Test fun shellHostCommandsUseItsOwnFolder() {
         assertEquals("DROID_APK='/a' $SHELL_BASE/enter.sh phone-agent", startCommand("/a", null, "", Engine.CLAUDE, SHELL_BASE))
         assertTrue(forgetCommand(uuid, Engine.CLAUDE, SHELL_BASE)!!.startsWith("rm -rf $SHELL_BASE/rootfs/root/.claude/projects/-root/$uuid.jsonl"))

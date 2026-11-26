@@ -22,6 +22,8 @@ class Prefs(private val ctx: Context) {
     val speakReplies = MutableStateFlow(sp.getBoolean("speak", true))
     /** Dash makes the home page each day: the owner's day at a glance (see [HomeDay]). */
     val homePage = MutableStateFlow(sp.getBoolean("home_page", false))  // off until the owner turns it on
+    /** With root, the agent can't create, delete or replace files in Android's /dev (see enter.sh); on unless the owner turns it off. */
+    val protectDev = MutableStateFlow(sp.getBoolean("protect_dev", true))
     /** The chat Dash makes it in, and when he was last asked to. */
     var homeChat: String?
         get() = sp.getString("home_chat", null)
@@ -63,4 +65,5 @@ class Prefs(private val ctx: Context) {
     private fun modelKey(e: Engine) = if (e == Engine.CLAUDE) "model" else "model_${e.id}"
     fun setSpeakReplies(v: Boolean) { speakReplies.value = v; sp.edit { putBoolean("speak", v) } }
     fun setHomePage(v: Boolean) { homePage.value = v; sp.edit { putBoolean("home_page", v) } }
+    fun setProtectDev(v: Boolean) { protectDev.value = v; sp.edit { putBoolean("protect_dev", v) } }
 }
