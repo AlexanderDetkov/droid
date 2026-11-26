@@ -233,7 +233,7 @@ class PagesTest {
         assertFalse(c.messages.pageLive(i, false) { it == "q" })
     }
 
-    @Test fun aPageShownAgainInALaterTurnMovesThere() {
+    @Test fun aPageShownAgainInALaterTurnGoesThereAndLeavesItsEarlierShowingInPlace() {
         val first = Conv("c", "t", createdAt = 0).add(Kind.USER, "plan it", 0)
             .withPage(PageInfo("p", wait = true), "<p>1</p>", 1).add(Kind.AGENT, "Picked.", 2)
         // in the turn that showed it: in place
@@ -242,10 +242,29 @@ class PagesTest {
         assertEquals("<p>2</p>", updated.page("p")!!.text)
         // answered, then shown again in a later turn: there, at the end, unanswered and live
         val again = first.answered("p", "Fri").add(Kind.USER, "and Monday?", 4).withPage(PageInfo("p", wait = true), "<p>3</p>", 5)
-        assertEquals(listOf(Kind.USER, Kind.AGENT, Kind.USER, Kind.PAGE), again.messages.map { it.kind })
+        assertEquals(listOf(Kind.USER, Kind.PAGE, Kind.AGENT, Kind.USER, Kind.PAGE), again.messages.map { it.kind })
+        assertEquals(4, again.pageIndex("p"))
         assertEquals(5L, again.page("p")!!.ts)
         assertNull(PageInfo.of(again.page("p")!!).reply)
-        assertTrue(again.messages.pageLive(again.pageIndex("p"), false) { false })
+        assertTrue(again.messages.pageLive(4, false) { false })
+        assertEquals(4, again.messages.currentApp())
+        // the earlier showing stays where it was, with its answer and without its HTML: every message after it keeps
+        // its index, and with it its picture in the history (stills are kept by index)
+        val was = PageInfo.of(again.messages[1])
+        assertTrue(was.past)
+        assertEquals("Fri", was.reply)
+        assertEquals("", again.messages[1].text)
+        assertFalse(again.messages.pageLive(1, true) { false })
+        assertFalse(again.messages.awaits(1, true) { false })
+        // the owner's answer and the agent's wait go to the live one only
+        val answered = again.answered("p", "Mon").waitingOn(null, false)
+        assertEquals("Mon", PageInfo.of(answered.messages[4]).reply)
+        assertEquals("Fri", PageInfo.of(answered.messages[1]).reply)
+        // shown a third time: the second showing stays too
+        val third = again.add(Kind.USER, "and Tuesday?", 6).withPage(PageInfo("p", wait = true), "<p>4</p>", 7)
+        assertEquals(listOf(true, true, false), third.messages.filter { it.kind == Kind.PAGE }.map { PageInfo.of(it).past })
+        assertEquals(6, third.pageIndex("p"))
+        assertEquals(PageInfo("p", past = true), PageInfo.parse(PageInfo("p", past = true).json()))
     }
 
     @Test fun aChatsAppKeepsOneOriginAcrossVersionsButOtherPagesKeepTheirOwn() {

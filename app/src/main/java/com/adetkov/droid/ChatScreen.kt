@@ -165,7 +165,9 @@ fun HistoryScreen(
     }
     var menuFor by remember { mutableStateOf<Msg?>(null) }  // a long-pressed request or answer
     var selecting by remember { mutableStateOf<String?>(null) }
-    val list = rememberSaveable(conv.id, saver = LazyListState.Saver) { LazyListState(firstVisibleItemIndex = Int.MAX_VALUE) }  // (past the end: the newest)
+    // Always opens at the newest (past the end): not saved, as a place kept from an earlier visit is somewhere in the
+    // middle once the chat has gone on.
+    val list = remember(conv.id) { LazyListState(firstVisibleItemIndex = Int.MAX_VALUE) }
     BackHandler(onBack = onBack)
     // on past the newest, back to now (as scrolling up past now's top came here)
     val density = LocalDensity.current

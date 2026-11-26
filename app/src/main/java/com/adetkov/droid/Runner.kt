@@ -377,7 +377,7 @@ class Runner(
     fun answerPage(id: String, pageId: String, text: String, data: String?) {
         val reply = pageReply(text, data)
         store.update(id) { c ->
-            c.copy(messages = c.messages.map { m -> if (m.kind == Kind.PAGE && PageInfo.of(m).id == pageId) m.copy(data = PageInfo.of(m).copy(reply = text).json()) else m })
+            c.copy(messages = c.messages.map { m -> if (m.kind != Kind.PAGE) m else PageInfo.of(m).let { p -> if (p.id == pageId && !p.past) m.copy(data = p.copy(reply = text).json()) else m } })
         }
         scope.launch { try { backend.reply(pageId, reply.toString()) } catch (e: IOException) { Log.w("Droid", "page reply: ${e.message}") } }
     }

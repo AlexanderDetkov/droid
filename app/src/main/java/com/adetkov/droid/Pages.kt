@@ -17,21 +17,22 @@ import org.json.JSONTokener
  * (the home screen, under Dash) or notify, [title]: its <title>, [reply]: what the owner answered (null until then; empty when it went to the chat as a
  * message). [note]: for a page a notification's button opens (`page:`), that notification's id: while the agent waits
  * on the notification, the page answers it. [base]: the app folder it was shown from (see [appBase]), whose files it
- * loads by relative path; [path]: the file itself, read again when the app refreshes.
+ * loads by relative path; [path]: the file itself, read again when the app refreshes. [past]: where it was shown in an
+ * earlier turn, before it was shown again (see [withPage]): in the history only, its HTML dropped.
  */
 data class PageInfo(
     val id: String, val wait: Boolean = false, val where: String = "chat", val title: String = "", val reply: String? = null,
-    val note: String = "", val base: String = "", val path: String = "",
+    val note: String = "", val base: String = "", val path: String = "", val past: Boolean = false,
 ) {
     fun json(): String = JSONObject().put("id", id).put("wait", wait).put("where", where).put("title", title)
-        .apply { if (reply != null) put("reply", reply); if (note.isNotEmpty()) put("note", note); if (base.isNotEmpty()) put("base", base).put("path", path) }.toString()
+        .apply { if (reply != null) put("reply", reply); if (note.isNotEmpty()) put("note", note); if (base.isNotEmpty()) put("base", base).put("path", path); if (past) put("past", true) }.toString()
 
     companion object {
         fun of(m: Msg): PageInfo = parse(m.data)
         fun parse(json: String?): PageInfo = try {
             JSONObject(json ?: "{}").let { o ->
                 PageInfo(o.optString("id"), o.optBoolean("wait"), o.optString("where", "chat").ifEmpty { "chat" }, o.optString("title"),
-                    if (o.has("reply")) o.optString("reply") else null, o.optString("note"), o.optString("base"), o.optString("path"))
+                    if (o.has("reply")) o.optString("reply") else null, o.optString("note"), o.optString("base"), o.optString("path"), o.optBoolean("past"))
             }
         } catch (_: JSONException) { PageInfo("") }
     }
@@ -41,7 +42,7 @@ data class PageInfo(
 fun Conv.page(pageId: String): Msg? = messages.getOrNull(pageIndex(pageId))
 
 /** Where the PAGE message [pageId] is in the chat (its latest), or -1. */
-fun Conv.pageIndex(pageId: String): Int = messages.indexOfLast { it.kind == Kind.PAGE && PageInfo.of(it).id == pageId }
+fun Conv.pageIndex(pageId: String): Int = messages.indexOfLast { it.kind == Kind.PAGE && PageInfo.of(it).let { p -> p.id == pageId && !p.past } }
 
 /**
  * Whether the agent's command waits on the PAGE at [index] of these messages now, while its chat's run [working]: one
@@ -52,7 +53,7 @@ fun Conv.pageIndex(pageId: String): Int = messages.indexOfLast { it.kind == Kind
 fun List<Msg>.awaits(index: Int, working: Boolean, noteWaited: (String) -> Boolean): Boolean {
     val m = getOrNull(index)?.takeIf { it.kind == Kind.PAGE } ?: return false
     val p = PageInfo.of(m)
-    if (!working || p.reply != null) return false
+    if (!working || p.reply != null || p.past) return false
     return if (p.note.isNotEmpty()) noteWaited(p.note) else p.wait && (index + 1 until size).none { this[it].kind == Kind.STATUS }
 }
 
@@ -60,7 +61,7 @@ fun List<Msg>.awaits(index: Int, working: Boolean, noteWaited: (String) -> Boole
  * The chat's app: the newest page the agent made for the owner in it (an answer with HTML, or a page it showed in the
  * chat), which is what the owner's screen shows of the chat and stays live across turns; -1 for none.
  */
-fun List<Msg>.currentApp(): Int = indexOfLast { (it.kind == Kind.AGENT && hasHtml(it.text)) || (it.kind == Kind.PAGE && PageInfo.of(it).where.let { w -> w == "chat" || w == "home" }) }
+fun List<Msg>.currentApp(): Int = indexOfLast { (it.kind == Kind.AGENT && hasHtml(it.text)) || (it.kind == Kind.PAGE && PageInfo.of(it).let { p -> !p.past && (p.where == "chat" || p.where == "home") }) }
 
 /**
  * The chat's app from before the turn that starts at [start], which that turn works on: if it was still on screen when
@@ -88,14 +89,17 @@ fun List<Msg>.pageLive(index: Int, working: Boolean, noteWaited: (String) -> Boo
 
 /**
  * The chat with page [info] shown, [html] its content: a new PAGE message, or the one with its id shown again (live
- * again, unanswered): in place while it is in the latest turn, else moved to the end, into the turn that shows it.
+ * again, unanswered): in place while it is in the latest turn, else at the end, in the turn that shows it. The earlier
+ * showing stays where it was, [PageInfo.past], so its turn in the history keeps it and nothing after it moves: the
+ * chat's pictures are kept by message index (see [Stills]). Moving it left every later picture one message off.
  */
 fun Conv.withPage(info: PageInfo, html: String, now: Long = System.currentTimeMillis()): Conv {
     val i = pageIndex(info.id)
     if (i < 0) return add(Kind.PAGE, html, now, data = info.json())
     val m = messages[i].copy(text = html, data = info.json())
     if (i > messages.indexOfLast { it.kind.opensTurn }) return copy(messages = messages.toMutableList().also { it[i] = m })
-    return copy(messages = messages.filterIndexed { j, _ -> j != i } + m.copy(ts = now), updatedAt = now)
+    val was = messages[i].let { it.copy(text = "", data = PageInfo.of(it).copy(wait = false, past = true).json()) }
+    return copy(messages = messages.toMutableList().also { it[i] = was } + m.copy(ts = now), updatedAt = now)
 }
 
 /** The chat with page [pageId]'s latest copy now holding [html] (its app refreshed itself): in place, its title read again. */
@@ -119,7 +123,7 @@ fun Conv.answered(pageId: String, reply: String): Conv {
  */
 fun Conv.waitingOn(pageId: String?, on: Boolean): Conv = copy(messages = messages.map { m ->
     val p = if (m.kind == Kind.PAGE) PageInfo.of(m) else null
-    if (p == null || p.reply != null || p.wait == on || (pageId != null && p.id != pageId)) m else m.copy(data = p.copy(wait = on).json())
+    if (p == null || p.past || p.reply != null || p.wait == on || (pageId != null && p.id != pageId)) m else m.copy(data = p.copy(wait = on).json())
 })
 
 /** What a waiting command gets from a page (droid.send): its [text], and its [data] as the JSON it is. */
