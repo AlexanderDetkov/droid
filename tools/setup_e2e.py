@@ -11,6 +11,7 @@ Free AI, the hidden display check, and one task that opens an app on the hidden 
   --hide  read Developer options' settings as Android 17 shows them to apps (debug.droid.hidesettings)
   --on    Developer options and Wireless debugging on before setup starts (Android allows turning them on with adb)
   --task  then run a task: open Clock and read the alarms
+  --break-proof  Droid's Android/data folder a plain file, as when one left from an earlier install can't be written
 
 Prints each step as it goes, and a JSON summary last; exits 1 on a failure, with a screenshot in --out.
 Android 17 emulators need tools/emulator17.sh to stay up.
@@ -21,6 +22,7 @@ ap = argparse.ArgumentParser()
 ap.add_argument("serial"); ap.add_argument("apk")
 ap.add_argument("--hide", action="store_true"); ap.add_argument("--on", action="store_true")
 ap.add_argument("--task", action="store_true"); ap.add_argument("--out", default="/tmp")
+ap.add_argument("--break-proof", action="store_true")  # Droid's Android/data folder unusable, as one left from an earlier install
 a = ap.parse_args()
 PKG = "com.adetkov.droid"
 T0 = time.time()
@@ -163,6 +165,9 @@ step(f"Developer options {setting('development_settings_enabled')}, Wireless deb
 # 2. Hello, then Open Settings: Settings opens where the first step is
 sh(f"am start -n {PKG}/.MainActivity")
 tap_text("Start", wait=90)
+if a.break_proof:
+    sh(f"rm -rf /sdcard/Android/data/{PKG}/files; touch /sdcard/Android/data/{PKG}/files")
+    step("Droid's Android/data/files is now a plain file: its helper's proof can't be written there")
 wait_for(lambda: find("Open Settings"), "the Connect page", 20)
 step(f"Connect page: {droid_words()!r}")
 tap_text("Open Settings")

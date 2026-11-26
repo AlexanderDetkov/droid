@@ -78,8 +78,11 @@ phone can use on itself, as Shizuku does. So Droid runs the same agent either wa
   update it starts a bridge with the new code, but only while the old one runs nothing. Until the helper runs (say,
   after a restart away from Wi-Fi), the chats stay open and a task says what it's waiting for.
 - **Is it adbd?** adbd's certificate for connections changes with every boot, so it can't be pinned, and any app may
-  advertise a port under adbd's mDNS name. So the launch command also writes a fresh nonce into Droid's own
-  `Android/data` folder, which the shell user may write and other apps may not; without it, Droid never uses the token.
+  advertise a port under adbd's mDNS name. So the launch command also proves it runs as the shell user, with a fresh
+  nonce two ways, either of which will do: written into Droid's own `Android/data` folder, which the shell user may
+  write and other apps may not (unless the folder is missing, or left from an earlier install and not Droid's), and
+  broadcast to `HelperProof`, a receiver only senders holding `WRITE_SECURE_SETTINGS` reach (the shell user). Without
+  it, Droid never uses the token. (`tools/setup_e2e.py --break-proof` checks the second way alone.)
 - **Linux**: Alpine in `/data/local/tmp/droid/rootfs`, where the shell user may run programs, under proot (Termux's
   fork, built from source by [`tools/proot/build.sh`](../tools/proot/build.sh) and carried in the APK as `libproot.so`).
   `android` reaches the bridge with `droid-bridge` (Python); `shot` reads the display's folder, bound at its own path.

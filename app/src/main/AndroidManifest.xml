@@ -147,6 +147,11 @@
             android:taskAffinity=""
             android:theme="@android:style/Theme.NoDisplay" />
         <!-- A wake-up or a notification the agent set for later (droid later, droid notify at) going off. -->
+        <!-- The shell user's proof, as it starts Droid's helper, that it is the shell user (AdbHelper): only it can send this. -->
+        <receiver
+            android:name=".HelperProof"
+            android:exported="true"
+            android:permission="android.permission.WRITE_SECURE_SETTINGS" />
         <receiver
             android:name=".LaterReceiver"
             android:exported="false" />

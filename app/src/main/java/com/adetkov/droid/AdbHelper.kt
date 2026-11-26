@@ -155,14 +155,17 @@ class AdbHelper(private val app: Context) {
     private fun launch(port: Int): BridgeClient {
         val token = randomHex()
         // adbd's certificate for connections changes with every boot, so it can't be pinned, and any app could
-        // advertise a port of its own under adbd's name. So the command also writes a fresh nonce into Droid's own
-        // Android/data folder, which the shell user may write and other apps may not: if it isn't there, whatever
-        // answered wasn't adbd, and the token it saw is never used.
+        // advertise a port of its own under adbd's name. So the command also proves it ran as the shell user, by a
+        // fresh nonce two ways, either of which will do: written into Droid's own Android/data folder, which the shell
+        // user may write and other apps may not (unless that folder is missing or left from an earlier install), and
+        // broadcast to [HelperProof], which only the shell user can reach. Without it, whatever answered wasn't adbd,
+        // and the token it saw is never used.
         val nonce = randomHex()
-        val proof = File(app.getExternalFilesDir(null), "helper.proof").apply { delete() }
+        val proof = app.getExternalFilesDir(null)?.let { File(it, "helper.proof") }?.apply { delete() }
         val out = Adb.shell(key, port, launchCommand(token, nonce, proof), null).output
-        val proven = proof.takeIf { it.exists() }?.readText()?.trim() == nonce
-        proof.delete()
+        val proven = runCatching { proof?.takeIf { it.exists() }?.readText()?.trim() == nonce }.getOrDefault(false) ||
+            HelperProof.await(nonce, 3000)
+        proof?.delete()
         if (!proven) throw IOException("Something other than Android's adbd answered on port $port")
         val bridgePort = Regex("(?m)^port=(\\d+)").find(out)?.groupValues?.get(1)?.toInt()
             ?: throw IOException("Droid's helper didn't start:\n${out.takeLast(800)}")
@@ -178,8 +181,9 @@ class AdbHelper(private val app: Context) {
      * some phones it restarts adbd. Then starts the bridge in its own session, so it outlives this connection, and
      * kills it if it doesn't come up within 30 s (a helper whose token Droid never saved would serve nobody).
      */
-    private fun launchCommand(token: String, nonce: String, proof: File) =
-        "echo $nonce > '${proof.path}'; " +
+    private fun launchCommand(token: String, nonce: String, proof: File?) =
+        (proof?.let { "echo $nonce > '${it.path}' 2>/dev/null; " } ?: "") +
+            "am broadcast -n ${app.packageName}/${HelperProof::class.java.name} --es nonce $nonce >/dev/null 2>&1; " +
             "$grantCommand 2>/dev/null; " +
             "settings put global adb_allowed_connection_time 0; " +
             "[ \"\$(settings get global ${Settings.Global.ADB_ENABLED})\" = 1 ] || { settings put global ${Settings.Global.ADB_ENABLED} 1; sleep 2; }; " +
@@ -222,5 +226,33 @@ class AdbHelper(private val app: Context) {
         private const val UNTRUSTED = "untrusted"
         /** How long an announcement Wireless debugging already makes takes to be found (on this phone, a second or two). */
         private const val ANNOUNCED_S = 6L
+    }
+}
+
+/**
+ * The other half of [AdbHelper]'s proof that it reached adbd: its launch command, run as the shell user, broadcasts
+ * the nonce here. Only senders holding WRITE_SECURE_SETTINGS can (the manifest says so): the shell user, and Droid
+ * itself once it has granted itself that. Works whatever state Droid's Android/data folder is in.
+ */
+class HelperProof : android.content.BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: android.content.Intent) {
+        val nonce = intent.getStringExtra("nonce") ?: return
+        synchronized(lock) { nonces += nonce; lock.notifyAll() }
+    }
+
+    companion object {
+        private val lock = Object()
+        private val nonces = mutableSetOf<String>()
+
+        /** Whether [nonce] came, waiting up to [ms] for it (a broadcast can come a moment after the command ends). */
+        fun await(nonce: String, ms: Long): Boolean = synchronized(lock) {
+            val end = System.currentTimeMillis() + ms
+            while (nonce !in nonces) {
+                val left = end - System.currentTimeMillis()
+                if (left <= 0) return false
+                lock.wait(left)
+            }
+            nonces.remove(nonce)
+        }
     }
 }
