@@ -350,7 +350,7 @@ private fun FirstRun(setup: Setup, onClose: () -> Unit) {
                                 // (at the code, Settings must stay on it: opening it again would close the code and its port)
                                 !s.checked || pairing && s.pairStep >= PairingService.CODE_STEP -> Big("", "setup_wait", enabled = false, hidden = true) {}
                                 s.access == Access.ROOT -> Big("Try again", "setup_retry", enabled = idle) { setup.refresh() }
-                                pairing -> Big("Open Settings", "setup_open_settings") { openDeveloperOptions(ctx, "toggle_adb_wireless") }
+                                pairing -> Big("Open Settings", "setup_open_settings") { openDeveloperOptions(ctx, PairingService.WIRELESS_KEY) }
                                 s.paired -> Big("Try again", "setup_retry", enabled = idle) { withPermissions(setup::startHelper) }
                                 else -> Big("Open Settings", "setup_open_settings", enabled = idle) { withPermissions { pair(setup, ctx) } }
                             }
@@ -469,7 +469,7 @@ private fun SecureSettings(s: SetupState) {
 /** Starts pairing and opens Settings where its first step is, once the notification that guides it (and takes the code) can show. */
 private fun pair(setup: Setup, ctx: android.content.Context) {
     setup.pair()
-    if (ctx.getSystemService(android.app.NotificationManager::class.java).areNotificationsEnabled()) openDeveloperOptions(ctx, "toggle_adb_wireless")
+    if (ctx.getSystemService(android.app.NotificationManager::class.java).areNotificationsEnabled()) openDeveloperOptions(ctx, PairingService.WIRELESS_KEY)
 }
 
 /** Root or not, Wireless debugging works too (the agent then has the shell user's rights, not root's). Root is offered wherever there is an su, even one that refuses Droid for now. */
@@ -556,11 +556,8 @@ private fun Action(label: String, enabled: Boolean, primary: Boolean = false, on
 }
 
 /** Opens Developer options (About phone while they're off), scrolled to [key] where the phone supports that. */
-private fun openDeveloperOptions(ctx: android.content.Context, key: String? = null) = try {
-    ctx.startActivity(pairingSettings(ctx, key))
-} catch (_: Exception) {
-    ctx.startActivity(android.content.Intent(android.provider.Settings.ACTION_SETTINGS).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
-}
+/** Developer options (at setting [key]), or About phone while they're off: see [DevSettings.open]. */
+private fun openDeveloperOptions(ctx: android.content.Context, key: String? = null) = DevSettings.open(ctx, key)
 
 /**
  * The switch some makers keep off in Developer options, which adb needs to tap, type and change settings (Xiaomi's is
@@ -653,7 +650,7 @@ private fun Pairing(s: SetupState, setup: Setup) {
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
             TextButton(setup::cancelPairing) { Text("Cancel", color = P.muted) }
-            if (s.pairStep < PairingService.CODE_STEP) Action("Open settings", true, primary = true) { openDeveloperOptions(ctx, "toggle_adb_wireless") }
+            if (s.pairStep < PairingService.CODE_STEP) Action("Open settings", true, primary = true) { openDeveloperOptions(ctx, PairingService.WIRELESS_KEY) }
         }
     }
 }

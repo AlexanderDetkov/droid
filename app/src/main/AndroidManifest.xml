@@ -131,6 +131,13 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
+        <!-- Opens Developer options, or About phone while they're off, and sees which (DevSettings.kt): nothing to see. -->
+        <activity
+            android:name=".DevOptionsActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
         <!-- Where a notification the agent posted opens a screen (droid notify): no window of its own. -->
         <activity
             android:name=".NoteActivity"

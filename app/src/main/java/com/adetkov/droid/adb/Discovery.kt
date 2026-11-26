@@ -12,7 +12,7 @@ import java.net.NetworkInterface
  * Settings shows a pairing code, "_adb-tls-connect._tcp" while Wireless debugging is on. Other devices on the same
  * Wi-Fi advertise the same names, so only services at one of this phone's own addresses count.
  */
-class Discovery(ctx: Context, private val type: String, private val onPort: (Int) -> Unit) {
+class Discovery(ctx: Context, private val type: String, private val onLost: () -> Unit = {}, private val onPort: (Int) -> Unit) {
     private val nsd = ctx.getSystemService(NsdManager::class.java)
     // NsdManager still delivers callbacks ("unregistered") after stop(), so the executor can never be shut down.
     private val executor = java.util.concurrent.Executor { it.run() }
@@ -28,11 +28,12 @@ class Discovery(ctx: Context, private val type: String, private val onPort: (Int
         override fun onServiceFound(info: NsdServiceInfo) {
             if (stopped) return
             val cb = object : NsdManager.ServiceInfoCallback {
+                @Volatile var mine = false
                 override fun onServiceInfoCallbackRegistrationFailed(errorCode: Int) {}
-                override fun onServiceLost() {}
+                override fun onServiceLost() { if (mine && !stopped) onLost() }  // (Wireless debugging turned off, say)
                 override fun onServiceInfoCallbackUnregistered() {}
                 override fun onServiceUpdated(s: NsdServiceInfo) {
-                    val mine = s.hostAddresses.any { it in localAddresses() }
+                    mine = s.hostAddresses.any { it in localAddresses() }
                     Log.i(TAG, "$type ${s.serviceName} port=${s.port} mine=$mine")
                     if (mine && s.port > 0 && !stopped) onPort(s.port)
                 }

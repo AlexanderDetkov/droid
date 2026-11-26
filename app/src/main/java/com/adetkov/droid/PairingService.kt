@@ -9,10 +9,10 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import android.provider.Settings
 import android.util.Log
 import com.adetkov.droid.adb.Discovery
 import kotlin.concurrent.thread
@@ -30,6 +30,8 @@ class PairingService : Service() {
     private val nm by lazy { getSystemService(NotificationManager::class.java) }
     private val main = Handler(Looper.getMainLooper())
     private var discovery: Discovery? = null
+    /** Wireless debugging's own announcement, which says it's on where Android won't ([DevSettings]). */
+    private var wireless: Discovery? = null
     @Volatile private var port = 0
     @Volatile private var working = false
     private val giveUp = Runnable { finish(null, "No pairing code came within 10 minutes; tap Start to try again.") }
@@ -63,6 +65,8 @@ class PairingService : Service() {
         if (!app.adb.canDiscover) return finish(null, AdbHelper.NO_LOCAL_NETWORK)
         if (!nm.areNotificationsEnabled() || nm.getNotificationChannel(CHANNEL)?.importance == NotificationManager.IMPORTANCE_NONE)
             return finish(null, "Allow Droid's notifications: the pairing code goes into one.")
+        wireless = Discovery(this, Discovery.CONNECT, onLost = { DevSettings.wirelessSeen = false }) { DevSettings.wirelessSeen = true }
+            .also { it.start() }
         // A failed attempt closes the dialog; opening it again gives a new port (and code), found here as well.
         discovery = Discovery(this, Discovery.PAIRING) { p ->
             if (p == port || working) return@Discovery
@@ -120,6 +124,8 @@ class PairingService : Service() {
         main.removeCallbacks(watch)
         discovery?.stop()
         discovery = null
+        wireless?.stop()
+        wireless = null
         stopForeground(STOP_FOREGROUND_REMOVE)
         if (done != null) {
             // Droid has turned USB debugging on: adbd runs while it's on, and the helper ends when adbd does.
@@ -134,7 +140,8 @@ class PairingService : Service() {
 
     /** While a step in Settings is next, a tap opens Settings there; otherwise Droid. */
     private fun note(title: String, text: String?, ask: Boolean, alert: Boolean = ask): Notification {
-        val open = if (!ask && !working && port == 0) PendingIntent.getActivity(this, 1, pairingSettings(this),
+        val open = if (!ask && !working && port == 0) PendingIntent.getActivity(this, 1,
+            DevSettings.intent(this, WIRELESS_KEY).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE) else openApp()
         val d = resources.displayMetrics.density
         val b = Notification.Builder(this, CHANNEL).setSmallIcon(R.drawable.ic_notify).setContentTitle(title)
@@ -160,6 +167,7 @@ class PairingService : Service() {
         main.removeCallbacks(giveUp)
         main.removeCallbacks(watch)
         discovery?.stop()
+        wireless?.stop()
         super.onDestroy()
     }
 
@@ -171,27 +179,31 @@ class PairingService : Service() {
         private const val START = "start"
         private const val CODE = "code"
         private const val CANCEL = "cancel"
-        private const val ADB_WIFI = "adb_wifi_enabled"  // Settings.Global.ADB_WIFI_ENABLED, hidden
+        /** Wireless debugging's place in Developer options. */
+        const val WIRELESS_KEY = "toggle_adb_wireless"
 
         /**
          * What to do in Settings, by [SetupState.pairStep]; then the code goes in the notification ([CODE_STEP]). Settings
          * opens where each is, so a line says only what to tap, its start short enough for a pop-up's one line.
          */
         val STEPS = listOf(
-            "Turn on Developer options" to "Tap Build number seven times.",
+            // (where Build number is: Samsung's in Software information; and Android 17 can't tell Droid they're on)
+            "Turn on Developer options" to (if (Build.MANUFACTURER.equals("samsung", ignoreCase = true)) "In Software information, tap Build number seven times."
+                else "Tap Build number seven times.") + " Already on? Then Settings opens right on them.",
             "Turn on Wireless debugging" to "Tick Always allow, then Allow. That's \"Always allow on this network\", so it stays on after a restart.",
             "Get a pairing code" to "Tap Wireless debugging's name, then Pair device with pairing code.",
         )
         const val CODE_STEP = 3
 
         /**
-         * How far the owner got in Settings, read from Settings itself (never assumed: Developer options, or Wireless
-         * debugging too, may be on from before): Developer options, then Wireless debugging, then its pairing dialog.
+         * How far the owner got in Settings, as Droid can tell ([DevSettings]; never assumed: Developer options, or
+         * Wireless debugging too, may be on from before): Developer options, then Wireless debugging, then its pairing
+         * dialog. Where it can't tell, the earlier step, whose Open Settings goes past it when it's done.
          */
         fun step(ctx: Context): Int = when {
-            Settings.Global.getInt(ctx.contentResolver, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 0) == 0 -> 0
-            Settings.Global.getInt(ctx.contentResolver, ADB_WIFI, 0) == 0 -> 1
-            else -> 2
+            DevSettings.wireless(ctx) == true -> 2
+            DevSettings.developer(ctx) == true -> 1
+            else -> 0
         }
 
         fun start(ctx: Context) {
@@ -202,16 +214,4 @@ class PairingService : Service() {
             ctx.startService(Intent(ctx, PairingService::class.java).setAction(CANCEL))
         }
     }
-}
-
-/**
- * Settings where the next pairing step is: About phone at Build number while Developer options are off (Developer
- * options' own page would only say they're off), else Developer options at Wireless debugging. [key] scrolls to
- * another of Developer options' settings instead, where the phone supports that.
- */
-fun pairingSettings(ctx: Context, key: String? = "toggle_adb_wireless"): Intent {
-    val on = PairingService.step(ctx) > 0
-    return Intent(if (on) Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS else Settings.ACTION_DEVICE_INFO_SETTINGS)
-        .apply { (if (on) key else "build_number")?.let { putExtra(":settings:fragment_args_key", it) } }
-        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
 }

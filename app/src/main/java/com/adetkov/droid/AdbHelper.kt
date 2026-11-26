@@ -79,29 +79,46 @@ class AdbHelper(private val app: Context) {
         if (!paired) throw IOException("Pair Droid with Wireless debugging first")
         if (!canDiscover) throw IOException(NO_LOCAL_NETWORK)
         val cr = app.contentResolver
-        val wasOn = Settings.Global.getInt(cr, ADB_WIFI, 0) == 1
-        if (!wasOn) {
-            if (!onWifi()) throw IOException(NO_WIFI)
-            if (!canToggle) throw IOException("Turn on Wireless debugging in Developer options")
-            // On a Wi-Fi it doesn't trust yet, Android asks whether to allow Wireless debugging, and after a restart nobody
-            // may be there to answer: ask once per Wi-Fi connection, and again only when the owner taps Start.
-            if (!ask && wifiConnection() == prefs.getString(UNTRUSTED, null)) throw IOException(UNTRUSTED_WIFI)
-            Settings.Global.putInt(cr, ADB_WIFI, 1)
-        }
         // Every port announced: after Wireless debugging restarts, mDNS can still announce its old port beside the new
         // one, and the old one refuses
         val found = java.util.concurrent.LinkedBlockingQueue<Int>()
-        val discovery = Discovery(app, Discovery.CONNECT) { found.offer(it) }.also { it.start() }
+        val discovery = Discovery(app, Discovery.CONNECT, onLost = { DevSettings.wirelessSeen = false }) {
+            DevSettings.wirelessSeen = true
+            found.offer(it)
+        }.also { it.start() }
+        var turnedOn = false
         val client = try {
-            var port = found.poll(20, java.util.concurrent.TimeUnit.SECONDS)
+            // Whether Wireless debugging is on: what Android says, where it does, else what this phone announces (Android
+            // 17 tells apps it's off whatever it is): on already, it's announced within seconds
+            val said = DevSettings.read(app, DevSettings.ADB_WIFI)
+            var port = when (said) {
+                true -> found.poll(20, java.util.concurrent.TimeUnit.SECONDS)
+                null -> found.poll(ANNOUNCED_S, java.util.concurrent.TimeUnit.SECONDS)
+                false -> null
+            }
+            if (port == null && said == true) {
+                if (!onWifi()) throw IOException(NO_WIFI)
+                throw IOException("Wireless debugging didn't answer; check that it's on")
+            }
             if (port == null) {
                 if (!onWifi()) throw IOException(NO_WIFI)
-                // Android switched it straight back off to ask, and nobody allowed it (yet)
-                if (!wasOn && Settings.Global.getInt(cr, ADB_WIFI, 0) == 0) {
-                    prefs.edit { putString(UNTRUSTED, wifiConnection()) }
-                    throw IOException(UNTRUSTED_WIFI)
+                if (!canToggle) throw IOException("Turn on Wireless debugging in Developer options")
+                // On a Wi-Fi it doesn't trust yet, Android asks whether to allow Wireless debugging, and after a restart
+                // nobody may be there to answer: ask once per Wi-Fi connection, and again only when the owner taps Start.
+                if (!ask && wifiConnection() == prefs.getString(UNTRUSTED, null)) throw IOException(UNTRUSTED_WIFI)
+                Settings.Global.putInt(cr, DevSettings.ADB_WIFI, 1)
+                turnedOn = true
+                port = found.poll(20, java.util.concurrent.TimeUnit.SECONDS)
+                if (port == null) {
+                    if (!onWifi()) throw IOException(NO_WIFI)
+                    // Android switched it straight back off to ask, and nobody allowed it (yet): where Android won't say
+                    // whether it's on, that's the likeliest
+                    if (DevSettings.read(app, DevSettings.ADB_WIFI) != true) {
+                        prefs.edit { putString(UNTRUSTED, wifiConnection()) }
+                        throw IOException(UNTRUSTED_WIFI)
+                    }
+                    throw IOException("Wireless debugging didn't answer; check that it's on")
                 }
-                throw IOException("Wireless debugging didn't answer; check that it's on")
             }
             val tried = mutableSetOf<Int>()
             var started: BridgeClient? = null
@@ -119,7 +136,7 @@ class AdbHelper(private val app: Context) {
         } finally {
             discovery.stop()
             // Leave Wireless debugging as it was: the helper doesn't need it once started, as long as adbd keeps running.
-            if (!wasOn) Settings.Global.putInt(cr, ADB_WIFI, 0)
+            if (turnedOn) Settings.Global.putInt(cr, DevSettings.ADB_WIFI, 0)
         }
         // Had adbd stopped or restarted (Wireless debugging going off, USB debugging coming on), it would have taken the
         // helper with it: check it's still there, and if it doesn't answer, that it's gone, so retries don't add helpers.
@@ -203,7 +220,7 @@ class AdbHelper(private val app: Context) {
         private const val TOKEN = "token"
         /** The Wi-Fi connection ([wifiConnection]) where Android last asked about Wireless debugging and nobody allowed it. */
         private const val UNTRUSTED = "untrusted"
-        /** Settings.Global.ADB_WIFI_ENABLED, which is hidden. */
-        private const val ADB_WIFI = "adb_wifi_enabled"
+        /** How long an announcement Wireless debugging already makes takes to be found (on this phone, a second or two). */
+        private const val ANNOUNCED_S = 6L
     }
 }

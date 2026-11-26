@@ -50,6 +50,15 @@ phone can use on itself, as Shizuku does. So Droid runs the same agent either wa
   of BoringSSL's, checked against adbd), and the key sent as adb's PeerInfo. [`PairingService`](../app/src/main/java/com/adetkov/droid/PairingService.kt)
   finds Settings' pairing dialog by mDNS (`_adb-tls-pairing._tcp`, only at this phone's own addresses) and asks for
   the code in a notification, since the dialog closes when you leave Settings.
+- **What Droid can tell of Developer options** ([`DevSettings.kt`](../app/src/main/java/com/adetkov/droid/DevSettings.kt)):
+  Android 17 tells apps 0 for `development_settings_enabled` and `adb_enabled` whatever they are (and some of its builds
+  for `adb_wifi_enabled` too), so there a 0 means "can't tell" and only a 1 counts. Wireless debugging is on while this
+  phone announces `_adb-tls-connect._tcp`; Developer options are on while adbd runs (`init.svc.adbd`) or Wireless
+  debugging does, and otherwise by how Settings takes their page: while they're off it closes it at once.
+  `DevOptionsActivity`, a window-less screen every "Open Settings" goes through, opens the page and watches: back in
+  front within 2 s means off, so it opens About phone at Build number instead; out of sight means on. Pairing's steps
+  come from these, and `AdbHelper` looks for the announcement before switching Wireless debugging on, and off again
+  only if it switched it on. A debug build acts so on any Android with `adb shell setprop debug.droid.hidesettings 1`.
 - **The helper** ([`Bridge.java`](../app/src/main/java/com/adetkov/droid/Bridge.java)): over one adb connection
   (`_adb-tls-connect._tcp`), Droid grants itself `WRITE_SECURE_SETTINGS` and starts `app_process … Bridge` as the shell
   user in its own session. The bridge runs shell commands for the app on 127.0.0.1, streaming stdin, stdout, stderr and

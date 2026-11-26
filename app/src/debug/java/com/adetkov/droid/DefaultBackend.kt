@@ -19,6 +19,13 @@ val isEmulator = (Build.FINGERPRINT.contains("generic") || Build.HARDWARE.contai
     runCatching { ProcessBuilder("getprop", "debug.droid.real").start().inputStream.bufferedReader().readText().trim() }.getOrNull() != "1"
 
 /**
+ * Debug builds: `adb shell setprop debug.droid.hidesettings 1` (then restart Droid) makes Droid see Developer options'
+ * and Wireless debugging's settings as Android 17 shows them to apps, 0 whatever they are, on any Android (see DevSettings).
+ */
+val settingsHiddenForTest =
+    runCatching { ProcessBuilder("getprop", "debug.droid.hidesettings").start().inputStream.bufferedReader().readText().trim() }.getOrNull() == "1"
+
+/**
  * Debug builds: an assist intent may carry a 16 kHz WAV (test_wav) to hear instead of the microphone. Only a file in
  * Droid's own files dir counts, which other apps can't write to (put it there with `adb shell run-as`).
  */
