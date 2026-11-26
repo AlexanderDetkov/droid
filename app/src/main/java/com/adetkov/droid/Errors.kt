@@ -19,7 +19,7 @@ private val CLAUDE_LIMIT = Regex("""Claude AI usage limit reached\|(\d{9,})""")
  * agent's words are meant for somewhere else (a terminal's /login, a link to a plan) or are just a code; null when
  * they already say it. The chat shows this and keeps the agent's words a tap away.
  */
-internal fun plainStatus(status: String, engine: Engine, zone: ZoneId = ZoneId.systemDefault()): Plain? {
+internal fun plainStatus(status: String, engine: Engine, zone: ZoneId = ZoneId.systemDefault(), now: Instant = Instant.now()): Plain? {
     val said = status.removePrefix("Error: ").removePrefix("Failed: ")
     return when {
         // the app was closed while it worked (by Android, or an update): nothing went wrong with the task itself
@@ -39,14 +39,14 @@ internal fun plainStatus(status: String, engine: Engine, zone: ZoneId = ZoneId.s
         else -> CLAUDE_LIMIT.find(said)?.let { m ->
             // (a time it can't be: no time said)
             val at = m.groupValues[1].toLongOrNull()?.takeIf { it in 0..253_402_300_799L }
-            Plain("You've reached your Claude usage limit." + (at?.let { " It resets ${resetsAt(it, zone)}." } ?: ""))
+            Plain("You've reached your Claude usage limit." + (at?.let { " It resets ${resetsAt(it, zone, now)}." } ?: ""))
         }
     }
 }
 
 /** "at 3:20 PM", or "on Sat at 9:00 AM" when that isn't today. */
-private fun resetsAt(epochSeconds: Long, zone: ZoneId): String {
+private fun resetsAt(epochSeconds: Long, zone: ZoneId, now: Instant): String {
     val t = Instant.ofEpochSecond(epochSeconds).atZone(zone)
     val time = t.format(DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT))
-    return if (t.toLocalDate() == Instant.now().atZone(zone).toLocalDate()) "at $time" else "on ${t.format(DateTimeFormatter.ofPattern("EEE"))} at $time"
+    return if (t.toLocalDate() == now.atZone(zone).toLocalDate()) "at $time" else "on ${t.format(DateTimeFormatter.ofPattern("EEE"))} at $time"
 }

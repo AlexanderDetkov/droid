@@ -32,12 +32,19 @@ class ErrorsTest {
     }
 
     @Test fun usageLimitSaysWhenItResets() {
-        val soon = Instant.now().plusSeconds(60).epochSecond
-        val p = plainStatus("Error: Claude AI usage limit reached|$soon", Engine.CLAUDE, la)!!
-        assertFalse(p.setup)
-        assertTrue(p.text, p.text.startsWith("You've reached your Claude usage limit. It resets at "))
-        val later = plainStatus("Error: Claude AI usage limit reached|${Instant.now().plusSeconds(3 * 86400).epochSecond}", Engine.CLAUDE, la)!!
-        assertTrue(later.text, Regex("It resets on \\w{3} at ").containsMatchIn(later.text))
+        // A fixed now (it once ran a minute before midnight in LA, and "a minute from now" was tomorrow), and one just
+        // before midnight: a reset after it is another day's.
+        for (now in listOf(Instant.parse("2026-11-25T20:00:00Z"), Instant.parse("2026-11-26T07:59:30Z"))) {
+            val soon = now.plusSeconds(20).epochSecond
+            val p = plainStatus("Error: Claude AI usage limit reached|$soon", Engine.CLAUDE, la, now)!!
+            assertFalse(p.setup)
+            assertTrue(p.text, p.text.startsWith("You've reached your Claude usage limit. It resets at "))
+            val later = plainStatus("Error: Claude AI usage limit reached|${now.plusSeconds(3 * 86400).epochSecond}", Engine.CLAUDE, la, now)!!
+            assertTrue(later.text, Regex("It resets on \\w{3} at ").containsMatchIn(later.text))
+        }
+        val pastMidnight = Instant.parse("2026-11-26T07:59:30Z")
+        val p = plainStatus("Error: Claude AI usage limit reached|${pastMidnight.plusSeconds(60).epochSecond}", Engine.CLAUDE, la, pastMidnight)!!
+        assertTrue(p.text, Regex("It resets on \\w{3} at ").containsMatchIn(p.text))  // Thursday: past midnight in LA
     }
 
     @Test fun wordsThatAlreadySayItStay() {
