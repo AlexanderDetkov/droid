@@ -28,7 +28,7 @@ internal fun skin(props: Map<String, String>): String? = listOf(
 internal fun parseProps(out: String): Map<String, String> =
     Regex("""^\[([^\]]+)]: \[(.*)]$""", RegexOption.MULTILINE).findAll(out).associate { it.groupValues[1] to it.groupValues[2] }
 
-/** How far setup got and what failed, from [s]; [versions] are the agents' and Alpine's, where installed. */
+/** How far setup got and what failed, from [s]; [versions]: what was read in place (the hidden display, Alpine's and the agents' versions). */
 internal fun setupFacts(s: SetupState, versions: List<Pair<String, String>> = emptyList()): List<Pair<String, String>> = buildList {
     add("Access" to when (s.access) {
         Access.ROOT -> if (s.root) "root" else "root, not granted"

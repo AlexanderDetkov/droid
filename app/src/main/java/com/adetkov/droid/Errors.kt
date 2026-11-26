@@ -33,6 +33,9 @@ internal fun plainStatus(status: String, engine: Engine, zone: ZoneId = ZoneId.s
         // Without root: Droid's own words about Wireless debugging and its helper (AdbHelper) already say what to do,
         // and Setup is where it's done
         "Wireless debugging" in said || "Droid's helper" in said -> Plain(said, setup = true, helper = true)
+        // phone-agent couldn't start the task's hidden display (vd-start.sh): Setup checks it again and shows why
+        said.startsWith("The hidden display did not start") ->
+            Plain("This phone wouldn't open my own screen, so I couldn't start. Setup shows why.", setup = true)
         else -> CLAUDE_LIMIT.find(said)?.let { m ->
             // (a time it can't be: no time said)
             val at = m.groupValues[1].toLongOrNull()?.takeIf { it in 0..253_402_300_799L }

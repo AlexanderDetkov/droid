@@ -51,15 +51,69 @@ public class VdHelper {
         @Override public Context getApplicationContext() { return this; }
     }
 
+    /**
+     * The system context, from an ActivityThread filled in the way scrcpy fills its own (its Workarounds.java): some
+     * phones' framework code expects more of it than Android's own does. Samsung's display code reads its configuration
+     * (scrcpy issue 4467), so without a ConfigurationController a VirtualDisplay's getDisplay() crashes there. Each part
+     * is best effort: a phone that has no such field does without it.
+     */
     static Context systemContext() throws Exception {
         Class<?> at = Class.forName("android.app.ActivityThread");
         Constructor<?> c = at.getDeclaredConstructor();
         c.setAccessible(true);
         Object thread = c.newInstance();
-        Field f = at.getDeclaredField("sCurrentActivityThread");
-        f.setAccessible(true);
-        f.set(null, thread);
+        set(at, null, "sCurrentActivityThread", thread);
+        try {
+            set(at, thread, "mSystemThread", true);
+        } catch (Throwable e) {
+            System.out.println("system thread: " + cause(e));
+        }
+        try {  // Android 12 and later; before the system context, which reads it
+            Constructor<?> cc = Class.forName("android.app.ConfigurationController")
+                    .getDeclaredConstructor(Class.forName("android.app.ActivityThreadInternal"));
+            cc.setAccessible(true);
+            set(at, thread, "mConfigurationController", cc.newInstance(thread));
+        } catch (Throwable e) {
+            System.out.println("configuration: " + cause(e));
+        }
+        try {  // the app it runs: the shell's
+            Class<?> bind = Class.forName("android.app.ActivityThread$AppBindData");
+            Constructor<?> bc = bind.getDeclaredConstructor();
+            bc.setAccessible(true);
+            Object data = bc.newInstance();
+            android.content.pm.ApplicationInfo info = new android.content.pm.ApplicationInfo();
+            info.packageName = PKG;
+            set(bind, data, "appInfo", info);
+            set(at, thread, "mBoundApplication", data);
+        } catch (Throwable e) {
+            System.out.println("app info: " + cause(e));
+        }
+        activityThread = thread;
         return (Context) at.getDeclaredMethod("getSystemContext").invoke(thread);
+    }
+
+    static Object activityThread;
+
+    /** Its Application, on [ctx] (the FakeContext): the last of scrcpy's workarounds. */
+    static void initialApplication(Context ctx) {
+        try {
+            android.app.Application app = android.app.Instrumentation.newApplication(android.app.Application.class, ctx);
+            set(activityThread.getClass(), activityThread, "mInitialApplication", app);
+        } catch (Throwable e) {
+            System.out.println("application: " + cause(e));
+        }
+    }
+
+    static void set(Class<?> c, Object o, String field, Object value) throws ReflectiveOperationException {
+        Field f = c.getDeclaredField(field);
+        f.setAccessible(true);
+        f.set(o, value);
+    }
+
+    /** What really went wrong, out of reflection's wrapping. */
+    static Throwable cause(Throwable e) {
+        while (e instanceof java.lang.reflect.InvocationTargetException && e.getCause() != null) e = e.getCause();
+        return e;
     }
 
     static Object virtualDevice; // keep the VirtualDevice alive for the life of the process
@@ -105,17 +159,21 @@ public class VdHelper {
         builderClass.getMethod("setLockState", int.class).invoke(builder, 1); // LOCK_STATE_ALWAYS_UNLOCKED
         builderClass.getMethod("setName", String.class).invoke(builder, "droid");
         Object params = builderClass.getMethod("build").invoke(builder);
-        virtualDevice = vdmClass.getMethod("createVirtualDevice", int.class,
+        Object device = vdmClass.getMethod("createVirtualDevice", int.class,
                 Class.forName("android.companion.virtual.VirtualDeviceParams")).invoke(vdm, associationId, params);
-        System.out.println("virtualDevice=" + virtualDevice);
-
-        android.hardware.display.VirtualDisplayConfig config =
-                new android.hardware.display.VirtualDisplayConfig.Builder("droid", w, h, dpi)
-                        .setSurface(reader.getSurface()).setFlags(flags).build();
-        return (VirtualDisplay) virtualDevice.getClass()
-                .getMethod("createVirtualDisplay", android.hardware.display.VirtualDisplayConfig.class,
-                        java.util.concurrent.Executor.class, VirtualDisplay.Callback.class)
-                .invoke(virtualDevice, config, (java.util.concurrent.Executor) Runnable::run, null);
+        System.out.println("virtualDevice=" + device);
+        java.lang.reflect.Method create = device.getClass().getMethod("createVirtualDisplay",
+                android.hardware.display.VirtualDisplayConfig.class, java.util.concurrent.Executor.class, VirtualDisplay.Callback.class);
+        try {
+            VirtualDisplay vd = withFlags(flags, f -> (VirtualDisplay) create.invoke(device,
+                    new android.hardware.display.VirtualDisplayConfig.Builder("droid", w, h, dpi).setSurface(reader.getSurface()).setFlags(f).build(),
+                    (java.util.concurrent.Executor) Runnable::run, null));
+            virtualDevice = device;
+            return vd;
+        } catch (Throwable e) {  // no display on it after all: the device goes too
+            try { device.getClass().getMethod("close").invoke(device); } catch (Throwable ignored) {}
+            throw e;
+        }
     }
 
     // Without a VirtualDevice: its own display group keeps it awake on Android 16 and earlier (17 ignores the flag,
@@ -123,10 +181,61 @@ public class VdHelper {
     static VirtualDisplay createPlain(Context ctx, int w, int h, int dpi, ImageReader reader, int flags) throws Exception {
         Constructor<DisplayManager> c = DisplayManager.class.getDeclaredConstructor(Context.class);
         c.setAccessible(true);
-        return c.newInstance(ctx).createVirtualDisplay("droid", w, h, dpi, reader.getSurface(), flags | OWN_DISPLAY_GROUP);
+        DisplayManager dm = c.newInstance(ctx);
+        return withFlags(flags | OWN_DISPLAY_GROUP, f -> dm.createVirtualDisplay("droid", w, h, dpi, reader.getSurface(), f));
     }
 
-    public static void main(String[] args) throws Exception {
+    interface Make { VirtualDisplay with(int flags) throws Exception; }
+
+    /**
+     * The display flags a phone may refuse, least needed first: some makers' Android grant the shell fewer of them than
+     * Android's own, or know fewer (TOUCH_FEEDBACK_DISABLED, STEAL_TOP_FOCUS_DISABLED, OWN_FOCUS, OWN_DISPLAY_GROUP,
+     * ALWAYS_UNLOCKED, TRUSTED). Without one the display does a little less (keeps the keyboard's focus, or sleeps with
+     * the phone), which beats no display.
+     */
+    static final int[] OPTIONAL_FLAGS = {1 << 13, 1 << 16, 1 << 14, OWN_DISPLAY_GROUP, 1 << 12, 1 << 10};
+    static final String[] OPTIONAL_NAMES = {"touch feedback off", "keyboard focus kept", "own focus", "own display group",
+            "always unlocked", "trusted"};
+
+    /**
+     * A display [make] makes with [flags], or with fewer when the phone refuses them ([OPTIONAL_FLAGS], one more each
+     * try); each refusal goes in the log, and the last one is thrown.
+     */
+    static VirtualDisplay withFlags(int flags, Make make) throws Exception {
+        int f = flags;
+        StringBuilder without = new StringBuilder();
+        for (int i = 0; ; i++) {
+            Throwable why;
+            try {
+                VirtualDisplay vd = make.with(f);
+                if (vd != null) {
+                    if (f != flags) System.out.println("flags: without " + without);
+                    return vd;
+                }
+                why = new IllegalStateException("Android made no display");
+            } catch (Exception e) {
+                why = cause(e);
+            }
+            System.out.println("flags " + f + ": " + why);
+            while (i < OPTIONAL_FLAGS.length && (f & OPTIONAL_FLAGS[i]) == 0) i++;
+            if (i == OPTIONAL_FLAGS.length) throw why instanceof Exception ? (Exception) why : new RuntimeException(why);
+            f &= ~OPTIONAL_FLAGS[i];
+            without.append(without.length() > 0 ? ", " : "").append(OPTIONAL_NAMES[i]);
+        }
+    }
+
+    public static void main(String[] args) {
+        try {
+            run(args);
+        } catch (Throwable e) {
+            // Why, on one line, for vd-start.sh to pass on to the task (a stack trace's last line says nothing); then all of it.
+            System.out.println("error=" + cause(e));
+            e.printStackTrace(System.out);
+            System.exit(1);
+        }
+    }
+
+    static void run(String[] args) throws Exception {
         // First, so vd-stop.sh can end this helper however far it gets.
         System.out.println("pid=" + android.os.Process.myPid());
         System.out.flush();
@@ -140,14 +249,15 @@ public class VdHelper {
         }
         Looper.prepareMainLooper();
         Context ctx = new FakeContext(systemContext());
+        initialApplication(ctx);
 
         ImageReader reader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 3);
         VirtualDisplay vd = null;
         if (associationId > 0) {
             try {
                 vd = createOnVirtualDevice(ctx, associationId, w, h, dpi, reader, flags);
-            } catch (Exception e) {
-                System.out.println("virtualDevice: " + e);
+            } catch (Throwable e) {
+                System.out.println("virtualDevice: " + cause(e));
             }
         }
         if (vd == null) vd = createPlain(ctx, w, h, dpi, reader, flags);

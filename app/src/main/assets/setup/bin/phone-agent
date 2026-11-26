@@ -69,7 +69,7 @@ case "$VD" in *"error=no APK"*) fail "The Droid app's APK was not found." ;; esa
 val() { echo "$VD" | sed -n "s/^$1=\([0-9]*\).*/\1/p" | head -n 1; }
 AGENT_DISPLAY=$(val displayId) HELPER=$(val pid) PORT=$(val port)
 # (why, if the helper said: its last word, made safe for the JSON line)
-WHY=$(echo "$VD" | sed -n 's/^error=//p' | head -n 1 | tr -d '"\\' | cut -c1-160)
+WHY=$(echo "$VD" | sed -n 's/^error=//p' | head -n 1 | tr -d '"\\' | tr -d '[:cntrl:]' | cut -c1-200)
 [ -n "$PORT" ] || fail "The hidden display did not start${WHY:+: $WHY}."
 export AGENT_DISPLAY
 printf '{"type":"agent","pid":%s,"display":%s,"port":%s,"token":"%s","new_session":%s}\n' $$ "$AGENT_DISPLAY" "$PORT" "$TOKEN" $NEW_SESSION

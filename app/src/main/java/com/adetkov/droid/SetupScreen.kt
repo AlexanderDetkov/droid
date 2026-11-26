@@ -150,6 +150,7 @@ fun SetupScreen(setup: Setup, firstRun: Boolean, onClose: () -> Unit) {
             }
 
             if (s.inputBlocked) InputBlocked()
+            s.displayError?.let { DisplayFailed(it, setup) }
             if (s.installed) OtherAgents(setup, s, idle)
 
             s.busy?.let {
@@ -218,7 +219,7 @@ private fun rememberWithPermissions(): (() -> Unit) -> Unit {
 /** What a first run offers to think with: free models (OpenCode, no account), ChatGPT (Codex) or Claude (Claude Code). */
 private enum class Brain(val engine: Engine) { FREE(Engine.OPENCODE), CHATGPT(Engine.CODEX), CLAUDE(Engine.CLAUDE) }
 
-private enum class Page { HELLO, CONNECT, PICK, WAIT, CHATGPT, CLAUDE, FIX, TROUBLE, READY }
+private enum class Page { HELLO, CONNECT, PICK, WAIT, CHATGPT, CLAUDE, FIX, SCREEN, TROUBLE, READY }
 
 /** What a first-run page says: a few words, maybe one more line, a code to type, and whether something is under way. */
 private data class Words(val headline: String, val line: String? = null, val code: String? = null, val progress: Boolean = false)
@@ -242,6 +243,7 @@ private fun FirstRun(setup: Setup, onClose: () -> Unit) {
     var paste by rememberSaveable { mutableStateOf(false) }
     var code by rememberSaveable { mutableStateOf("") }
     var skipFix by rememberSaveable { mutableStateOf(false) }
+    var skipScreen by rememberSaveable { mutableStateOf(false) }
     var autoInstalled by rememberSaveable { mutableStateOf(false) }
     val brain = Brain.entries.firstOrNull { it.name == picked }
     val idle = s.busy == null && s.signInUrl == null && s.pairing == null
@@ -277,7 +279,7 @@ private fun FirstRun(setup: Setup, onClose: () -> Unit) {
         s.error != null -> Page.TROUBLE
         !started && !done -> Page.HELLO
         !s.connected -> Page.CONNECT
-        done -> if (fix) Page.FIX else Page.READY
+        done -> when { s.displayError != null && !skipScreen -> Page.SCREEN; fix -> Page.FIX; else -> Page.READY }
         brain == null -> Page.PICK
         brain == Brain.CHATGPT && s.deviceCode != null -> Page.CHATGPT
         brain == Brain.CLAUDE -> if (s.installed) Page.CLAUDE else Page.WAIT
@@ -302,6 +304,7 @@ private fun FirstRun(setup: Setup, onClose: () -> Unit) {
         Page.CHATGPT -> Words("Enter this code", "It's copied for you.", code = s.deviceCode)
         Page.CLAUDE -> if (paste) Words("Paste the code", progress = s.busy != null) else Words("Sign in to Claude", progress = s.busy != null)
         Page.FIX -> Words("One more switch", makerFix())
+        Page.SCREEN -> Words("My own screen won't open", SCREEN_FAILED)
         Page.TROUBLE -> Words("Something went wrong", s.error?.trim()?.lineSequence()?.firstOrNull())
         Page.READY -> Words("All set!", "Hold the power button to talk to me from any app.")
     }
@@ -309,7 +312,7 @@ private fun FirstRun(setup: Setup, onClose: () -> Unit) {
         Page.HELLO -> Feel.HAPPY
         Page.PICK -> Feel.CURIOUS
         Page.WAIT -> Feel.WORKING
-        Page.TROUBLE -> Feel.CONFUSED
+        Page.TROUBLE, Page.SCREEN -> Feel.CONFUSED
         Page.READY -> Feel.CELEBRATE
         else -> if (words.progress) Feel.WORKING else Feel.NEEDS_YOU
     }
@@ -370,6 +373,7 @@ private fun FirstRun(setup: Setup, onClose: () -> Unit) {
                                 if (s.signInUrl == null) setup.signIn(console = false) else open(s.signInUrl)
                             }
                             Page.FIX -> Big("Open Settings", "setup_fix") { openDeveloperOptions(ctx) }
+                            Page.SCREEN -> Big("Try again", "setup_screen_retry", enabled = idle) { setup.refresh() }
                             Page.TROUBLE -> Big("Try again", "setup_retry") { autoInstalled = false; setup.dismissError() }
                             Page.READY -> Big("Let's go", "setup_done") { letsGo() }
                         }
@@ -393,6 +397,10 @@ private fun FirstRun(setup: Setup, onClose: () -> Unit) {
                                     else -> Small("Pick another", "setup_another") { another() }
                                 }
                                 Page.FIX -> Small("Skip", "setup_skip") { skipFix = true }
+                                Page.SCREEN -> {
+                                    CopyDiagnostics(setup, Modifier)
+                                    Small("Skip", "setup_screen_skip") { skipScreen = true }
+                                }
                                 Page.TROUBLE -> CopyDiagnostics(setup, Modifier)
                                 else -> {}
                             }
@@ -579,6 +587,23 @@ private fun InputBlocked() {
         Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.End) {
             Action("Open settings", true, primary = true) { openDeveloperOptions(ctx) }
         }
+    }
+}
+
+/** What the first run and Setup say when a task's hidden display won't start ([SetupState.displayError]). */
+private const val SCREEN_FAILED = "I work on a screen of my own, and this phone won't open it. Copy the diagnostics for a bug report."
+
+/** A task's hidden display won't start on this phone: why, and the diagnostics to report it with. */
+@Composable
+private fun DisplayFailed(why: String, setup: Setup) {
+    Column(Modifier.padding(top = 16.dp).fillMaxWidth().clip(RoundedCornerShape(16.dp)).border(1.dp, P.danger.copy(alpha = .5f), RoundedCornerShape(16.dp))
+        .padding(16.dp).testTag("setup_display_failed")) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(painterResource(R.drawable.ic_error), null, Modifier.size(18.dp), tint = P.danger)
+            Text("The agent's screen won't open", Modifier.padding(start = 8.dp), style = MaterialTheme.typography.titleSmall, color = P.danger)
+        }
+        Text("$SCREEN_FAILED\n\n$why", Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodySmall, color = P.muted)
+        Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.End) { CopyDiagnostics(setup, Modifier) }
     }
 }
 

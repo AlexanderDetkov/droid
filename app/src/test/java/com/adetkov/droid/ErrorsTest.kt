@@ -53,6 +53,15 @@ class ErrorsTest {
         assertNull(plainStatus("Failed", Engine.OPENCODE))
     }
 
+    /** A task whose hidden display didn't start sends the owner to Setup, which checks it again and shows why. */
+    @Test fun aDisplayThatDidNotStartPointsToSetup() {
+        for (said in listOf("The hidden display did not start.", "The hidden display did not start: java.lang.SecurityException: Requires ADD_TRUSTED_DISPLAY.")) {
+            val p = plainStatus("Error: $said", Engine.CODEX)!!
+            assertTrue(p.setup)
+            assertFalse(p.helper)
+        }
+    }
+
     /** An install the network failed says so in plain words, not its exit code; any other failure keeps its own words. */
     @Test fun aDownloadThatFailedSaysCheckTheInternet() {
         assertEquals("I couldn't download what I need. Check your internet connection, then try again.",

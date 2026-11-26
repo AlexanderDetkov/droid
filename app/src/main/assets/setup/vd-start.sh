@@ -5,7 +5,8 @@
 #   TOKEN: the live view's secret (DROID_TOKEN for VdHelper)
 #   APK:   Droid's APK, which holds VdHelper
 #   AGENT_PID: phone-agent's pid: the helper ends by itself when phone-agent is gone without vd-stop.sh
-# Prints the helper's "displayId=", "pid=" and "port=" lines once it listens, or nothing if it didn't start.
+# Prints the helper's "displayId=", "pid=" and "port=" lines once it listens; if it didn't start, its "pid=" (if any) and
+# an "error=" line saying why.
 MAC=$1 TOKEN=$2 APK=$3 AGENT=$4
 case "$AGENT" in *[!0-9]*) AGENT= ;; esac
 TMP=/data/local/tmp/droid
@@ -32,11 +33,31 @@ done
 FLAGS=95691
 # The helper runs as the shell user (uid 2000), like scrcpy, from the app's own APK.
 # The whole group's output goes to the log: anything left holding this script's stdout would keep `android` waiting.
-# The folder is made as the shell user too, so the helper can write into it.
-START="mkdir -p $TMP/vd; (DROID_TOKEN=$TOKEN CLASSPATH=$APK exec nohup app_process / com.adetkov.droid.VdHelper ${SIZE%x*} ${SIZE#*x} $DPI $FLAGS ${ASSOC:-0} $AGENT) > $LOG 2>&1 < /dev/null &"
-if [ "$(id -u)" = 0 ]; then su 2000 -c "$START"; else sh -c "$START"; fi
-for _ in $(seq 50); do
-  grep -q '^port=' "$LOG" 2>/dev/null && break
+# The folder is made as the shell user too, so the helper can write into it. Its pid ($!: the exec'd subshell is
+# app_process) goes beside the log, to tell when it has ended, even before it could say anything.
+START="mkdir -p $TMP/vd; (DROID_TOKEN=$TOKEN CLASSPATH=$APK exec nohup app_process / com.adetkov.droid.VdHelper ${SIZE%x*} ${SIZE#*x} $DPI $FLAGS ${ASSOC:-0} $AGENT) > $LOG 2>&1 < /dev/null & echo \$! > $LOG.pid"
+# (ERR: what the shell said starting it, if that failed; the helper's own output never comes here)
+if [ "$(id -u)" = 0 ]; then ERR=$(su 2000 -c "$START" 2>&1); else ERR=$(sh -c "$START" 2>&1); fi
+PID=$(cat "$LOG.pid" 2>/dev/null); rm -f "$LOG.pid"
+case "$PID" in ''|*[!0-9]*) PID= ;; esac
+# Up to 15 s (a phone's first start of it can be slow), or until it fails: it says why ("error="), it has ended, or
+# it never started (no pid: the start itself failed).
+for _ in $(seq 150); do
+  grep -qE '^(port|error)=' "$LOG" 2>/dev/null && break
+  [ -z "$PID" ] || [ ! -d "/proc/$PID" ] && break
   sleep 0.1
 done
-grep -E '^(displayId|pid|port)=' "$LOG" || echo "error=$(grep -v '^$' "$LOG" 2>/dev/null | tail -n 1)"
+if grep -q '^port=' "$LOG" 2>/dev/null; then
+  grep -E '^(displayId|pid|port)=' "$LOG"
+  # and what this phone refused on the way, which the display does without (Setup's diagnostics show it)
+  grep -E '^(virtualDevice: |flags: )' "$LOG" | sed 's/^/note=/'
+else
+  # Not started: its pid (phone-agent's cleanup ends it, if it's still going) and why, as far as can be told.
+  [ -n "$PID" ] && echo "pid=$PID"
+  WHY=$(sed -n 's/^error=//p' "$LOG" 2>/dev/null | head -n 1)
+  LAST=$(grep -vE '^(pid=|$)' "$LOG" 2>/dev/null | tail -n 1)
+  if [ -n "$WHY" ]; then echo "error=$WHY"
+  elif [ -z "$PID" ]; then ERR=$(echo "$ERR" | grep -v '^$' | tail -n 1); echo "error=its helper didn't start${ERR:+: $ERR}"
+  elif [ ! -d "/proc/$PID" ]; then echo "error=its helper ended${LAST:+ after: $LAST}"
+  else echo "error=no answer from its helper in 15 s${LAST:+, last: $LAST}"; fi
+fi

@@ -105,6 +105,8 @@ data class SetupState(
     val deviceCode: String? = null,
     /** Android refuses the input Droid injects (some makers' phones until a Developer options switch is on), so the agent can't tap or type. */
     val inputBlocked: Boolean = false,
+    /** Why a task's hidden display won't start on this phone ([Setup.startDisplay]), or null while it does (or isn't known). */
+    val displayError: String? = null,
 ) {
     /** Whether agent [e] can take a chat: Claude signed in, or the other agent installed and signed in. */
     fun usable(e: Engine) = if (e == Engine.CLAUDE) signedIn else others[e]?.let { it.installed && it.signedIn } == true
@@ -128,6 +130,9 @@ data class SetupState(
  */
 /** How long what a full check found of the agents' sign-in stands at a process start (see Setup.refreshOnStart). */
 private const val FULL_CHECK_EVERY = 60 * 60_000L
+/** Setup's pref: [Setup.displayKey] when a hidden display last started. */
+private const val DISPLAY_WORKS = "displayWorks"
+private const val CHECK_MAC = "02:00:01:00:00:01"
 
 class Setup(private val app: DroidApp) {
     private val prefs = app.getSharedPreferences("setup", 0)
@@ -158,7 +163,8 @@ class Setup(private val app: DroidApp) {
 
     fun needed(s: SetupState = state.value) = !s.ready && (s.checked && s.connected || !prefs.getBoolean("ready", false))
 
-    fun refresh() = step(null) { check() }
+    /** What is in place, the hidden display too: the owner is looking at Setup (a turn that failed may have sent them). */
+    fun refresh() = step(null) { check(display = true) }
 
     /**
      * A new process's check: whether the agents are signed in is asked again only once the last time is an hour old
@@ -513,6 +519,9 @@ class Setup(private val app: DroidApp) {
         val s = state.value
         val props = parseProps(runCatching { ProcessBuilder("getprop").start().inputStream.bufferedReader().readText() }.getOrDefault(""))
         val versions = if (!s.connected || !s.installed) emptyList() else buildList {
+            startDisplay()?.let { d ->
+                add("Hidden display" to (d.error?.let { "won't start: $it" } ?: "starts") + d.notes.joinToString("") { "; $it" })
+            }
             run("cat ${host.rootfs}/etc/alpine-release").takeIf { it.code == 0 }?.let { add("Alpine" to it.out.trim()) }
             for ((cmd, label) in listOf("claude" to Engine.CLAUDE.label) + s.others.keys.map { it.id to it.label }) {
                 val r = run("${host.base}/enter.sh $cmd --version")
@@ -525,6 +534,32 @@ class Setup(private val app: DroidApp) {
         )
         return diagnosticsReport(Updates.version(app), phoneFacts(props) + droid, setupFacts(s, versions))
     }
+
+    /** What starting a hidden display found: [error], why it didn't start (null if it did); [notes], what it did without. */
+    private class DisplayCheck(val error: String?, val notes: List<String>)
+
+    /**
+     * Starts and ends a hidden display as a task does (vd-start.sh, vd-stop.sh; the helper also ends with this command's
+     * shell), or null if that couldn't be asked (Android out of reach, or a Linux installed before those scripts).
+     */
+    private fun startDisplay(): DisplayCheck? {
+        val b = host.base
+        val apk = shellQuote(app.applicationInfo.sourceDir)
+        // (a made-up address phone-agent never uses: its are 02:00:00:…; what a check cut short left under it goes first)
+        val r = probe("[ -f $b/vd-start.sh ] || exit 3; sh $b/vd-stop.sh $CHECK_MAC; OUT=\$(sh $b/vd-start.sh $CHECK_MAC check $apk \$\$); echo \"\$OUT\"; " +
+            "sh $b/vd-stop.sh $CHECK_MAC '' \"\$(echo \"\$OUT\" | sed -n 's/^displayId=//p')\"")
+        val lines = r.out.lines()
+        fun value(key: String) = lines.firstOrNull { it.startsWith("$key=") }?.substringAfter('=')
+        val notes = lines.filter { it.startsWith("note=") }.map { it.removePrefix("note=") }
+        return when {
+            value("port") != null -> DisplayCheck(null, notes)
+            value("error") != null -> DisplayCheck(value("error")!!.ifBlank { "no reason given" }, notes)
+            else -> null
+        }
+    }
+
+    /** This Droid on this Android: a hidden display that started once is checked again only when either changes. */
+    private fun displayKey() = "${Updates.version(app)} ${Build.FINGERPRINT}"
 
     private fun checkEngines(installed: Boolean): Map<Engine, EngineStatus> {
         if (!installed) return emptyMap()
@@ -552,8 +587,11 @@ class Setup(private val app: DroidApp) {
     /** One check at a time, so an older one never overwrites a newer answer. */
     private val checking = Any()
 
-    /** Reads what is in place. [ask]: the owner tapped Start, so starting the helper may ask them (see [AdbHelper.ensure]). */
-    private fun check(ask: Boolean = false, full: Boolean = true): Unit = synchronized(checking) {
+    /**
+     * Reads what is in place. [ask]: the owner tapped Start, so starting the helper may ask them (see [AdbHelper.ensure]).
+     * [display]: start a hidden display to see that it works, which otherwise happens only once per Droid and Android.
+     */
+    private fun check(ask: Boolean = false, full: Boolean = true, display: Boolean = false): Unit = synchronized(checking) {
         // Longer than the others: the root manager may be asking the owner whether to allow Droid.
         val root = exec(RootHost, "id", timeoutS = 90).let { it.code == 0 && "uid=0" in it.out }
         // Root stays on offer wherever there is an su (see SetupScreen): Magisk's is there while it refuses Droid (its
@@ -601,9 +639,18 @@ class Setup(private val app: DroidApp) {
         val others = if (full) checkEngines(installed) else last.others
         val screenshots = assistant && probe("settings get secure $SCREENSHOTS; settings get secure $SCREEN_TEXT").out.lines()
             .filter { it.isNotBlank() }.all { it.trim() == "1" }
+        // Every task needs its hidden display: a phone that won't start one says so here, with why, not in each task.
+        val displayError = when {
+            !installed -> last.displayError
+            !display && prefs.getString(DISPLAY_WORKS, null) == displayKey() -> null  // it started for this Droid and Android
+            else -> when (val d = startDisplay()) {
+                null -> last.displayError  // couldn't be asked: what was found stands
+                else -> d.error.also { e -> prefs.edit { if (e == null) putString(DISPLAY_WORKS, displayKey()) else remove(DISPLAY_WORKS) } }
+            }
+        }
         state.update {
             reached(it).copy(installed = installed, linux = linux, signedIn = signedIn, screenshots = screenshots, email = email, plan = plan,
-                others = others, inputBlocked = inputBlocked, linuxChecked = true)
+                others = others, inputBlocked = inputBlocked, displayError = displayError, linuxChecked = true)
         }
         prefs.edit {
             putBoolean("ready", state.value.ready); putBoolean("installed", installed); putBoolean("signedIn", signedIn)
