@@ -58,6 +58,7 @@ class PairingService : Service() {
         shown = step()
         val (title, text) = STEPS[shown]
         startForeground(ID, note(title, text, ask = false), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        app.setup.pairingStatus(title, shown)  // the setup screen too: [guide] only says a step when it changes
         if (discovery != null) return
         if (!app.adb.canDiscover) return finish(null, AdbHelper.NO_LOCAL_NETWORK)
         if (!nm.areNotificationsEnabled() || nm.getNotificationChannel(CHANNEL)?.importance == NotificationManager.IMPORTANCE_NONE)
@@ -73,12 +74,7 @@ class PairingService : Service() {
         main.post(watch)
     }
 
-    /** How far the owner got in Settings: Developer options, then Wireless debugging, then its pairing dialog. */
-    private fun step(): Int = when {
-        Settings.Global.getInt(contentResolver, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 0) == 0 -> 0
-        Settings.Global.getInt(contentResolver, ADB_WIFI, 0) == 0 -> 1
-        else -> 2
-    }
+    private fun step(): Int = step(this)
 
     /**
      * Says the next step in the notification and on the setup screen, when it changes; a step done pops the next one up
@@ -188,6 +184,16 @@ class PairingService : Service() {
         )
         const val CODE_STEP = 3
 
+        /**
+         * How far the owner got in Settings, read from Settings itself (never assumed: Developer options, or Wireless
+         * debugging too, may be on from before): Developer options, then Wireless debugging, then its pairing dialog.
+         */
+        fun step(ctx: Context): Int = when {
+            Settings.Global.getInt(ctx.contentResolver, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 0) == 0 -> 0
+            Settings.Global.getInt(ctx.contentResolver, ADB_WIFI, 0) == 0 -> 1
+            else -> 2
+        }
+
         fun start(ctx: Context) {
             ctx.startForegroundService(Intent(ctx, PairingService::class.java).setAction(START))
         }
@@ -204,7 +210,7 @@ class PairingService : Service() {
  * another of Developer options' settings instead, where the phone supports that.
  */
 fun pairingSettings(ctx: Context, key: String? = "toggle_adb_wireless"): Intent {
-    val on = Settings.Global.getInt(ctx.contentResolver, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 0) == 1
+    val on = PairingService.step(ctx) > 0
     return Intent(if (on) Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS else Settings.ACTION_DEVICE_INFO_SETTINGS)
         .apply { (if (on) key else "build_number")?.let { putExtra(":settings:fragment_args_key", it) } }
         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)

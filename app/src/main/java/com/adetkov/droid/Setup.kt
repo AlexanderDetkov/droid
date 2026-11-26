@@ -171,7 +171,8 @@ class Setup(private val app: DroidApp) {
      * asks for its code in a notification, then starts Droid's helper. See [PairingService].
      */
     fun pair() {
-        state.update { it.copy(error = null, pairing = "Waiting for the pairing code", pairStep = 0) }
+        val step = PairingService.step(app)
+        state.update { it.copy(error = null, pairing = PairingService.STEPS[step].first, pairStep = step) }
         PairingService.start(app)
     }
 
