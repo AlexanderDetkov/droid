@@ -13,6 +13,7 @@ Free AI, the hidden display check, and one task that opens an app on the hidden 
   --task  then run a task: open Clock and read the alarms
 
 Prints each step as it goes, and a JSON summary last; exits 1 on a failure, with a screenshot in --out.
+Android 17 emulators need tools/emulator17.sh to stay up.
 """
 import argparse, json, re, subprocess, sys, time, os
 
@@ -161,7 +162,7 @@ step(f"Developer options {setting('development_settings_enabled')}, Wireless deb
 
 # 2. Hello, then Open Settings: Settings opens where the first step is
 sh(f"am start -n {PKG}/.MainActivity")
-tap_text("Start", wait=30)
+tap_text("Start", wait=90)
 wait_for(lambda: find("Open Settings"), "the Connect page", 20)
 step(f"Connect page: {droid_words()!r}")
 tap_text("Open Settings")
@@ -182,6 +183,13 @@ build_taps = 0
 while time.time() < deadline and not code_typed:
     seen(note_title())
     t = top()
+    if "GrantPermissions" in t:  # Android 17 asks for Nearby devices (local network) as Droid starts pairing
+        n = find("Allow")
+        step(f"permission asked: {nodes()[0][0][:80] if nodes() else '?'}: Allow")
+        if n:
+            tap(n[1], n[2])
+        time.sleep(3)
+        continue
     if "MyDeviceInfo" in t or "DeviceInfo" in t:
         step("Settings opened About phone (Developer options read as off)")
         if build_taps:
