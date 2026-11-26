@@ -15,8 +15,8 @@ android {
         applicationId = "com.adetkov.droid"
         minSdk = 34
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.9"
+        versionCode = 2
+        versionName = "0.9.1"
         externalNativeBuild { ndkBuild { abiFilters += listOf("arm64-v8a", "x86_64") } }  // the CPUs the APKs are split by
     }
 
